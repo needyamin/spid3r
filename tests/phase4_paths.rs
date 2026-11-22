@@ -330,8 +330,8 @@ fn legacy_env_and_ini_alias_are_equivalent() {
 
 // ------------------------------------------------------------- relocation --
 
-/// One ini relocates all the path keys; a state artifact (`agent pair`
-/// writes devices.json) lands under the INI root and nowhere else.
+/// One ini relocates all the path keys; `control status` reports the relocated
+/// state_dir root from the INI.
 #[test]
 fn relocation_puts_artifacts_under_the_ini_roots() {
     let dir = scratch_dir("relocate");
@@ -350,43 +350,13 @@ fn relocation_puts_artifacts_under_the_ini_roots() {
         &dir,
         &[("SPID3R_INI", ini.as_str())],
         PATH_ENV_VARS,
-        &["agent", "pair", "--role", "viewer", "--name", "reloc"],
+        &["control", "status"],
     );
     assert_eq!(code, 0, "out={} err={}", out, err);
-
-    // The artifact is under the INI root, and it carries the fresh pairing
-    // code that was printed.
-    let devices = state.join("devices.json");
     assert!(
-        devices.is_file(),
-        "devices.json must be under the INI state root"
+        out.replace('\\', "/").contains(&fwd(&state)),
+        "control status must report the relocated state_dir: out={out}"
     );
-    let text = std::fs::read_to_string(&devices).expect("read devices.json");
-    let code_line = out
-        .lines()
-        .find(|l| l.contains("pairing code"))
-        .expect("pairing code printed");
-    let pair_code = code_line
-        .rsplit(' ')
-        .next()
-        .expect("code token")
-        .trim()
-        .to_string();
-    assert!(
-        text.contains(&pair_code),
-        "fresh pairing code must be in the relocated store"
-    );
-
-    // Nothing landed in the platform default (its devices.json, if any,
-    // cannot contain a code that was minted for the relocated store).
-    if let Some(default) = default_state_dir() {
-        if let Ok(t) = std::fs::read_to_string(default.join("devices.json")) {
-            assert!(
-                !t.contains(&pair_code),
-                "the pairing must not leak into the platform default state home"
-            );
-        }
-    }
 }
 
 // ----------------------------------------------------------------- frozen --

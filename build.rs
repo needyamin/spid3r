@@ -192,6 +192,8 @@ fn windows_installer() {
         "packaging/nsis/spid3r.nsi",
         "packaging/nsis/LICENSE.txt",
         "packaging/nsis/assets",
+        "packaging/vscode/spid3r-formatter.vsix",
+        "packaging/vscode/spid3r-formatter.vsix.sha256",
     ] {
         println!("cargo:rerun-if-changed={}", root.join(input).display());
     }
@@ -225,7 +227,6 @@ fn windows_installer() {
     let triple = env::var("TARGET").unwrap_or_default();
     let gui = env::var_os("CARGO_FEATURE_GUI").is_some();
     let native = env::var_os("CARGO_FEATURE_NATIVE").is_some();
-    let plugins_wasm = env::var_os("CARGO_FEATURE_PLUGINS_WASM").is_some();
     let tls = env::var_os("CARGO_FEATURE_TLS").is_some();
     let mut features = Vec::new();
     if gui {
@@ -233,9 +234,6 @@ fn windows_installer() {
     }
     if native {
         features.push("native");
-    }
-    if plugins_wasm {
-        features.push("plugins-wasm");
     }
     if tls {
         features.push("tls");
@@ -356,6 +354,11 @@ fn windows_installer() {
     if let Some(setup) = &webview2 {
         nsis.arg(format!("/DWEBVIEW2_SETUP={}", setup.display()));
     }
+    if let Some(vsix) = verified_formatter_vsix(&root) {
+        nsis.arg(format!("/DFORMATTER_VSIX={}", vsix.display()));
+    } else {
+        nsis.arg("/DFORMATTER_VSIX=");
+    }
     let output = nsis.arg("spid3r.nsi").output();
     match output {
         Ok(o) if o.status.success() && installer_path.is_file() => {
@@ -406,6 +409,38 @@ fn webview2_bootstrapper(nsis_dir: &std::path::Path) -> Option<PathBuf> {
     println!("cargo:rerun-if-env-changed=SPID3R_FETCH_WEBVIEW2");
     println!("cargo:rerun-if-env-changed=SPID3R_WEBVIEW2_SHA256");
     webview2::ensure(nsis_dir)
+}
+
+/// Fail-closed SHA-256 verification for the bundled offline IDE formatter VSIX.
+fn verified_formatter_vsix(root: &std::path::Path) -> Option<PathBuf> {
+    let dir = root.join("packaging").join("vscode");
+    let vsix = dir.join("spid3r-formatter.vsix");
+    let sha_file = dir.join("spid3r-formatter.vsix.sha256");
+    if !vsix.is_file() {
+        return None;
+    }
+    let Ok(raw_sha) = fs::read_to_string(&sha_file) else {
+        println!(
+            "cargo:warning=formatter extension rejected: missing {}",
+            sha_file.display()
+        );
+        return None;
+    };
+    let expected = raw_sha.split_whitespace().next().unwrap_or("").trim();
+    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+        println!(
+            "cargo:warning=formatter extension rejected: invalid digest in {}",
+            sha_file.display()
+        );
+        return None;
+    }
+    match webview2::verify_file(&vsix, expected, 1024) {
+        Ok(_) => Some(vsix),
+        Err(e) => {
+            println!("cargo:warning=formatter extension rejected: {e}");
+            None
+        }
+    }
 }
 
 fn find_on_path(exe: &str) -> Option<PathBuf> {

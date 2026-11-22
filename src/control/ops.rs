@@ -4,23 +4,25 @@
 //! panel — go through [`dispatch`], so a control action behaves identically
 //! no matter which surface invokes it. Every op returns a FLAT JSON object:
 //! one level, all values strings (arrays are `"\n"`-joined, rows are
-//! `"|"`-separated). That keeps the dependency-free JSON handling honest —
-//! the crate builds without serde, so the panel must not smuggle one in.
+//! `"|"`-separated). That keeps the dependency-free JSON handling clean —
+//! the crate builds with zero external deps by default.
 //!
-//! Security posture: ops that mutate state (config_set, devices_revoke,
-//! agent_start/stop) append to the agent audit log, so a panel action is
-//! auditable exactly like a remote agent action. Config values are redacted
-//! through `runtime_info::redact_value` before they ever reach the UI.
+//! Security posture: config writes validate against `config::schema`, and
+//! values returned to UI callers pass through `runtime_info::redact_value` /
+//! `redact_diagnostic`.
 
-use crate::agent::store::{self, Store};
 use crate::config;
 use std::io::Read as _;
-use std::net::TcpStream;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Once;
+
+static INSTALL_TZ_VALIDATOR: Once = Once::new();
 
 /// Dispatch one control operation. `params` is a flat JSON object string.
 pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
+    INSTALL_TZ_VALIDATOR.call_once(|| {
+        crate::config::schema::install_tz_validator(crate::stdlib::tz::check_timezone_setting);
+    });
     match op {
         "status" => op_status(params),
         "safety_overview" => op_safety_overview(),
@@ -33,19 +35,7 @@ pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
         "config_reset_all" => op_config_reset_all(params),
         "config_reload" => op_config_reload(),
         "config_validate" => op_config_validate(),
-        "agent_status" => op_agent_status(),
-        "agent_start" => op_agent_start(),
-        "agent_stop" => op_agent_stop(),
-        "devices_list" => op_devices_list(),
-        "devices_revoke" => op_devices_revoke(params),
-        "pair_create" => op_pair_create(params),
-        "ops_run" => op_ops_run(params),
         "logs_tail" => op_logs_tail(params),
-        "audit_tail" => op_audit_tail(params),
-        "remote_list" => op_remote_list(),
-        "remote_pair" => op_remote_pair(params),
-        "remote_remove" => op_remote_remove(params),
-        "remote_call" => op_remote_call(params),
         "lang_info" => super::lang::op_lang_info(),
         "lang_exec" => super::lang::op_lang_exec(params),
         "lang_terminal" => super::lang::op_lang_terminal(params),
@@ -59,10 +49,9 @@ pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
 // ----------------------------------------------------------- safety keys --
 //
 // The switches that decide what a Spid3r PROGRAM may do on this machine.
-// `danger_when_open` marks keys whose default state exposes a capability:
-// for the `security.deny_*` family "open" means the deny flag is false
-// (programs MAY touch the capability); for opt-in surfaces (allow_remote,
-// agent.enabled, modules.allow_*) "open" means the flag is true.
+// For `security.deny_*`, "open" means the deny flag is false (programs MAY
+// touch the capability); `danger_when_open` stays configurable if any
+// future opt-in switch is added.
 
 struct SafetyKey {
     dotted: &'static str,
@@ -74,30 +63,6 @@ struct SafetyKey {
 }
 
 static SAFETY_KEYS: &[SafetyKey] = &[
-    SafetyKey {
-        dotted: "security.allow_remote",
-        danger_when_open: true,
-        label: "Remote management access",
-        consequence: "paired devices can run operations on this machine over the network",
-    },
-    SafetyKey {
-        dotted: "agent.enabled",
-        danger_when_open: true,
-        label: "Management agent",
-        consequence: "a local agent listens on agent.bind:port and answers paired clients",
-    },
-    SafetyKey {
-        dotted: "modules.allow_host",
-        danger_when_open: true,
-        label: "Host plugins",
-        consequence: "programs may load native host plugins from disk",
-    },
-    SafetyKey {
-        dotted: "modules.allow_wasm",
-        danger_when_open: true,
-        label: "WASM plugins",
-        consequence: "programs may load sandboxed .wasm plugins from disk",
-    },
     SafetyKey {
         dotted: "security.deny_filesystem",
         danger_when_open: false,
@@ -199,180 +164,148 @@ pub fn jstr(s: &str) -> String {
     out
 }
 
-/// Extract a top-level string field from a flat JSON object (the format
-/// `dispatch` produces). Returns the unescaped value.
-pub fn field(json: &str, name: &str) -> Option<String> {
-    let needle = format!("\"{}\"", name);
-    let mut from = 0;
-    loop {
-        let pos = json[from..].find(&needle)? + from;
-        // The match must be a key: the preceding non-space char is '{' or ','.
-        let before = json[..pos].trim_end();
-        if !before.ends_with('{') && !before.ends_with(',') {
-            from = pos + needle.len();
-            continue;
-        }
-        let after = &json[pos + needle.len()..];
-        let after = after.trim_start();
-        let after = after.strip_prefix(':')?.trim_start();
-        let rest = after.strip_prefix('"')?;
-        let mut out = String::new();
-        let mut chars = rest.chars();
-        loop {
-            let c = chars.next()?;
-            match c {
-                '"' => return Some(out),
-                '\\' => match chars.next()? {
+/// Decode one JSON string starting right at its opening `"` quote, returning
+/// `(unescaped_text, byte_index_after_closing_quote)`.
+fn parse_json_str(s: &str) -> Option<(String, usize)> {
+    let rest = s.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.char_indices();
+    while let Some((idx, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, 1 + idx + 1)),
+            '\\' => {
+                let (_, esc) = chars.next()?;
+                match esc {
                     'n' => out.push('\n'),
                     'r' => out.push('\r'),
                     't' => out.push('\t'),
+                    'b' => out.push('\u{0008}'),
+                    'f' => out.push('\u{000c}'),
                     'u' => {
-                        let hex: String = chars.by_ref().take(4).collect();
+                        let mut hex = String::with_capacity(4);
+                        for _ in 0..4 {
+                            hex.push(chars.next()?.1);
+                        }
                         let code = u32::from_str_radix(&hex, 16).ok()?;
                         out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                     }
                     other => out.push(other),
-                },
-                c => out.push(c),
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// Skip over one JSON value (string, nested object/array, or scalar) inside a
+/// top-level JSON object, returning the byte offset immediately after it.
+fn skip_json_value(s: &str) -> Option<usize> {
+    let trimmed_len = s.len() - s.trim_start().len();
+    let tail = &s[trimmed_len..];
+    if tail.starts_with('"') {
+        let (_, end) = parse_json_str(tail)?;
+        return Some(trimmed_len + end);
+    }
+    if tail.starts_with('{') || tail.starts_with('[') {
+        let bytes = tail.as_bytes();
+        let mut depth = 0usize;
+        let mut in_str = false;
+        let mut escaped = false;
+        for (i, &b) in bytes.iter().enumerate() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match b {
+                b'"' => in_str = true,
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(trimmed_len + i + 1);
+                    }
+                }
+                _ => {}
             }
         }
+        return None;
     }
+    let end = tail
+        .find([',', '}', ']', ' ', '\t', '\r', '\n'])
+        .unwrap_or(tail.len());
+    (end > 0).then_some(trimmed_len + end)
 }
 
-// ------------------------------------------------------------ agent probe --
-
-fn agent_addr() -> String {
-    let bind = config::get("agent.bind").unwrap_or_else(|| "127.0.0.1".into());
-    let port = config::get("agent.port").unwrap_or_else(|| "9527".into());
-    format!("{}:{}", bind, port)
-}
-
-/// Best-effort liveness probe: can we open a TCP connection to the agent?
-fn probe(addr: &str) -> bool {
-    TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .unwrap_or(std::net::SocketAddr::from(([127, 0, 0, 1], 0))),
-        Duration::from_millis(300),
-    )
-    .is_ok()
-}
-
-fn pid_file() -> PathBuf {
-    config::state_dir().join("agent.pid")
-}
-
-fn read_pid_file() -> Option<(u32, String)> {
-    let text = std::fs::read_to_string(pid_file()).ok()?;
-    let mut pid = None;
-    let mut port = String::new();
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("pid=") {
-            pid = v.parse().ok();
-        }
-        if let Some(v) = line.strip_prefix("port=") {
-            port = v.to_string();
-        }
+/// Locate a top-level field in a JSON object and return the slice beginning at
+/// its raw JSON value (string- and nesting-aware, so keys inside string values
+/// or child objects never false-match).
+pub(crate) fn raw_field_slice<'a>(json: &'a str, name: &str) -> Option<&'a str> {
+    let mut pos = json.len() - json.trim_start().len();
+    if !json[pos..].starts_with('{') {
+        return None;
     }
-    pid.map(|p| (p, port))
-}
-
-fn write_pid_file(pid: u32) -> Result<(), String> {
-    let addr = agent_addr();
-    let port = addr.rsplit(':').next().unwrap_or("?");
-    std::fs::write(
-        pid_file(),
-        format!(
-            "pid={}\nport={}\nstarted={}\n",
-            pid,
-            port,
-            crate::stdlib::datetime::unix_time()
-        ),
-    )
-    .map_err(|e| format!("write agent.pid: {}", e))
-}
-
-/// Is `pid` plausibly one of our own agent processes? Verified with the
-/// platform process list BEFORE any kill: the PID file is a hint, not
-/// authority, and a recycled PID must never be signalled blindly. The match
-/// is exact on the image name ("spid3r" / "spid3r-control" / "spid3r.exe"),
-/// not a substring — "notspid3r.exe" must not pass.
-fn pid_is_spid3r(pid: u32) -> bool {
-    let name = process_image_name(pid).to_lowercase();
-    name == "spid3r"
-        || name == "spid3r.exe"
-        || name == "spid3r-control"
-        || name == "spid3r-control.exe"
-}
-
-fn process_image_name(pid: u32) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let out = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
-            .output();
-        match out {
-            Ok(o) => String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim_matches('"')
-                .to_string(),
-            Err(_) => String::new(),
+    pos += 1;
+    loop {
+        let rem = &json[pos..];
+        pos += rem.len() - rem.trim_start().len();
+        let cur = &json[pos..];
+        if cur.starts_with('}') || cur.is_empty() {
+            return None;
         }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let out = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "comm="])
-            .output();
-        match out {
-            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-            Err(_) => String::new(),
+        let (key, key_end) = parse_json_str(cur)?;
+        pos += key_end;
+        let after_key = &json[pos..];
+        pos += after_key.len() - after_key.trim_start().len();
+        if !json[pos..].starts_with(':') {
+            return None;
+        }
+        pos += 1;
+        let after_colon = &json[pos..];
+        pos += after_colon.len() - after_colon.trim_start().len();
+        if key == name {
+            return Some(&json[pos..]);
+        }
+        let val_len = skip_json_value(&json[pos..])?;
+        pos += val_len;
+        let after_val = &json[pos..];
+        pos += after_val.len() - after_val.trim_start().len();
+        if json[pos..].starts_with(',') {
+            pos += 1;
+        } else {
+            return None;
         }
     }
 }
 
-fn kill_pid(pid: u32) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let status = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
-        .status();
-    #[cfg(not(target_os = "windows"))]
-    let status = std::process::Command::new("kill")
-        .arg(pid.to_string())
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("kill exited with {}", s)),
-        Err(e) => Err(format!("kill: {}", e)),
+/// Extract a top-level scalar field from a flat JSON object (`"string"`,
+/// unquoted `true`/`false`, or unquoted integer/float number) as an unescaped
+/// `String`. JSON `null`, objects, and arrays return `None`.
+pub fn field(json: &str, name: &str) -> Option<String> {
+    let val = raw_field_slice(json, name)?;
+    if val.starts_with('"') {
+        return parse_json_str(val).map(|(s, _)| s);
     }
-}
-
-/// Spawn `agent start` detached from this process so it outlives the CLI /
-/// panel that launched it. On Windows the child gets no console (a panel
-/// launch must not flash a terminal); on Unix the child is orphaned on
-/// purpose — the parent exits and init reaps it.
-fn spawn_agent_detached() -> Result<u32, String> {
-    // NOT current_exe(): inside spid3r-control.exe that is the panel itself,
-    // and `agent start` would open a second panel instead of an agent.
-    let exe = super::lang::toolchain_exe();
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["agent", "start"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
+    let token_end = val
+        .find([',', '}', ']', ' ', '\t', '\r', '\n'])
+        .unwrap_or(val.len());
+    let token = &val[..token_end];
+    if token == "true" || token == "false" {
+        return Some(token.to_string());
     }
-    let child = cmd.spawn().map_err(|e| format!("spawn agent: {}", e))?;
-    Ok(child.id())
+    if token == "null" || token.is_empty() || token.starts_with('{') || token.starts_with('[') {
+        return None;
+    }
+    if token.parse::<i64>().is_ok() || token.parse::<f64>().is_ok() {
+        return Some(token.to_string());
+    }
+    None
 }
 
 // -------------------------------------------------------------------- ops --
@@ -392,24 +325,11 @@ fn op_status(_params: &str) -> Result<String, String> {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let ini_exists = ini_active.as_ref().is_some_and(|p| p.is_file());
-    let addr = agent_addr();
-    let listening = probe(&addr);
-    let pid_info = read_pid_file();
-    let (devices, pairings) = {
-        let st = Store::open();
-        (st.devices.len(), st.pairings.len())
-    };
-    let audit_path = config::state_dir().join("audit.log");
-    let audit_lines = std::fs::read_to_string(&audit_path)
-        .map(|t| t.lines().count())
-        .unwrap_or(0);
     Ok(format!(
         "{{\"version\":{},\"language\":{},\
          \"env\":{},\
          \"ini_path\":{},\"ini_exists\":{},\"ini_valid\":{},\"ini_errors\":{},\
-         \"agent_addr\":{},\"agent_enabled\":{},\"agent_listening\":{},\"agent_pid\":{},\
-         \"devices\":\"{}\",\"pairings\":\"{}\",\
-         \"audit_path\":{},\"audit_lines\":\"{}\",\"state_dir\":{}}}",
+         \"state_dir\":{}}}",
         jstr(crate::VERSION),
         jstr(crate::LANGUAGE_VERSION),
         jstr(&config::get("spid3r.env").unwrap_or_else(|| "default".into())),
@@ -417,14 +337,6 @@ fn op_status(_params: &str) -> Result<String, String> {
         jstr(if ini_exists { "true" } else { "false" }),
         jstr(if errors.is_empty() { "true" } else { "false" }),
         jstr(&errors.join("\n")),
-        jstr(&addr),
-        jstr(&config::get("agent.enabled").unwrap_or_default()),
-        jstr(if listening { "true" } else { "false" }),
-        jstr(&pid_info.map(|(p, _)| p.to_string()).unwrap_or_default()),
-        devices,
-        pairings,
-        jstr(&audit_path.display().to_string()),
-        audit_lines,
         jstr(&config::state_dir().display().to_string()),
     ))
 }
@@ -470,19 +382,22 @@ fn op_ini_init(params: &str) -> Result<String, String> {
         }
     }
     let path = config::write_default_ini(target.as_deref())?;
-    store::audit(
-        "control",
-        "admin",
-        "ini.init",
-        true,
-        "local",
-        &path.display().to_string(),
-    );
+    config::reload();
     Ok(format!(
         "{{\"written\":\"true\",\"path\":{},\"message\":{}}}",
         jstr(&path.display().to_string()),
         jstr(&format!("default ini written: {}", path.display())),
     ))
+}
+
+fn canonical_kind_name(kind: crate::config::schema::ConfigValue) -> &'static str {
+    match kind {
+        crate::config::schema::ConfigValue::Bool => "Bool",
+        crate::config::schema::ConfigValue::Int => "Int",
+        crate::config::schema::ConfigValue::Str => "Str",
+        crate::config::schema::ConfigValue::List => "List",
+        crate::config::schema::ConfigValue::Enum(_) => "Enum",
+    }
 }
 
 fn op_config_list() -> Result<String, String> {
@@ -506,9 +421,9 @@ fn op_config_list() -> Result<String, String> {
             crate::config::schema::ReloadSafety::StartupOnly => "startup",
         };
         rows.push(format!(
-            "{}|{:?}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             dotted,
-            k.kind,
+            canonical_kind_name(k.kind),
             redacted.replace('|', "/").replace('\n', " "),
             k.default.replace('|', "/").replace('\n', " "),
             k.description.replace('|', "/").replace('\n', " "),
@@ -583,9 +498,11 @@ fn op_config_set(params: &str) -> Result<String, String> {
     };
     let spec = crate::config::schema::known_key(&key)
         .ok_or_else(|| format!("unknown config key '{}'", key))?;
-    // Coerce against the schema BEFORE touching the live snapshot, so the
-    // error names the key's own rules instead of a generic validate failure.
+    // Coerce and validate extra rules against the schema BEFORE touching disk
+    // or bootstrapping spid3r.ini, so rejected writes never leave a fresh INI
+    // behind and always name the key's exact rule.
     spec.coerce(&value)?;
+    crate::config::schema::validate_extra(&key, &value)?;
     // Normalize the stored value so the panel's `=== "true"` checks and the
     // INI stay canonical: "on"/"yes" become "true", "007" becomes "7".
     let value = match spec.kind {
@@ -616,18 +533,6 @@ fn op_config_set(params: &str) -> Result<String, String> {
             .join("; "));
     }
     let path = config::save(&config::snapshot())?;
-    store::audit(
-        "control",
-        "admin",
-        "config.set",
-        true,
-        "local",
-        &format!(
-            "{}={}",
-            key,
-            crate::runtime_info::redact_value(&key, &value)
-        ),
-    );
     Ok(format!(
         "{{\"message\":{},\"path\":{},\"bootstrapped\":{}}}",
         jstr(&format!("{} set; saved to {}", key, path.display())),
@@ -655,14 +560,6 @@ fn op_config_reset(params: &str) -> Result<String, String> {
             .join("; "));
     }
     let path = config::save(&config::snapshot())?;
-    store::audit(
-        "control",
-        "admin",
-        "config.reset",
-        true,
-        "local",
-        &format!("{}=<default>", key),
-    );
     Ok(format!(
         "{{\"message\":{}}}",
         jstr(&format!(
@@ -689,166 +586,6 @@ fn op_config_validate() -> Result<String, String> {
     ))
 }
 
-fn op_agent_status() -> Result<String, String> {
-    let addr = agent_addr();
-    let listening = probe(&addr);
-    let pid = read_pid_file()
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_default();
-    let msg = if listening {
-        format!(
-            "agent listening on {}{}",
-            addr,
-            if pid.is_empty() {
-                String::new()
-            } else {
-                format!(" (pid {})", pid)
-            }
-        )
-    } else {
-        format!("agent not listening on {}", addr)
-    };
-    Ok(format!(
-        "{{\"message\":{},\"listening\":\"{}\",\"pid\":{},\"addr\":{}}}",
-        jstr(&msg),
-        if listening { "true" } else { "false" },
-        jstr(&pid),
-        jstr(&addr),
-    ))
-}
-
-fn op_agent_start() -> Result<String, String> {
-    let addr = agent_addr();
-    if probe(&addr) {
-        return Ok(format!(
-            "{{\"message\":{},\"listening\":\"true\",\"pid\":\"\"}}",
-            jstr(&format!("agent already listening on {}", addr)),
-        ));
-    }
-    let pid = spawn_agent_detached()?;
-    write_pid_file(pid)?;
-    // Give the listener a moment to bind, then verify — a spawn that died
-    // instantly must not be reported as success.
-    std::thread::sleep(Duration::from_millis(600));
-    let listening = probe(&addr);
-    store::audit(
-        "control",
-        "admin",
-        "agent.start",
-        listening,
-        "local",
-        &format!("pid={} addr={}", pid, addr),
-    );
-    if listening {
-        Ok(format!(
-            "{{\"message\":{},\"listening\":\"true\",\"pid\":\"{}\"}}",
-            jstr(&format!("agent started (pid {}) on {}", pid, addr)),
-            pid,
-        ))
-    } else {
-        Err(format!(
-            "agent process {} did not bind {} within 600 ms — check `spid3r control agent status` \
-             and [agent] in spid3r.ini (agent.enabled must be true)",
-            pid, addr
-        ))
-    }
-}
-
-fn op_agent_stop() -> Result<String, String> {
-    let Some((pid, _port)) = read_pid_file() else {
-        return Err(
-            "no agent.pid — this tool can only stop an agent it started \
-             (a foreground `spid3r agent start` is stopped with Ctrl+C)"
-                .into(),
-        );
-    };
-    if !pid_is_spid3r(pid) {
-        let _ = std::fs::remove_file(pid_file());
-        return Err(format!(
-            "pid {} is not a spid3r process (stale agent.pid removed; refusing to signal it)",
-            pid
-        ));
-    }
-    kill_pid(pid)?;
-    let addr = agent_addr();
-    std::thread::sleep(Duration::from_millis(400));
-    let listening = probe(&addr);
-    let _ = std::fs::remove_file(pid_file());
-    store::audit(
-        "control",
-        "admin",
-        "agent.stop",
-        !listening,
-        "local",
-        &format!("pid={}", pid),
-    );
-    if listening {
-        Err(format!("signalled pid {} but {} still answers", pid, addr))
-    } else {
-        Ok(format!(
-            "{{\"message\":{},\"listening\":\"false\",\"pid\":\"\"}}",
-            jstr(&format!("agent stopped (pid {})", pid)),
-        ))
-    }
-}
-
-fn op_devices_list() -> Result<String, String> {
-    let mut st = Store::open();
-    st.sweep();
-    let mut rows = Vec::new();
-    for d in &st.devices {
-        rows.push(format!(
-            "{}|{}|{}|{}",
-            d.id,
-            d.name.replace('|', "/"),
-            d.role,
-            d.last_seen,
-        ));
-    }
-    let pairings = st.pairings.iter().filter(|p| !p.used).count();
-    Ok(format!(
-        "{{\"count\":\"{}\",\"pending_pairings\":\"{}\",\"devices\":{}}}",
-        rows.len(),
-        pairings,
-        jstr(&rows.join("\n")),
-    ))
-}
-
-fn op_devices_revoke(params: &str) -> Result<String, String> {
-    let Some(id) = field(params, "id") else {
-        return Err("devices_revoke needs \"id\"".into());
-    };
-    let mut st = Store::open();
-    if st.revoke(&id) {
-        st.save()?;
-        store::audit("control", "admin", "devices.revoke", true, "local", &id);
-        Ok(format!(
-            "{{\"message\":{}}}",
-            jstr(&format!("device {} revoked", id)),
-        ))
-    } else {
-        Err(format!("no such device '{}'", id))
-    }
-}
-
-fn op_audit_tail(params: &str) -> Result<String, String> {
-    let n: usize = field(params, "n")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
-    let path = config::state_dir().join("audit.log");
-    let mut text = String::new();
-    if let Ok(mut f) = std::fs::File::open(&path) {
-        let _ = f.read_to_string(&mut text);
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    Ok(format!(
-        "{{\"path\":{},\"text\":{}}}",
-        jstr(&path.display().to_string()),
-        jstr(&lines[start..].join("\n")),
-    ))
-}
-
 fn op_config_reload() -> Result<String, String> {
     let cfg = config::reload();
     let path = cfg
@@ -856,7 +593,6 @@ fn op_config_reload() -> Result<String, String> {
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "(defaults)".into());
-    store::audit("control", "admin", "config.reload", true, "local", &path);
     Ok(format!(
         "{{\"path\":{},\"notes\":{},\"message\":{}}}",
         jstr(&path),
@@ -886,14 +622,6 @@ fn op_config_reset_all(params: &str) -> Result<String, String> {
     } else {
         format!("[{}]", section)
     };
-    store::audit(
-        "control",
-        "admin",
-        "config.reset_all",
-        true,
-        "local",
-        &scope,
-    );
     Ok(format!(
         "{{\"count\":\"{}\",\"path\":{},\"message\":{}}}",
         count,
@@ -904,70 +632,6 @@ fn op_config_reset_all(params: &str) -> Result<String, String> {
             scope,
             path.display()
         )),
-    ))
-}
-
-fn op_pair_create(params: &str) -> Result<String, String> {
-    let role = field(params, "role").unwrap_or_else(|| "operator".into());
-    let role = if role.trim().is_empty() {
-        "operator".to_string()
-    } else {
-        role.trim().to_string()
-    };
-    let name = field(params, "name").unwrap_or_default();
-    let ttl: i64 = field(params, "ttl")
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or_else(|| {
-            config::get("agent.pairing_ttl_sec")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(300)
-        });
-    let code = {
-        let _guard = store::lock();
-        let mut st = Store::open();
-        let code = st.create_pairing(&role, &name, ttl)?;
-        st.save()?;
-        code
-    };
-    store::audit(
-        "control",
-        "admin",
-        "pair.create",
-        true,
-        "local",
-        &format!("role={} name={} ttl={}", role, name, ttl),
-    );
-    Ok(format!(
-        "{{\"code\":{},\"role\":{},\"name\":{},\"ttl\":\"{}\",\"addr\":{},\"message\":{}}}",
-        jstr(&code),
-        jstr(&role),
-        jstr(&name),
-        ttl,
-        jstr(&agent_addr()),
-        jstr(&format!(
-            "pairing code created for role '{}' (valid {}s)",
-            role, ttl
-        )),
-    ))
-}
-
-fn op_ops_run(params: &str) -> Result<String, String> {
-    let Some(name) = field(params, "name") else {
-        return Err("ops_run needs \"name\"".into());
-    };
-    if name == "restart_runtime" {
-        // From the local panel/CLI, restart the detached agent instead of
-        // terminating the panel process itself.
-        let _ = op_agent_stop();
-        return op_agent_start();
-    }
-    let result_json = crate::agent::run_local_op(&name)?;
-    store::audit("control", "admin", "ops.run", true, "local", &name);
-    Ok(format!(
-        "{{\"name\":{},\"result\":{},\"message\":{}}}",
-        jstr(&name),
-        jstr(&result_json),
-        jstr(&format!("op '{}' completed", name)),
     ))
 }
 
@@ -993,114 +657,6 @@ fn op_logs_tail(params: &str) -> Result<String, String> {
     ))
 }
 
-fn op_remote_list() -> Result<String, String> {
-    let book = store::ClientBook::open();
-    let mut rows = Vec::new();
-    for h in book.hosts.values() {
-        rows.push(format!(
-            "{}|{}|{}",
-            h.name.replace('|', "/"),
-            h.addr.replace('|', "/"),
-            h.device_id.replace('|', "/"),
-        ));
-    }
-    Ok(format!(
-        "{{\"count\":\"{}\",\"hosts\":{}}}",
-        rows.len(),
-        jstr(&rows.join("\n")),
-    ))
-}
-
-fn op_remote_pair(params: &str) -> Result<String, String> {
-    let Some(addr) = field(params, "addr").filter(|s| !s.trim().is_empty()) else {
-        return Err("remote_pair needs \"addr\"".into());
-    };
-    let Some(code) = field(params, "code").filter(|s| !s.trim().is_empty()) else {
-        return Err("remote_pair needs \"code\"".into());
-    };
-    let name = field(params, "name").unwrap_or_default();
-    let host = crate::agent::pair(addr.trim(), code.trim(), name.trim(), "")?;
-    store::audit(
-        "control",
-        "admin",
-        "remote.pair",
-        true,
-        "local",
-        &format!("{} ({})", host.name, host.addr),
-    );
-    Ok(format!(
-        "{{\"name\":{},\"addr\":{},\"device_id\":{},\"message\":{}}}",
-        jstr(&host.name),
-        jstr(&host.addr),
-        jstr(&host.device_id),
-        jstr(&format!("paired host '{}' at {}", host.name, host.addr)),
-    ))
-}
-
-fn op_remote_remove(params: &str) -> Result<String, String> {
-    let Some(name) = field(params, "name").filter(|s| !s.trim().is_empty()) else {
-        return Err("remote_remove needs \"name\"".into());
-    };
-    let mut book = store::ClientBook::open();
-    if book.hosts.remove(name.trim()).is_some() {
-        book.save()?;
-        store::audit(
-            "control",
-            "admin",
-            "remote.remove",
-            true,
-            "local",
-            name.trim(),
-        );
-        Ok(format!(
-            "{{\"message\":{}}}",
-            jstr(&format!("removed remote host '{}'", name.trim())),
-        ))
-    } else {
-        Err(format!("no paired host named '{}'", name.trim()))
-    }
-}
-
-fn op_remote_call(params: &str) -> Result<String, String> {
-    use crate::value::{MapKey, Value};
-    let Some(host_spec) = field(params, "host").filter(|s| !s.trim().is_empty()) else {
-        return Err("remote_call needs \"host\"".into());
-    };
-    let Some(op) = field(params, "op").filter(|s| !s.trim().is_empty()) else {
-        return Err("remote_call needs \"op\"".into());
-    };
-    let host = crate::agent::resolve_host(host_spec.trim())?;
-    let mut extra: Vec<(MapKey, Value)> = Vec::new();
-    for k in ["key", "value", "device_id", "role", "name"] {
-        if let Some(v) = field(params, k) {
-            if !v.is_empty() || k == "value" {
-                extra.push((MapKey::Str(k.into()), Value::Str(v.into())));
-            }
-        }
-    }
-    for k in ["lines", "ttl"] {
-        if let Some(v) = field(params, k).and_then(|s| s.trim().parse::<i64>().ok()) {
-            extra.push((MapKey::Str(k.into()), Value::Int(v)));
-        }
-    }
-    let resp = crate::agent::call(&host, op.trim(), extra)?;
-    let text = crate::stdlib::json_write_text(&resp)?;
-    store::audit(
-        "control",
-        "admin",
-        "remote.call",
-        true,
-        &host.name,
-        op.trim(),
-    );
-    Ok(format!(
-        "{{\"host\":{},\"op\":{},\"response\":{}}}",
-        jstr(&host.name),
-        jstr(op.trim()),
-        jstr(&text),
-    ))
-}
-
 // --------------------------------------------------------------- renderers --
 
 /// Human-readable dashboard for the CLI (the panel renders the same JSON).
@@ -1109,9 +665,6 @@ pub fn render_status_text(json: &str) -> String {
     format!(
         "spid3r {} (language {})\n\
          config : {}{}\n\
-         agent  : {} — {}{}\n\
-         devices: {} paired, {} pending pairing code(s)\n\
-         audit  : {} ({} line(s))\n\
          state  : {}",
         get("version"),
         get("language"),
@@ -1132,24 +685,6 @@ pub fn render_status_text(json: &str) -> String {
                 }
             )
         },
-        get("agent_addr"),
-        if get("agent_listening") == "true" {
-            "listening".to_string()
-        } else {
-            "not listening".to_string()
-        },
-        {
-            let pid = get("agent_pid");
-            if pid.is_empty() {
-                String::new()
-            } else {
-                format!(", pid {}", pid)
-            }
-        },
-        get("devices"),
-        get("pairings"),
-        get("audit_path"),
-        get("audit_lines"),
         get("state_dir"),
     )
 }
@@ -1169,30 +704,6 @@ pub fn render_ini_info_text(json: &str) -> String {
     } else {
         out.push_str(&format!("active: {}\n", active));
     }
-    out
-}
-
-pub fn render_devices_text(json: &str) -> String {
-    let count = field(json, "count").unwrap_or_default();
-    let mut out = format!("devices: {}\n", count);
-    if let Some(devices) = field(json, "devices") {
-        for row in devices.lines() {
-            if row.is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = row.splitn(4, '|').collect();
-            if parts.len() == 4 {
-                out.push_str(&format!(
-                    "  {:<20}  {:<16}  {:<8}  last_seen={}\n",
-                    parts[0], parts[1], parts[2], parts[3]
-                ));
-            } else {
-                out.push_str(&format!("  {}\n", row));
-            }
-        }
-    }
-    let pending = field(json, "pending_pairings").unwrap_or_default();
-    out.push_str(&format!("pending pairings: {}\n", pending));
     out
 }
 
@@ -1218,9 +729,32 @@ mod tests {
     #[test]
     fn field_ignores_matching_text_inside_values() {
         // The key name appears inside the first value; the scanner must skip
-        // it because it is not preceded by '{' or ','.
+        // it because it is inside a string literal.
         let json = "{\"a\":\"has \\\"a\\\" inside\",\"b\":\"v\"}";
         assert_eq!(field(json, "a").unwrap(), "has \"a\" inside");
         assert_eq!(field(json, "b").unwrap(), "v");
+    }
+
+    #[test]
+    fn field_reads_unquoted_booleans_and_numbers_and_ignores_nested() {
+        let json = r#"{"force":true,"n":100,"nested":{"n":999,"flag":false},"flag":false}"#;
+        assert_eq!(field(json, "force").as_deref(), Some("true"));
+        assert_eq!(field(json, "n").as_deref(), Some("100"));
+        assert_eq!(field(json, "flag").as_deref(), Some("false"));
+        assert!(field(json, "nested").is_none());
+    }
+
+    #[test]
+    fn config_list_emits_canonical_enum_kind() {
+        let json = dispatch("config_list", "{}").unwrap();
+        let keys = field(&json, "keys").unwrap();
+        let row = keys
+            .lines()
+            .find(|l| l.starts_with("spid3r.engine|"))
+            .expect("spid3r.engine row present");
+        let cols: Vec<&str> = row.split('|').collect();
+        assert_eq!(cols.len(), 8);
+        assert_eq!(cols[1], "Enum");
+        assert_eq!(cols[5], "tree,vm");
     }
 }

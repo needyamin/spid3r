@@ -131,11 +131,7 @@ fn split_path(path) {
     return out;
 }
 
-/// Match a route pattern against a path. Returns some(params) or none.
-/// `:name` captures one segment; a trailing `*` captures the rest as
-/// params["*"].
-fn match_path(pattern_parts, path) {
-    let parts = split_path(path);
+fn match_parts(pattern_parts, parts) {
     let params = map();
     let n = len(pattern_parts);
     let i = 0;
@@ -167,20 +163,33 @@ fn match_path(pattern_parts, path) {
     return some(params);
 }
 
+/// Match a route pattern against a path. Returns some(params) or none.
+/// `:name` captures one segment; a trailing `*` captures the rest as
+/// params["*"].
+fn match_path(pattern_parts, path) {
+    return match_parts(pattern_parts, split_path(path));
+}
+
 // ------------------------------------------------------------ server
 
 public class HttpServer {
     private let routes;
+    private let static_routes;
+    private let static_paths;
+    private let has_dynamic;
     private let middleware;
     private let listener;
     public let logging;
     /// Serve tuning: keep_alive, idle_timeout_ms, timeout_ms,
     /// max_requests_per_conn, max_body_bytes, max_headers, drain_ms,
-    /// access_log, on_error.
+    /// access_log, on_error, workers.
     public let opts;
 
     fn new () {
         self.routes = list();
+        self.static_routes = map();
+        self.static_paths = map();
+        self.has_dynamic = false;
         self.middleware = list();
         self.listener = -1;
         self.logging = true;
@@ -189,10 +198,11 @@ public class HttpServer {
 
     /// Register `handler` for `method` ("GET", "POST", ..., or "*" for any).
     public fn route(self, method, pattern, handler) {
+        let up = method.upper();
         self.routes.push(
             map(
                 "method",
-                method.upper(),
+                up,
                 "pattern",
                 pattern,
                 "parts",
@@ -201,6 +211,15 @@ public class HttpServer {
                 handler
             )
         );
+        if up == "*" or pattern.contains(":") or pattern.contains("*") {
+            self.has_dynamic = true;
+        } else {
+            let key = up + " " + pattern;
+            if not self.static_routes.has(key) {
+                self.static_routes[key] = handler;
+            }
+            self.static_paths[pattern] = true;
+        }
         return self;
     }
 
@@ -237,16 +256,38 @@ public class HttpServer {
         if not req.has("params") {
             req["params"] = map();
         }
-        for mw in self.middleware {
-            let early = mw(req);
-            if early != null {
-                return to_response(early);
+        if len(self.middleware) > 0 {
+            for mw in self.middleware {
+                let early = mw(req);
+                if early != null {
+                    return to_response(early);
+                }
             }
         }
         let method = req["method"];
+        let path = req["path"];
+        if not self.has_dynamic {
+            let key = method + " " + path;
+            if self.static_routes.has(key) {
+                let h = self.static_routes[key];
+                return to_response(h(req));
+            }
+            if method == "HEAD" {
+                let gkey = "GET " + path;
+                if self.static_routes.has(gkey) {
+                    let h = self.static_routes[gkey];
+                    return to_response(h(req));
+                }
+            }
+            if self.static_paths.has(path) {
+                return http_text(405, "405 Method Not Allowed");
+            }
+            return http_text(404, "404 Not Found: " + path);
+        }
         let path_matched = false;
+        let parts = split_path(path);
         for r in self.routes {
-            let m = match_path(r["parts"], req["path"]);
+            let m = match_parts(r["parts"], parts);
             if m.is_some() {
                 path_matched = true;
                 let rm = r["method"];
@@ -260,7 +301,7 @@ public class HttpServer {
         if path_matched {
             return http_text(405, "405 Method Not Allowed");
         }
-        return http_text(404, "404 Not Found: " + req["path"]);
+        return http_text(404, "404 Not Found: " + path);
     }
 
     /// Bind without serving yet. Returns the real address, which matters
@@ -414,16 +455,7 @@ fn inflight_count(counter) {
 /// `spid3r.ini` [net] keys, so they are re-read for every accepted connection.
 ///
 /// Returns the number of accepted connections.
-public fn serve_listener(listener, dispatch, opts, max_connections) {
-    let drain_ms = int(opt(opts, "drain_ms", 5000));
-    // A process-global signal flag stops *every* server in the process, which
-    // is right for a standalone app and wrong for an embedded one (or a test
-    // suite running several servers). opt out with watch_signals: false.
-    let watch_signals = opt(opts, "watch_signals", true);
-    let is_tls = opt(opts, "tls", false);
-
-    let counter = mutex(map("n", 0));
-
+fn serve_worker_loop(listener, dispatch, opts, counter, watch_signals, is_tls, max_connections) {
     let accepted = 0;
     while max_connections < 0 or accepted < max_connections {
         if watch_signals and shutdown_requested() {
@@ -473,6 +505,40 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
             bump(counter, -1);
             return 0;
         };
+    }
+    return accepted;
+}
+
+public fn serve_listener(listener, dispatch, opts, max_connections) {
+    let drain_ms = int(opt(opts, "drain_ms", 5000));
+    // A process-global signal flag stops *every* server in the process, which
+    // is right for a standalone app and wrong for an embedded one (or a test
+    // suite running several servers). opt out with watch_signals: false.
+    let watch_signals = opt(opts, "watch_signals", true);
+    let is_tls = opt(opts, "tls", false);
+    let workers = 1;
+    if max_connections < 0 and not is_tls {
+        workers = int(opt(opts, "workers", 4));
+        if workers < 1 {
+            workers = 1;
+        }
+        if workers > 16 {
+            workers = 16;
+        }
+    }
+
+    let counter = mutex(map("n", 0));
+    let wtasks = list();
+    let wi = 1;
+    while wi < workers {
+        wtasks.push(spawn fn() {
+            return serve_worker_loop(listener, dispatch, opts, counter, watch_signals, is_tls, max_connections);
+        });
+        wi += 1;
+    }
+    let accepted = serve_worker_loop(listener, dispatch, opts, counter, watch_signals, is_tls, max_connections);
+    for wt in wtasks {
+        accepted += wt.join();
     }
     if watch_signals and shutdown_requested() {
         tcp_close(listener);
@@ -533,6 +599,16 @@ fn cfg_int(key, dflt) {
         return dflt;
     }
     return n;
+}
+
+fn opt_cfg_int(m, key, cfg_key, dflt) {
+    if m != null and type_of(m) == "map" and m.has(key) {
+        let v = int(m[key]);
+        if v != null {
+            return v;
+        }
+    }
+    return cfg_int(cfg_key, dflt);
 }
 
 fn write_stream_body(conn, source) {
@@ -617,35 +693,23 @@ fn with_chunked_header(headers) {
 ///   max_headers          <- net.max_headers  (431 above it)
 fn handle_connection(conn, dispatch, opts) {
     let keep_alive = opt(opts, "keep_alive", true);
-    let idle = int(opt(opts, "idle_timeout_ms", cfg_int("net.keepalive_ms", 5000)));
-    let io_timeout = int(opt(opts, "timeout_ms", cfg_int("net.timeout_ms", 30000)));
+    let idle = opt_cfg_int(opts, "idle_timeout_ms", "net.keepalive_ms", 5000);
+    let io_timeout = opt_cfg_int(opts, "timeout_ms", "net.timeout_ms", 30000);
     let max_reqs = int(opt(opts, "max_requests_per_conn", 100));
-    let max_body = int(
-        opt(opts, "max_body_bytes", cfg_int("net.max_body", 8 * 1024 * 1024))
-    );
-    let max_headers = int(opt(opts, "max_headers", cfg_int("net.max_headers", 64)));
+    let max_body = opt_cfg_int(opts, "max_body_bytes", "net.max_body", 8 * 1024 * 1024);
+    let max_headers = opt_cfg_int(opts, "max_headers", "net.max_headers", 64);
     let access_log = opt(opts, "access_log", true);
     let on_error = opt(opts, "on_error", null);
     let watch_signals = opt(opts, "watch_signals", true);
     tcp_set_timeout(conn, io_timeout);
+    let cur_timeout = io_timeout;
     let served = 0;
     while served < max_reqs {
-        let start = now_ms();
-        let idle_tid = -1;
-        if served > 0 and idle > 0 {
-            idle_tid = after_ms(idle);
+        let start = 0;
+        if access_log {
+            start = now_ms();
         }
         let read = http_read_request(conn);
-        if idle_tid >= 0 {
-            let expired = timer_check();
-            timer_cancel(idle_tid);
-            if read.is_err() and expired.contains(idle_tid) {
-                break;
-            }
-        }
-        // Reset socket deadline from keep-alive idle_timeout_ms back to
-        // io_timeout for active request dispatch and response writing.
-        tcp_set_timeout(conn, io_timeout);
         if read.is_err() {
             let emsg = string(read.unwrap_err());
             if emsg.contains("body exceeds") {
@@ -665,9 +729,14 @@ fn handle_connection(conn, dispatch, opts) {
             }
             break;
         }
+        // Restore io_timeout after keep-alive idle wait only when they differ.
+        if cur_timeout != io_timeout {
+            tcp_set_timeout(conn, io_timeout);
+            cur_timeout = io_timeout;
+        }
         let req = read.unwrap();
-        let nheaders = len(req["headers"].keys());
-        if nheaders > max_headers {
+        let req_headers = req["headers"];
+        if len(req_headers) > max_headers {
             http_write_response(
                 conn,
                 431,
@@ -679,9 +748,8 @@ fn handle_connection(conn, dispatch, opts) {
             );
             break;
         }
-        let declared = header_of(req, "content-length");
-        let actual_len = len(opt(req, "body_bytes", ""));
-        if (declared != null and int(declared) != null and int(declared) > max_body) or actual_len > max_body {
+        let actual_len = len(req["body_bytes"]);
+        if actual_len > max_body {
             http_write_response(
                 conn,
                 413,
@@ -690,6 +758,19 @@ fn handle_connection(conn, dispatch, opts) {
                 false
             );
             break;
+        }
+        if req_headers.has("content-length") {
+            let cl = int(req_headers["content-length"]);
+            if cl != null and cl > max_body {
+                http_write_response(
+                    conn,
+                    413,
+                    map("content-type", "application/json; charset=utf-8"),
+                    json_write(map("error", "payload too large", "limit", max_body)),
+                    false
+                );
+                break;
+            }
         }
         let res = null;
         try {
@@ -732,7 +813,9 @@ fn handle_connection(conn, dispatch, opts) {
             status = res["status"];
             headers = res["headers"];
             body = res["body"];
-            stream_src = opt(res, "stream", null);
+            if res.has("stream") {
+                stream_src = res["stream"];
+            }
         } else {
             // A dispatcher that returned a bare value: answer as text.
             status = 200;
@@ -740,13 +823,26 @@ fn handle_connection(conn, dispatch, opts) {
         }
         // keep_alive / idle = 0, pipelining detected, or graceful shutdown
         // requested: close after this response (Connection: close).
+        let req_ka = true;
+        if req_headers.has("connection") {
+            let cv = string(req_headers["connection"]).lower();
+            if cv.contains("close") {
+                req_ka = false;
+            } elif cv.contains("keep-alive") {
+                req_ka = true;
+            } elif req.has("version") and string(req["version"]) == "HTTP/1.0" {
+                req_ka = false;
+            }
+        } elif req.has("version") and string(req["version"]) == "HTTP/1.0" {
+            req_ka = false;
+        }
         let more = keep_alive
         and idle > 0
-        and wants_keep_alive(req)
-        and not opt(req, "pipelined", false)
+        and req_ka
+        and not (req.has("pipelined") and req["pipelined"])
         and not (watch_signals and shutdown_requested())
         and served + 1 < max_reqs;
-        let head = string(opt(req, "method", "GET")) == "HEAD";
+        let head = req.has("method") and req["method"] == "HEAD";
         if stream_src != null {
             let sh = with_chunked_header(headers);
             let hw = http_write_response(conn, status, sh, null, more);
@@ -787,7 +883,10 @@ fn handle_connection(conn, dispatch, opts) {
         }
         // Idle timeout between requests: a keep-alive connection that goes
         // quiet is closed instead of holding a worker forever.
-        tcp_set_timeout(conn, idle);
+        if cur_timeout != idle {
+            tcp_set_timeout(conn, idle);
+            cur_timeout = idle;
+        }
     }
     tcp_close(conn);
     return true;

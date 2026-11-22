@@ -1,9 +1,5 @@
-//! End-to-end tests for spid3r.ini, spid3rinfo(), and the management agent.
-//!
-//! The agent tests bind 127.0.0.1 on an ephemeral port, pair a client, and
-//! exercise the predefined operations. No unrestricted shell is ever granted.
+//! End-to-end tests for spid3r.ini and spid3rinfo().
 
-use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 fn bin() -> std::path::PathBuf {
@@ -60,20 +56,36 @@ fn info_html_and_text() {
 
 #[test]
 fn config_list_and_validate() {
-    let (code, stdout, _) = run_cli(&["config", "list"]);
-    assert_eq!(code, 0);
+    let dir = std::env::temp_dir().join(format!("spid3r_cfg_list_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ini = dir.join("spid3r.ini");
+    std::fs::write(&ini, "").unwrap();
+    let out = Command::new(bin())
+        .args(["config", "list"])
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
     // Grouped layout: one [section] header per dotted prefix.
     assert!(
-        stdout.contains("[agent]"),
-        "missing [agent] group in {}",
+        stdout.contains("[net]"),
+        "missing [net] group in {}",
         stdout
     );
-    assert!(stdout.contains("port") && stdout.contains("9527"));
+    assert!(stdout.contains("timeout_ms") && stdout.contains("30000"));
     assert!(stdout.contains("[spid3r]"), "missing [spid3r] group");
     assert!(stdout.contains("engine") && stdout.contains("vm"));
-    let (code, stdout, _) = run_cli(&["config", "validate"]);
-    assert_eq!(code, 0, "{}", stdout);
+    let out = Command::new(bin())
+        .args(["config", "validate"])
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}", stdout);
     assert!(stdout.contains("ok"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -81,9 +93,9 @@ fn config_get_roundtrip() {
     let dir = std::env::temp_dir().join(format!("spid3r_cfg_test_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let ini = dir.join("spid3r.ini");
-    std::fs::write(&ini, "[agent]\nport = 9527\n").unwrap();
+    std::fs::write(&ini, "[net]\ntimeout_ms = 9527\n").unwrap();
     let out = Command::new(bin())
-        .args(["config", "get", "agent.port"])
+        .args(["config", "get", "net.timeout_ms"])
         .env("SPID3R_INI", &ini)
         .output()
         .unwrap();
@@ -103,10 +115,10 @@ fn spid3rinfo_and_config_natives() {
     let m = spid3rinfo();
     println(m["Spid3r"]["Spid3r version"]);
     println(type_of(spid3rinfo("json")));
-    let p = config_get("agent.port");
+    let p = config_get("net.timeout_ms");
     println(if p == null { "null" } else { "set" });
-    println(config_set("agent.name", "test"));
-    println(config_get("agent.name"));
+    println(config_set("spid3r.env", "test"));
+    println(config_get("spid3r.env"));
     return 0;
 }
 "#,
@@ -131,138 +143,6 @@ fn spid3rinfo_and_config_natives() {
         assert!(stdout.contains("test"), "{}: {}", engine, stdout);
     }
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Bind an ephemeral port, start the agent on it, pair, and call ping.
-#[test]
-fn agent_pair_and_ping() {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
-    let port = probe.local_addr().unwrap().port();
-    drop(probe);
-
-    let dir = std::env::temp_dir().join(format!("spid3r_agent_{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let ini = dir.join("spid3r.ini");
-    std::fs::write(
-        &ini,
-        format!(
-            "[agent]\nenabled = true\nbind = 127.0.0.1\nport = {}\n[security]\nallow_remote = true\n",
-            port
-        ),
-    )
-    .unwrap();
-    let state = dir.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-
-    let exe = bin();
-    let envs = [
-        ("SPID3R_INI", ini.to_string_lossy().into_owned()),
-        ("SPID3R_STATE_DIR", state.to_string_lossy().into_owned()),
-        ("SPID3R_CONFIG_DIR", dir.to_string_lossy().into_owned()),
-    ];
-    let mut child = Command::new(&exe)
-        .args(["agent", "start"])
-        .envs(envs.iter().map(|(a, b)| (a, b)))
-        .spawn()
-        .expect("start agent");
-
-    // Kill the agent on EVERY exit path: a panic between spawn and the
-    // success-path kill used to leak a running agent into later tests, which
-    // hung a macOS CI run for the whole 30-minute step timeout.
-    struct KillOnDrop<'a>(&'a mut std::process::Child);
-    impl Drop for KillOnDrop<'_> {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let _guard = KillOnDrop(&mut child);
-
-    let mut connected = false;
-    for _ in 0..50 {
-        if TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-            connected = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(connected, "agent did not listen on {}", port);
-
-    let out = Command::new(&exe)
-        .args(["agent", "pair", "--role", "admin", "--name", "tester"])
-        .envs(envs.iter().map(|(a, b)| (a, b)))
-        .output()
-        .expect("pair code");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success(), "pair-code failed: {}", stdout);
-    let code = stdout
-        .lines()
-        .find_map(|l| l.split_whitespace().last().map(String::from))
-        .filter(|s| s.len() >= 16)
-        .unwrap_or_else(|| panic!("no code in {}", stdout));
-
-    let out = Command::new(&exe)
-        .args([
-            "admin",
-            "pair",
-            &format!("127.0.0.1:{}", port),
-            &code,
-            "--name",
-            "ci",
-        ])
-        .envs(envs.iter().map(|(a, b)| (a, b)))
-        .output()
-        .expect("pair");
-    let pstdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let pstderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "pair failed: {} {}", pstdout, pstderr);
-    assert!(
-        pstdout.contains("paired"),
-        "unexpected pair output {}",
-        pstdout
-    );
-
-    let call = |args: &[&str]| -> (bool, String, String) {
-        let out = Command::new(&exe)
-            .args(args)
-            .envs(envs.iter().map(|(a, b)| (a, b)))
-            .output()
-            .expect("admin call");
-        (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    };
-
-    let (ok, stdout, stderr) = call(&["admin", "--host", "ci", "ping"]);
-    assert!(ok, "ping: {} {}", stdout, stderr);
-    assert!(stdout.contains("pong"), "ping body {}", stdout);
-
-    let (ok, stdout, stderr) = call(&["admin", "--host", "ci", "status"]);
-    assert!(ok, "status: {} {}", stdout, stderr);
-    assert!(stdout.contains("version"), "status body {}", stdout);
-
-    let (ok, stdout, stderr) =
-        call(&["admin", "--host", "ci", "ops.run", "--op-name", "self_test"]);
-    assert!(ok, "self_test: {} {}", stdout, stderr);
-    assert!(stdout.contains("passed"), "self_test body {}", stdout);
-
-    let (ok, stdout, stderr) = call(&["admin", "--host", "ci", "info"]);
-    assert!(ok, "info: {} {}", stdout, stderr);
-    assert!(stdout.contains("Spid3r"), "info body {}", stdout);
-
-    // The KillOnDrop guard kills and reaps the agent here (and on any
-    // earlier panic path).
-    drop(_guard);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn admin_unknown_host_fails() {
-    let (code, _, stderr) = run_cli(&["admin", "--host", "no-such-host-xyz", "ping"]);
-    assert_ne!(code, 0);
-    assert!(stderr.contains("unknown host") || stderr.contains("no paired"));
 }
 
 fn run_with_ini(

@@ -456,33 +456,6 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Extra module search directories, semicolon-separated."
     ),
-    key_startup!(
-        "modules",
-        "plugins",
-        ConfigValue::Str,
-        "",
-        None,
-        None,
-        "Plugin search path (defaults to SPID3R_PLUGINS)."
-    ),
-    key_frozen_startup!(
-        "modules",
-        "allow_wasm",
-        ConfigValue::Bool,
-        "true",
-        None,
-        None,
-        "Allow loading sandboxed .wasm plugins."
-    ),
-    key_frozen_startup!(
-        "modules",
-        "allow_host",
-        ConfigValue::Bool,
-        "true",
-        None,
-        None,
-        "Allow host-registered plugins (compiled into the embedding host)."
-    ),
     key_frozen_startup!(
         "modules",
         "disable",
@@ -537,15 +510,6 @@ pub static KEYS: &[KeySpec] = &[
         None,
         None,
         "Deny environment natives to scripts."
-    ),
-    key_frozen_startup!(
-        "security",
-        "allow_remote",
-        ConfigValue::Bool,
-        "false",
-        None,
-        None,
-        "Serve the management agent when true; the agent also serves when [agent] enabled is true (either switch starts it, bound to agent.bind)."
     ),
     key_frozen_startup!(
         "security",
@@ -644,110 +608,9 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Bytecode cache for `spid3r run`: .matrixc containers keyed by the source's SHA-256; empty = disabled."
     ),
-    // [agent]
-    key_frozen_startup!(
-        "agent",
-        "enabled",
-        ConfigValue::Bool,
-        "false",
-        None,
-        None,
-        "Start the management agent when `spid3r agent start` runs."
-    ),
-    key_frozen_startup!(
-        "agent",
-        "bind",
-        ConfigValue::Str,
-        "127.0.0.1",
-        None,
-        None,
-        "Listen address. 127.0.0.1 is local-only; 0.0.0.0 is required for other hosts."
-    ),
-    key_frozen_startup!(
-        "agent",
-        "port",
-        ConfigValue::Int,
-        "9527",
-        Some(1),
-        Some(65535),
-        "TCP port of the encrypted management API."
-    ),
-    key_frozen_startup!(
-        "agent",
-        "max_connections",
-        ConfigValue::Int,
-        "16",
-        Some(1),
-        Some(256),
-        "Concurrent management connections."
-    ),
-    key_frozen_startup!(
-        "agent",
-        "request_timeout_ms",
-        ConfigValue::Int,
-        "10000",
-        Some(1000),
-        Some(300_000),
-        "Per-request deadline."
-    ),
-    key_frozen_startup!(
-        "agent",
-        "max_body",
-        ConfigValue::Int,
-        "262144",
-        Some(1024),
-        Some(8_388_608),
-        "Largest accepted (decrypted) request body, in bytes."
-    ),
-    key!(
-        "agent",
-        "pairing_ttl_sec",
-        ConfigValue::Int,
-        "300",
-        Some(30),
-        Some(3600),
-        "How long a one-time pairing code remains valid."
-    ),
-    key!(
-        "agent",
-        "name",
-        ConfigValue::Str,
-        "",
-        None,
-        None,
-        "Friendly name advertised to administrators (empty = hostname)."
-    ),
-    // Roles are stored as name=ops pairs; the schema keeps the three built-ins.
-    key_frozen!(
-        "agent",
-        "role_viewer",
-        ConfigValue::Str,
-        "status,ping,info,config.get,logs.tail,modules.list,devices.list",
-        None,
-        None,
-        "Operations granted to the viewer role."
-    ),
-    key_frozen!(
-        "agent",
-        "role_operator",
-        ConfigValue::Str,
-        "status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload",
-        None,
-        None,
-        "Operations granted to the operator role."
-    ),
-    key_frozen!(
-        "agent",
-        "role_admin",
-        ConfigValue::Str,
-        "*",
-        None,
-        None,
-        "Operations granted to the admin role (* = all)."
-    ),
 ];
 
-/// Dotted default map (`agent.bind` -> `"127.0.0.1"`).
+/// Dotted default map (`spid3r.engine` -> `"vm"`).
 pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
     // Built from KEYS at compile time is not possible in a const fn over a
     // slice of structs with methods; list the defaults explicitly so the
@@ -778,7 +641,11 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
             "info",
         ),
         ("debug.log_stdout", ConfigValue::Bool, "false"),
-        ("errors.level", ConfigValue::Enum(&["error", "warn", "info"]), "info"),
+        (
+            "errors.level",
+            ConfigValue::Enum(&["error", "warn", "info"]),
+            "info",
+        ),
         ("errors.display", ConfigValue::Bool, "false"),
         ("errors.log_file", ConfigValue::Str, ""),
         ("logging.enabled", ConfigValue::Bool, "true"),
@@ -786,9 +653,6 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("logging.rotate_mb", ConfigValue::Int, "1"),
         ("logging.audit", ConfigValue::Bool, "true"),
         ("modules.path", ConfigValue::Str, ""),
-        ("modules.plugins", ConfigValue::Str, ""),
-        ("modules.allow_wasm", ConfigValue::Bool, "true"),
-        ("modules.allow_host", ConfigValue::Bool, "true"),
         ("modules.disable", ConfigValue::Str, ""),
         ("modules.assert_active", ConfigValue::Bool, "true"),
         ("security.basedir", ConfigValue::Str, ""),
@@ -805,26 +669,6 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("security.deny_process", ConfigValue::Bool, "false"),
         ("security.deny_network", ConfigValue::Bool, "false"),
         ("security.deny_environment", ConfigValue::Bool, "false"),
-        ("security.allow_remote", ConfigValue::Bool, "false"),
-        ("agent.enabled", ConfigValue::Bool, "false"),
-        ("agent.bind", ConfigValue::Str, "127.0.0.1"),
-        ("agent.port", ConfigValue::Int, "9527"),
-        ("agent.max_connections", ConfigValue::Int, "16"),
-        ("agent.request_timeout_ms", ConfigValue::Int, "10000"),
-        ("agent.max_body", ConfigValue::Int, "262144"),
-        ("agent.pairing_ttl_sec", ConfigValue::Int, "300"),
-        ("agent.name", ConfigValue::Str, ""),
-        (
-            "agent.role_viewer",
-            ConfigValue::Str,
-            "status,ping,info,config.get,logs.tail,modules.list,devices.list",
-        ),
-        (
-            "agent.role_operator",
-            ConfigValue::Str,
-            "status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload",
-        ),
-        ("agent.role_admin", ConfigValue::Str, "*"),
     ]
 };
 
@@ -832,6 +676,47 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
 pub fn known_key(dotted: &str) -> Option<&'static KeySpec> {
     let (sec, name) = dotted.split_once('.')?;
     KEYS.iter().find(|k| k.section == sec && k.name == name)
+}
+
+type TzValidatorFn = fn(&str) -> Result<(), String>;
+static TZ_VALIDATOR_HOOK: std::sync::OnceLock<TzValidatorFn> = std::sync::OnceLock::new();
+
+/// Install the full IANA tzdata validator when CLI or `tz` natives are active.
+pub fn install_tz_validator(f: TzValidatorFn) {
+    let _ = TZ_VALIDATOR_HOOK.set(f);
+}
+
+#[cfg(not(test))]
+fn validate_tz_fallback(raw: &str) -> Result<(), String> {
+    let s = raw.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("UTC") || s.eq_ignore_ascii_case("Z") {
+        return Ok(());
+    }
+    if let Some(rest) = s.strip_prefix(['+', '-']) {
+        if let Some((h, m)) = rest.split_once(':') {
+            if h.len() == 2
+                && m.len() == 2
+                && h.bytes().all(|b| b.is_ascii_digit())
+                && m.bytes().all(|b| b.is_ascii_digit())
+            {
+                if let (Ok(hv), Ok(mv)) = (h.parse::<u8>(), m.parse::<u8>()) {
+                    if (hv < 14 && mv <= 59) || (hv == 14 && mv == 0) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    if s.contains('/')
+        && !s.split('/').any(|seg| seg.is_empty())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'-' | b'/'))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "unknown timezone '{raw}' (expected UTC, a fixed offset like +06:00, or an IANA name)"
+    ))
 }
 
 /// Validation beyond the type/range check in [`KeySpec::coerce`], applied by
@@ -843,7 +728,19 @@ pub fn validate_extra(dotted: &str, raw: &str) -> Result<(), String> {
         // call, far from the config line that caused it. Accepts exactly what
         // the tz machinery supports (see `stdlib::tz`): UTC, fixed offsets
         // like `+06:00`, and IANA names from `tz_names()`.
-        "runtime.timezone" => crate::stdlib::tz::check_timezone_setting(raw),
+        "runtime.timezone" => {
+            if let Some(f) = TZ_VALIDATOR_HOOK.get() {
+                return f(raw);
+            }
+            #[cfg(test)]
+            {
+                crate::stdlib::tz::check_timezone_setting(raw)
+            }
+            #[cfg(not(test))]
+            {
+                validate_tz_fallback(raw)
+            }
+        }
         "packages.trust_pk" => {
             let trimmed = raw.trim();
             if trimmed.is_empty()
@@ -878,10 +775,6 @@ pub fn normalize_lists(
         Some(v) if !v.trim().is_empty() => v.clone(),
         _ => return,
     };
-    let known: std::collections::HashSet<&str> = crate::stdlib::builtin_defs()
-        .iter()
-        .map(|(n, _)| *n)
-        .collect();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut kept: Vec<String> = Vec::new();
     for entry in raw.split([',', ';']) {
@@ -889,7 +782,7 @@ pub fn normalize_lists(
         if name.is_empty() || !seen.insert(name.to_string()) {
             continue;
         }
-        if known.contains(name) {
+        if crate::stdlib::is_known_builtin_name(name) {
             kept.push(name.to_string());
         } else {
             notes.push(format!(
@@ -950,9 +843,6 @@ audit = true
 
 [modules]
 path =
-plugins =
-allow_wasm = true
-allow_host = true
 # disable =                  ; module names that fail to import (';' or ',' separated)
 assert_active = true         ; false makes assert()/assert_eq() no-ops returning true
 
@@ -961,7 +851,6 @@ deny_filesystem = false
 deny_process = false
 deny_network = false
 deny_environment = false
-allow_remote = false
 # basedir =                  ; open_basedir analog: scripts may only touch paths
                              ; inside these directories (';' or ',' separated)
 # disable_natives =          ; natives replaced by a catchable
@@ -976,8 +865,7 @@ allow_local_git = false      ; allow bare-path and file:// git dependencies
 [paths]
 # cache_dir =                ; cache home for the extracted bundle runtime
                              ; (alias: SPID3R_CACHE_DIR); empty = platform default
-# state_dir =                ; per-user state home: agent store, audit log, pid
-                             ; file (alias: SPID3R_STATE_DIR); empty = default
+# state_dir =                ; per-user state home (alias: SPID3R_STATE_DIR); empty = default
 # sqlite_path =              ; full path of the SQLite shared library tried first
                              ; (alias: SPID3R_SQLITE_PATH); empty = default search
 
@@ -985,23 +873,8 @@ allow_local_git = false      ; allow bare-path and file:// git dependencies
 # bytecode_dir =             ; bytecode cache for `spid3r run`: .matrixc containers
                              ; keyed by the source's SHA-256; empty = disabled
 
-[agent]
-enabled = false
-bind = 127.0.0.1           ; 0.0.0.0 to accept other hosts
-port = 9527
-max_connections = 16
-request_timeout_ms = 10000
-max_body = 262144
-pairing_ttl_sec = 300
-name =
-role_viewer = status,ping,info,config.get,logs.tail,modules.list,devices.list
-role_operator = status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload
-role_admin = *
-
 # [env.production]
 # max_workers = 128
-# agent.enabled = true
-# agent.bind = 0.0.0.0
 
 # [env.development]
 # debug.enabled = true
@@ -1014,14 +887,14 @@ mod tests {
 
     #[test]
     fn known_keys_resolve() {
-        assert!(known_key("agent.bind").is_some());
-        assert!(known_key("agent.bind").unwrap().section == "agent");
+        assert!(known_key("spid3r.engine").is_some());
+        assert!(known_key("spid3r.engine").unwrap().section == "spid3r");
         assert!(known_key("nope.nope").is_none());
     }
 
     #[test]
     fn coerce_int_range() {
-        let k = known_key("agent.port").unwrap();
+        let k = known_key("spid3r.max_workers").unwrap();
         assert!(k.coerce("80").is_ok());
         assert!(k.coerce("0").is_err());
         assert!(k.coerce("abc").is_err());
@@ -1036,7 +909,7 @@ mod tests {
 
     #[test]
     fn coerce_bool_is_strict() {
-        let k = known_key("agent.enabled").unwrap();
+        let k = known_key("debug.enabled").unwrap();
         for good in ["true", "false", "1", "0", "on", "off", "yes", "no", ""] {
             assert!(k.coerce(good).is_ok(), "{good:?} should coerce");
         }
@@ -1065,8 +938,8 @@ mod tests {
     fn every_schema_default_coerces_and_default_ini_mentions_every_key() {
         assert_eq!(
             KEYS.len(),
-            60,
-            "update the phase-5/R8 schema key baseline deliberately"
+            45,
+            "update the schema key baseline deliberately"
         );
         for key in KEYS {
             let dotted = key.dotted();
@@ -1141,7 +1014,7 @@ mod tests {
             );
         }
         // Any other key has no extra rules.
-        assert!(validate_extra("agent.bind", "whatever").is_ok());
+        assert!(validate_extra("spid3r.env", "whatever").is_ok());
     }
 
     #[test]
@@ -1208,10 +1081,6 @@ mod tests {
             "spid3r.queue_cap",
             "memory.max_steps",
             "memory.max_call_depth",
-            "agent.bind",
-            "agent.port",
-            "agent.enabled",
-            "agent.max_connections",
             "security.basedir",
             "security.disable_natives",
             "modules.disable",
@@ -1277,39 +1146,20 @@ mod tests {
             .collect();
         frozen.sort();
         let mut expected: Vec<&str> = [
-            // Everything the hand-written agent check blocked: all
-            // [security] and [logging] keys, the role lists, and the
-            // agent enable/bind/port/max_connections switches.
             "security.deny_filesystem",
             "security.deny_process",
             "security.deny_network",
             "security.deny_environment",
-            "security.allow_remote",
             "security.basedir",
             "security.disable_natives",
             "logging.enabled",
             "logging.file",
             "logging.rotate_mb",
             "logging.audit",
-            "agent.enabled",
-            "agent.bind",
-            "agent.port",
-            "agent.max_connections",
-            "agent.request_timeout_ms",
-            "agent.max_body",
-            "agent.role_viewer",
-            "agent.role_operator",
-            "agent.role_admin",
-            // New in phase 3.
-            "modules.allow_wasm",
-            "modules.allow_host",
             "modules.disable",
             "packages.allow_insecure_git",
             "packages.allow_local_git",
             "packages.trust_pk",
-            // New in phase 4: the host's write targets and the SQLite
-            // library location. A remote peer that could relocate them
-            // could poison data or plant a library.
             "paths.cache_dir",
             "paths.state_dir",
             "paths.sqlite_path",
@@ -1322,15 +1172,9 @@ mod tests {
             "the frozen set drifted from the pinned list"
         );
 
-        // Deliberately NOT frozen: benign remote management targets.
-        for dotted in [
-            "agent.name",
-            "agent.pairing_ttl_sec",
-            "packages.registry",
-            "modules.assert_active",
-        ] {
+        for dotted in ["packages.registry", "modules.assert_active"] {
             let k = known_key(dotted).unwrap();
-            assert!(!k.frozen, "{} must stay remotely settable", dotted);
+            assert!(!k.frozen, "{} must stay non-frozen", dotted);
         }
     }
 

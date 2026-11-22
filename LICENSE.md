@@ -33,9 +33,9 @@ Copyright (C) 2026 ANSNEW TECH / Md. Yamin Hossain and Spid3r Contributors.
 3. **Optional Build Dependencies:**
    - The core Spid3r toolchain (`--no-default-features`) and WebAssembly runtime
      (`wasm32-unknown-unknown`) have **zero external runtime dependencies**.
-   - Optional Cargo features (`native`, `gui`, `plugins-wasm`, `tls`) depend on
+   - Optional Cargo features (`native`, `gui`, `tls`) depend on
      permissively licensed third-party libraries (LLVM / `inkwell` under
-     Apache-2.0 WITH LLVM-exception; `wry`, `tao`, `wasmi`, and `native-tls`
+     Apache-2.0 WITH LLVM-exception; `wry`, `tao`, and `native-tls`
      under MIT / Apache-2.0), all compatible with GPL-3.0-or-later.
 
 ---

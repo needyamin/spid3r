@@ -553,7 +553,7 @@ pub fn database_method(
             };
             let params: Vec<Value> = match args.get(1) {
                 None => Vec::new(),
-                Some(Value::List(l)) => l.lock().unwrap().items.clone(),
+                Some(Value::List(l)) => l.lock().unwrap().clone_items(),
                 Some(Value::Tuple(t)) => t.lock().unwrap().clone(),
                 Some(other) => {
                     return Err(format!(
@@ -586,7 +586,7 @@ pub fn database_method(
             })?;
             if name == "query" {
                 Ok(Value::List(new_ref(
-                    crate::value::collections::seq::VecData { items: rows },
+                    crate::value::collections::seq::VecData::from_items(rows),
                 )))
             } else {
                 Ok(Value::Map(new_ref(
@@ -626,6 +626,7 @@ pub(crate) fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        crate::value::collections::install_database_method_hook(database_method);
         if args.len() != 1 {
             return Err(format!(
                 "db_open expects 1 argument (path), got {}",
@@ -687,6 +688,7 @@ pub fn database_method(
 
 /// The `db_open` builtin (registered like every other native).
 pub fn native_defs() -> Vec<crate::stdlib::NativeDef> {
+    crate::value::collections::install_database_method_hook(database_method);
     vec![("db_open", n_db_open)]
 }
 

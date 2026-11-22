@@ -79,18 +79,70 @@ impl Hasher for FxHasher {
 pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 pub type FxHashSet<T> = HashSet<T, BuildHasherDefault<FxHasher>>;
 
+/// Fast FxHash of raw key bytes, matching `fx_hash_map_key(&MapKey::Str(..))`.
+/// Uses a single-branch unaligned word fold for `<= 8`-byte keys (`"k0"`..`"price"`).
+#[inline]
+pub fn fx_hash_bytes(bytes: &[u8]) -> u64 {
+    let len = bytes.len();
+    let mut hash = 3u64.wrapping_mul(K);
+    if len <= 8 {
+        let word = match len {
+            0 => 0u64,
+            1 => (1u64 << 56) | (bytes[0] as u64),
+            2 => (2u64 << 56) | (u16::from_le_bytes([bytes[0], bytes[1]]) as u64),
+            3 => {
+                (3u64 << 56)
+                    | (u16::from_le_bytes([bytes[0], bytes[1]]) as u64)
+                    | ((bytes[2] as u64) << 16)
+            }
+            _ => {
+                ((len as u64) << 56)
+                    | (u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64)
+                    | ((u32::from_le_bytes([
+                        bytes[len - 4],
+                        bytes[len - 3],
+                        bytes[len - 2],
+                        bytes[len - 1],
+                    ]) as u64)
+                        << 24)
+            }
+        };
+        return (hash.rotate_left(5) ^ word).wrapping_mul(K);
+    }
+    let mut rest = bytes;
+    while rest.len() >= 8 {
+        let w = u64::from_ne_bytes(rest[..8].try_into().unwrap());
+        hash = (hash.rotate_left(5) ^ w).wrapping_mul(K);
+        rest = &rest[8..];
+    }
+    if rest.len() >= 4 {
+        let w = u32::from_ne_bytes(rest[..4].try_into().unwrap()) as u64;
+        hash = (hash.rotate_left(5) ^ w).wrapping_mul(K);
+        rest = &rest[4..];
+    }
+    if rest.len() >= 2 {
+        let w = u16::from_ne_bytes(rest[..2].try_into().unwrap()) as u64;
+        hash = (hash.rotate_left(5) ^ w).wrapping_mul(K);
+        rest = &rest[2..];
+    }
+    if !rest.is_empty() {
+        hash = (hash.rotate_left(5) ^ (rest[0] as u64)).wrapping_mul(K);
+    }
+    hash
+}
+
 /// Fast FxHash of a string key, matching `fx_hash_map_key(&MapKey::Str(..))`.
 #[inline]
 pub fn fx_hash_str(s: &str) -> u64 {
-    let mut h = FxHasher::default();
-    h.write_u8(3);
-    h.write(s.as_bytes());
-    h.finish()
+    fx_hash_bytes(s.as_bytes())
 }
 
 /// Fast FxHash of a `MapKey` without going through `std::hash::Hash`.
 #[inline]
 pub fn fx_hash_map_key(k: &crate::value::MapKey) -> u64 {
+    if let crate::value::MapKey::Str(s) = k {
+        return fx_hash_str(s.as_str());
+    }
     let mut h = FxHasher::default();
     match k {
         crate::value::MapKey::Null => h.write_u8(0),
@@ -102,10 +154,7 @@ pub fn fx_hash_map_key(k: &crate::value::MapKey) -> u64 {
             h.write_u8(2);
             h.write_u64(*i as u64);
         }
-        crate::value::MapKey::Str(s) => {
-            h.write_u8(3);
-            h.write(s.as_bytes());
-        }
+        crate::value::MapKey::Str(_) => unreachable!(),
     }
     h.finish()
 }

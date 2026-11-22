@@ -1153,8 +1153,8 @@ fn ok_bytes(data: Vec<u8>) -> Value {
 
 fn ok_result(r: Result<Vec<u8>, String>) -> Value {
     match r {
-        Ok(d) => Value::Result(Ok(Box::new(Value::Bytes(new_ref(d))))),
-        Err(e) => Value::Result(Err(Box::new(Value::Str(e.into())))),
+        Ok(d) => Value::ok(Value::Bytes(new_ref(d))),
+        Err(e) => Value::err(Value::Str(e.into())),
     }
 }
 
@@ -1229,7 +1229,7 @@ fn n_unzlib(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn map_field(
-    m: &std::sync::Arc<std::sync::Mutex<crate::value::collections::seq::MapData>>,
+    m: &crate::value::Ref<crate::value::collections::seq::MapData>,
     key: &str,
 ) -> Option<Value> {
     let guard = m.lock().unwrap();
@@ -1249,7 +1249,7 @@ fn n_zip_create(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         return Err(format!("zip_create expects 1 argument, got {}", args.len()));
     }
     let items = match &args[0] {
-        Value::List(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) => l.lock().unwrap().clone_items(),
         other => {
             return Err(format!(
                 "zip_create expects a list of {{name, data}} maps, found {}",
@@ -1298,11 +1298,11 @@ fn n_zip_read(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                     )
                 })
                 .collect();
-            Ok(Value::Result(Ok(Box::new(Value::Map(new_ref(
+            Ok(Value::ok(Value::Map(new_ref(
                 crate::value::collections::seq::MapData::from_entries(pairs),
-            ))))))
+            ))))
         }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -1318,11 +1318,9 @@ fn n_zip_list(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 .into_iter()
                 .map(|e| Value::Str(e.name.into()))
                 .collect();
-            Ok(Value::Result(Ok(Box::new(
-                crate::value::collections::seq::make_list(items),
-            ))))
+            Ok(Value::ok(crate::value::collections::seq::make_list(items)))
         }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 

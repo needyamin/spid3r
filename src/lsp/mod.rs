@@ -136,8 +136,8 @@ fn from_value(v: &Value) -> Json {
         Value::Float(f) => Json::Int(*f as i64),
         Value::Str(s) => Json::Str(s.to_string()),
         Value::List(d) => {
-            let items = &d.lock().unwrap().items;
-            Json::Arr(items.iter().map(from_value).collect())
+            let guard = d.lock().unwrap();
+            Json::Arr(guard.as_slice().iter().map(from_value).collect())
         }
         Value::Map(d) => {
             let entries = &d.lock().unwrap().entries;

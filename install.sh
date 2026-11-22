@@ -12,6 +12,7 @@
 #   sh install.sh --source --core # source build, no LLVM/WebKit needed
 #   sh install.sh --source --features native,gui
 #   sh install.sh --no-modify-path
+#   sh install.sh --no-editor-ext   # skip IDE extension install (or SPID3R_NO_EDITOR_EXT=1)
 #
 # What it does:
 #   1. Detects OS + architecture, picks the right release tarball.
@@ -21,6 +22,9 @@
 #      (the standard library is compiled into the binary now).
 #   5. Adds that directory to your PATH in ~/.bashrc / ~/.zshrc / ~/.profile
 #      (only if not already present, skippable via --no-modify-path).
+#   6. Verifies and installs the bundled spid3r-formatter.vsix extension into any
+#      detected VS Code / Cursor / Windsurf / VSCodium CLI on PATH (offline,
+#      skippable via --no-editor-ext or SPID3R_NO_EDITOR_EXT=1).
 #
 # The standard library is not installed as files. Every stdlib module is
 # compiled into the `spid3r` binary, and all three backends (tree walker, VM,
@@ -41,7 +45,20 @@ FROM_SOURCE=0
 FEATURES=""                # empty = auto-detect (source builds only)
 CORE_ONLY=0
 NO_MODIFY_PATH=0
+INSTALL_EDITOR_EXT=1
+if [ "${SPID3R_NO_EDITOR_EXT:-0}" = "1" ]; then
+    INSTALL_EDITOR_EXT=0
+fi
 INSTALL_DIR="${SPID3R_INSTALL_DIR:-$HOME/.spid3r/bin}"
+
+SCRIPT_DIR=""
+case "$0" in
+    */*)
+        if [ -f "$0" ]; then
+            SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+        fi
+        ;;
+esac
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -62,6 +79,8 @@ Options:
   --core                  Source build with zero external dependencies (no LLVM/WebKit)
   --features <feat>       Comma-separated Cargo features (e.g. native,gui)
   --no-modify-path        Do not append PATH exports to shell profiles (~/.bashrc, ~/.zshrc, etc.)
+  --editor-ext            Install bundled IDE formatter extension into detected editors (default)
+  --no-editor-ext         Skip IDE formatter extension install (or set SPID3R_NO_EDITOR_EXT=1)
   -h, --help              Show this help message
 EOF
 }
@@ -78,6 +97,8 @@ while [ $# -gt 0 ]; do
                             FEATURES="$2"; shift 2 ;;
         --core)             CORE_ONLY=1; shift ;;
         --no-modify-path)   NO_MODIFY_PATH=1; shift ;;
+        --editor-ext)       INSTALL_EDITOR_EXT=1; shift ;;
+        --no-editor-ext)    INSTALL_EDITOR_EXT=0; shift ;;
         -h|--help)          show_help; exit 0 ;;
         *)                  die "unknown option: $1 (try --help)" ;;
     esac
@@ -125,6 +146,143 @@ remove_legacy_stdlib() {
             say "Removed legacy standard library (now built in): ${dir}"
         fi
     done
+}
+
+verify_sha256_file() { # verify_sha256_file <file> <sha256_file>
+    vsf_file="$1"
+    vsf_sha="$2"
+    [ -f "$vsf_file" ] && [ -f "$vsf_sha" ] || return 1
+    vsf_expected="$(awk '{print tolower($1); exit}' "$vsf_sha" 2>/dev/null || true)"
+    case "$vsf_expected" in
+        ''|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#vsf_expected}" -eq 64 ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        vsf_actual="$(sha256sum "$vsf_file" | awk '{print tolower($1); exit}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        vsf_actual="$(shasum -a 256 "$vsf_file" | awk '{print tolower($1); exit}')"
+    else
+        return 2
+    fi
+    [ "$vsf_actual" = "$vsf_expected" ]
+}
+
+has_any_editor() {
+    for he_name in code cursor windsurf codium; do
+        if command -v "$he_name" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+run_with_timeout() { # run_with_timeout <secs> <cmd...>
+    rwt_secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$rwt_secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$rwt_secs" "$@"
+    else
+        "$@"
+    fi
+}
+
+install_editor_extension() { # install_editor_extension [extracted_tar_dir]
+    iee_extract="${1:-}"
+    if [ "$INSTALL_EDITOR_EXT" -eq 0 ]; then
+        say "Skipping IDE formatter extension (--no-editor-ext / SPID3R_NO_EDITOR_EXT=1)."
+        return 0
+    fi
+
+    iee_vsix=""
+    iee_sha=""
+    iee_tmp=""
+
+    # 1. Bundled inside extracted release tarball (100% offline).
+    if [ -n "$iee_extract" ] && [ -d "$iee_extract" ]; then
+        iee_vsix="$(find "$iee_extract" -type f -name 'spid3r-formatter.vsix' | head -n 1 || true)"
+        if [ -n "$iee_vsix" ] && [ -f "${iee_vsix}.sha256" ]; then
+            iee_sha="${iee_vsix}.sha256"
+        fi
+    fi
+
+    # 2. Local repository checkout (e.g. `sh ./install.sh --source`, 100% offline).
+    if [ -z "$iee_vsix" ] && [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/packaging/vscode/spid3r-formatter.vsix" ]; then
+        iee_vsix="${SCRIPT_DIR}/packaging/vscode/spid3r-formatter.vsix"
+        if [ -f "${iee_vsix}.sha256" ]; then
+            iee_sha="${iee_vsix}.sha256"
+        fi
+    fi
+
+    # 3. `--source` / older tarball fallback: fetch only when a supported editor is on PATH.
+    if [ -z "$iee_vsix" ]; then
+        if ! has_any_editor; then
+            return 0
+        fi
+        iee_tmp="$(mktemp -d 2>/dev/null || mktemp -d -t spid3r_vsix)"
+        if fetch "${RAW_BASE}/packaging/vscode/spid3r-formatter.vsix" "${iee_tmp}/spid3r-formatter.vsix" 2>/dev/null \
+            && fetch "${RAW_BASE}/packaging/vscode/spid3r-formatter.vsix.sha256" "${iee_tmp}/spid3r-formatter.vsix.sha256" 2>/dev/null; then
+            iee_vsix="${iee_tmp}/spid3r-formatter.vsix"
+            iee_sha="${iee_tmp}/spid3r-formatter.vsix.sha256"
+        else
+            warn "could not download spid3r-formatter.vsix; skipping IDE extension install."
+            rm -rf "$iee_tmp"
+            return 0
+        fi
+    fi
+
+    if [ -z "$iee_sha" ] || [ ! -f "$iee_sha" ]; then
+        warn "missing SHA-256 pin for spid3r-formatter.vsix; skipping IDE extension install."
+        [ -n "$iee_tmp" ] && rm -rf "$iee_tmp"
+        return 0
+    fi
+
+    if verify_sha256_file "$iee_vsix" "$iee_sha"; then
+        :
+    else
+        iee_vrc=$?
+        if [ "$iee_vrc" -eq 2 ]; then
+            warn "neither sha256sum nor shasum found; skipping unverified IDE extension install."
+        else
+            warn "spid3r-formatter.vsix SHA-256 verification failed; skipping IDE extension install."
+        fi
+        [ -n "$iee_tmp" ] && rm -rf "$iee_tmp"
+        return 0
+    fi
+
+    iee_share="$(dirname "$INSTALL_DIR")/share/spid3r"
+    iee_dest="$iee_vsix"
+    if mkdir -p "$iee_share" 2>/dev/null && cp -f "$iee_vsix" "${iee_share}/spid3r-formatter.vsix" 2>/dev/null; then
+        iee_dest="${iee_share}/spid3r-formatter.vsix"
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        say "Offline IDE formatter VSIX saved to ${iee_dest} (skipping automatic IDE CLI install as root)."
+        say "Install for your user with: code --install-extension \"${iee_dest}\""
+        [ -n "$iee_tmp" ] && rm -rf "$iee_tmp"
+        return 0
+    fi
+
+    iee_found=0
+    for iee_ed in code cursor windsurf codium; do
+        iee_bin="$(command -v "$iee_ed" 2>/dev/null || true)"
+        [ -n "$iee_bin" ] || continue
+        iee_found=$((iee_found + 1))
+        if run_with_timeout 60 "$iee_bin" --install-extension "$iee_dest" --force </dev/null >/dev/null 2>&1; then
+            say "Installed Spid3r IDE formatter extension for ${iee_ed} (offline VSIX)."
+        else
+            warn "${iee_ed} --install-extension failed; install manually via: ${iee_ed} --install-extension \"${iee_dest}\""
+        fi
+    done
+
+    if [ "$iee_found" -eq 0 ]; then
+        say "No supported editor CLI (code, cursor, windsurf, codium) found on PATH."
+        say "Offline IDE formatter extension saved to: ${iee_dest}"
+    fi
+
+    [ -n "$iee_tmp" ] && rm -rf "$iee_tmp"
+    return 0
 }
 
 # ------------------------------------------------------ build from source ----
@@ -176,6 +334,8 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
     # already exists).
     "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
         || warn "could not write the default spid3r.ini (run: spid3r control ini --init)"
+
+    install_editor_extension ""
 
     say "Done. spid3r is installed into ${INSTALL_DIR}."
     exit 0
@@ -297,6 +457,8 @@ if [ -x "${INSTALL_DIR}/spid3r" ]; then
 else
     die "installation finished but the binary is not executable at ${INSTALL_DIR}/spid3r"
 fi
+
+install_editor_extension "$TMPDIR_DL"
 
 say ""
 if [ "$path_added" -eq 1 ]; then

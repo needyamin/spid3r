@@ -293,32 +293,12 @@ impl Engine {
     /// assert_eq!(out.output, "denied\n");
     /// ```
     pub fn deny(mut self, capability: Capability) -> Self {
-        // Record the revocation process-wide (S-1/S-2): plugin closures check
-        // it at call time and the engines overwrite denied host-plugin
-        // functions when they install their globals, so a plugin registered
-        // *after* this deny call is blocked too — the name stubs below only
-        // cover what was registered before it.
-        crate::plugin::deny_capability(capability);
         for &name in capability.natives() {
             self = self.register(name, move |_args| {
                 Err(format!(
                     "capability denied: '{name}' is not available to this script"
                 ))
             });
-        }
-        // A plugin function is not in `Capability::natives()` — that list is a
-        // fixed vocabulary of builtins — so its declared permission has to be
-        // matched explicitly. Without this, `deny(Network)` would silently let
-        // a plugin's network function through.
-        for f in crate::plugin::registered_functions() {
-            if f.permission == Some(capability) {
-                let name = f.name;
-                self = self.register(name, move |_args| {
-                    Err(format!(
-                        "capability denied: '{name}' is not available to this script"
-                    ))
-                });
-            }
         }
         self
     }
@@ -489,7 +469,7 @@ pub mod conv {
     /// `list`/`vec` → a snapshot of its elements. Any other type is `None`.
     pub fn as_list(v: &Value) -> Option<Vec<Value>> {
         match v {
-            Value::List(d) | Value::VecDyn(d) => Some(d.lock().unwrap().items.clone()),
+            Value::List(d) | Value::VecDyn(d) => Some(d.lock().unwrap().clone_items()),
             _ => None,
         }
     }
@@ -513,14 +493,14 @@ pub mod conv {
 
     /// Build a Spid3r `string` from any string-like Rust value.
     pub fn from_string(s: impl Into<std::sync::Arc<str>>) -> Value {
-        Value::Str(s.into())
+        Value::Str(s.into().into())
     }
 
     /// Build a Spid3r `list` from Rust values.
     pub fn from_list(items: Vec<Value>) -> Value {
-        Value::List(crate::value::new_ref(crate::value::collections::VecData {
-            items,
-        }))
+        Value::List(crate::value::new_ref(
+            crate::value::collections::VecData::from_items(items),
+        ))
     }
 }
 

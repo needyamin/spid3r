@@ -290,8 +290,6 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     s.push("gui", feature(cfg!(feature = "gui")));
     s.push("native (LLVM AOT)", feature(cfg!(feature = "native")));
     s.push("tls", feature(cfg!(feature = "tls")));
-    s.push("plugins-wasm", feature(cfg!(feature = "plugins-wasm")));
-    s.push("agent", "on");
     s.push("spid3rinfo", "on");
     out.push(s);
 
@@ -318,19 +316,6 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
         "Embedded stdlib",
         format!("{} modules", crate::stdlib_embed::names().len()),
     );
-    s.push("Plugin ABI", crate::plugin::ABI_V1);
-    let plugins = crate::plugin::registered();
-    s.push("Host plugin functions", plugins.len().to_string());
-    if !plugins.is_empty() {
-        s.push(
-            "Host plugin names",
-            plugins
-                .iter()
-                .map(|(n, _)| *n)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-    }
     out.push(s);
 
     let mut s = Section::new("Configuration");
@@ -396,31 +381,6 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
         config::get("memory.max_call_depth").unwrap_or_default(),
     );
     out.push(s);
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut s = Section::new("Agent");
-        s.push("enabled", config::get("agent.enabled").unwrap_or_default());
-        s.push("bind", config::get("agent.bind").unwrap_or_default());
-        s.push("port", config::get("agent.port").unwrap_or_default());
-        s.push("name", config::get("agent.name").unwrap_or_default());
-        s.push(
-            "allow_remote",
-            config::get("security.allow_remote").unwrap_or_default(),
-        );
-        s.push(
-            "transport",
-            "ChaCha20 + HMAC-SHA256 over TCP (spid3r-agent/1)",
-        );
-        let store = crate::agent::store::Store::open();
-        s.push("registered devices", store.devices.len().to_string());
-        if redact {
-            s.push("pairing codes", "[redacted]");
-        } else {
-            s.push("pairing codes", store.pairings.len().to_string());
-        }
-        out.push(s);
-    }
 
     out
 }

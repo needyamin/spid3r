@@ -3,11 +3,11 @@
 //! this; `Rc` would not be `Send`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::value::collections::{FxHashMap, FxHashSet};
 use crate::value::gc::{self, GcTrace};
-use crate::value::{lock_ref, Value};
+use crate::value::{lock_ref, FastMutex, Ref, Value};
 
 /// Generation counter bumped whenever any root/global environment is mutated
 /// (Track 5 TW-2). Lets the tree-walk interpreter cache resolved global/builtin
@@ -37,14 +37,14 @@ pub struct EnvironmentData {
     pub is_global: bool,
 }
 
-pub type Env = Arc<Mutex<EnvironmentData>>;
+pub type Env = Ref<EnvironmentData>;
 
 pub fn new_global() -> Env {
     bump_global_gen();
     // Every environment is a tracked cell (audit A-13): a closure bound in
     // the scope it captures forms `env -> closure -> env`, and the collector
     // can only reclaim it when both ends are cells.
-    gc::track(Arc::new(Mutex::new(EnvironmentData {
+    gc::track(Arc::new(FastMutex::new(EnvironmentData {
         vars: FxHashMap::default(),
         consts: FxHashSet::default(),
         parent: None,
@@ -53,7 +53,7 @@ pub fn new_global() -> Env {
 }
 
 pub fn child(parent: &Env) -> Env {
-    gc::track(Arc::new(Mutex::new(EnvironmentData {
+    gc::track(Arc::new(FastMutex::new(EnvironmentData {
         vars: FxHashMap::default(),
         consts: FxHashSet::default(),
         parent: Some(parent.clone()),
@@ -62,7 +62,7 @@ pub fn child(parent: &Env) -> Env {
 }
 
 pub fn child_with_vars(parent: &Env, vars: FxHashMap<String, Value>) -> Env {
-    gc::track(Arc::new(Mutex::new(EnvironmentData {
+    gc::track(Arc::new(FastMutex::new(EnvironmentData {
         vars,
         consts: FxHashSet::default(),
         parent: Some(parent.clone()),

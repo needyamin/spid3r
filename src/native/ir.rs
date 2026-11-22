@@ -21,7 +21,7 @@
 //! - globals (top-level `let`/`const`/`fn`/`class`, natives) live in the
 //!   runtime's global table and are re-read on every use.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -35,7 +35,8 @@ use inkwell::FloatPredicate;
 use inkwell::IntPredicate;
 
 use crate::ast::{
-    AssignOp, BinOp, Block, CatchClause, ClassDecl, Expr, FnProto, LogOp, Program, Stmt, UnOp,
+    AssignOp, BinOp, Block, CatchClause, ClassDecl, Expr, FnProto, LogOp, Param, Program, Stmt,
+    TypeExpr, UnOp,
 };
 use crate::value::collections;
 
@@ -57,6 +58,20 @@ enum VarLoc<'ctx> {
     UListI64(PointerValue<'ctx>),
     /// R10.3: stack slot holding a raw `Vec<f64>` handle (`list<float>`).
     UListF64(PointerValue<'ctx>),
+    /// Phase 1: loop-hoisted contiguous read-only `i64` slice view.
+    RowViewI64 {
+        data: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+        is_ulist: bool,
+    },
+    /// Phase 1: loop-hoisted contiguous read-only `f64` slice view.
+    RowViewF64 {
+        data: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+        is_ulist: bool,
+    },
     /// Stack slot holding an upvalue-cell pointer.
     Cell(PointerValue<'ctx>),
     /// Index of the captured cell inside this function's environment.
@@ -879,6 +894,8 @@ pub struct Ir<'ctx> {
     int_locals: Option<HashSet<String>>,
     /// AOT-4: locals of the current function that live in unboxed f64 stack slots
     float_locals: Option<HashSet<String>>,
+    /// true when compiling `--freestanding` (skips `spid3r_reg_*` calls)
+    freestanding: bool,
     /// true while compiling the module entry (top level = globals)
     is_entry: bool,
     strings: HashMap<String, PointerValue<'ctx>>,
@@ -940,6 +957,19 @@ pub struct Ir<'ctx> {
     frame_base_placeholder: Option<PointerValue<'ctx>>,
     /// DP-1 / RT-2: number of `ValueV2` slots allocated in the current function frame.
     frame_slot_count: u32,
+    /// Phase 1: BCE-proven loop induction variable per hoisted `RowView*` variable name.
+    row_bce_vars: HashMap<String, String>,
+    /// Phase 1: variables in the current function whose type annotation or float
+    /// literal initializer/assignment hints float representation in hoisted loops.
+    float_hint_vars: HashSet<String>,
+    /// Phase 2: names declared or assigned anywhere in the program (so built-in
+    /// helpers like `string` are only fast-lowered when never shadowed/rebound).
+    shadowed_builtins: HashSet<String>,
+    /// Phase 2: single-declaration locals known to hold string values.
+    str_locals: Option<HashSet<String>>,
+    /// Phase 2: set by self-guarded or non-throwing `compile_expr_inner` arms so
+    /// `compile_expr` skips emitting a duplicate `spid3r_threw()` poll.
+    expr_guarded: bool,
 }
 
 type MonoFnSig<'ctx> = (FunctionValue<'ctx>, Option<String>, Vec<Option<String>>);
@@ -1029,6 +1059,12 @@ impl<'ctx> Ir<'ctx> {
             raw_compiled: HashMap::new(),
             frame_base_placeholder: None,
             frame_slot_count: 0,
+            row_bce_vars: HashMap::new(),
+            float_hint_vars: HashSet::new(),
+            shadowed_builtins: HashSet::new(),
+            str_locals: None,
+            expr_guarded: false,
+            freestanding: false,
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1128,6 +1164,29 @@ impl<'ctx> Ir<'ctx> {
         ph_inst.replace_all_uses_with(&real_arr.as_instruction().unwrap());
         ph_inst.erase_from_basic_block();
 
+        if let Some(bb) = cur {
+            self.builder.position_at_end(bb);
+        }
+    }
+
+    /// Finalize a `ValueV2` frame in a monomorphized/raw helper only if any
+    /// `ValueV2` slots were allocated, keeping pure scalar functions zero-overhead.
+    fn finish_v2_frame_if_used(&mut self, func: FunctionValue<'ctx>, ret_bb: BasicBlock<'ctx>) {
+        if self.frame_slot_count == 0 {
+            if let Some(ph) = self.frame_base_placeholder.take() {
+                if let Some(inst) = ph.as_instruction() {
+                    inst.erase_from_basic_block();
+                }
+            }
+            return;
+        }
+        self.finish_v2_frame(func);
+        let cur = self.builder.get_insert_block();
+        if let Some(term) = ret_bb.get_terminator() {
+            self.builder.position_before(&term);
+            let f_exit = self.tramp("spid3r_frame_exit", &[], None);
+            self.builder.build_call(f_exit, &[], "").unwrap();
+        }
         if let Some(bb) = cur {
             self.builder.position_at_end(bb);
         }
@@ -2036,6 +2095,17 @@ fn is_pure_int_expr(
     int_vars: &HashSet<String>,
     ulists: &HashMap<String, UnboxedElem>,
 ) -> bool {
+    static EMPTY_STRS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    let empty = EMPTY_STRS.get_or_init(HashSet::new);
+    is_pure_int_expr_with_strs(e, int_vars, ulists, empty)
+}
+
+fn is_pure_int_expr_with_strs(
+    e: &Expr,
+    int_vars: &HashSet<String>,
+    ulists: &HashMap<String, UnboxedElem>,
+    str_vars: &HashSet<String>,
+) -> bool {
     match e {
         Expr::Int(..) => true,
         Expr::Ident(name, _) => int_vars.contains(name),
@@ -2043,16 +2113,19 @@ fn is_pure_int_expr(
             op: UnOp::Neg,
             expr,
             ..
-        } => is_pure_int_expr(expr, int_vars, ulists),
+        } => is_pure_int_expr_with_strs(expr, int_vars, ulists, str_vars),
         Expr::Binary {
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
             l,
             r,
             ..
-        } => is_pure_int_expr(l, int_vars, ulists) && is_pure_int_expr(r, int_vars, ulists),
+        } => {
+            is_pure_int_expr_with_strs(l, int_vars, ulists, str_vars)
+                && is_pure_int_expr_with_strs(r, int_vars, ulists, str_vars)
+        }
         Expr::Index { object, index, .. } => {
             matches!(&**object, Expr::Ident(n, _) if ulists.get(n) == Some(&UnboxedElem::I64))
-                && is_pure_int_expr(index, int_vars, ulists)
+                && is_pure_int_expr_with_strs(index, int_vars, ulists, str_vars)
         }
         Expr::Method {
             object, name, args, ..
@@ -2061,7 +2134,7 @@ fn is_pure_int_expr(
                 match ulists.get(n) {
                     Some(UnboxedElem::I64) => name == "len" || name == "pop",
                     Some(UnboxedElem::F64) => name == "len",
-                    None => false,
+                    None => name == "len" && str_vars.contains(n),
                 }
             } else {
                 false
@@ -2372,11 +2445,89 @@ fn collect_int_analysis_expr<'a>(e: &'a Expr, acc: &mut IntAnalysisAcc<'a>) {
     }
 }
 
+fn is_pure_str_expr(e: &Expr, str_vars: &HashSet<String>, shadowed: &HashSet<String>) -> bool {
+    match e {
+        Expr::Str(..) => true,
+        Expr::Ident(name, _) => str_vars.contains(name),
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            ..
+        } if type_args.is_empty() && args.len() == 1 => matches!(
+            callee.as_ref(),
+            Expr::Ident(fn_name, _)
+                if (fn_name == "string" || fn_name == "json_write")
+                    && !shadowed.contains(fn_name)
+        ),
+        Expr::Binary {
+            op: BinOp::Add, l, ..
+        } => is_pure_str_expr(l, str_vars, shadowed),
+        _ => false,
+    }
+}
+
+fn analyze_str_locals(
+    proto: &FnProto,
+    boxed: &HashSet<String>,
+    shadowed: &HashSet<String>,
+) -> HashSet<String> {
+    let empty_ulists = HashMap::new();
+    let mut acc = IntAnalysisAcc::default();
+    for p in &proto.params {
+        acc.invalid.insert(p.name.clone());
+    }
+    for b in boxed {
+        acc.invalid.insert(b.clone());
+    }
+    collect_int_analysis_block(&proto.body.stmts, boxed, &empty_ulists, &mut acc);
+    for (name, count) in acc.decl_counts {
+        if count > 1 {
+            acc.invalid.insert(name);
+        }
+    }
+    let mut str_vars: HashSet<String> = acc.candidates.difference(&acc.invalid).cloned().collect();
+    loop {
+        let mut to_remove = Vec::new();
+        for name in &str_vars {
+            let mut ok = true;
+            for init in &acc.inits {
+                if &init.name == name && !is_pure_str_expr(init.expr, &str_vars, shadowed) {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                for assign in &acc.assignments {
+                    if &assign.name == name
+                        && (!matches!(assign.op, AssignOp::Assign | AssignOp::AddAssign)
+                            || !is_pure_str_expr(assign.expr, &str_vars, shadowed))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                to_remove.push(name.clone());
+            }
+        }
+        if to_remove.is_empty() {
+            break;
+        }
+        for r in to_remove {
+            str_vars.remove(&r);
+        }
+    }
+    str_vars
+}
+
 fn analyze_int_locals_with_params(
     proto: &FnProto,
     boxed: &HashSet<String>,
     int_params: &HashSet<String>,
     ulists: &HashMap<String, UnboxedElem>,
+    str_vars: &HashSet<String>,
 ) -> HashSet<String> {
     let mut acc = IntAnalysisAcc::default();
 
@@ -2409,11 +2560,11 @@ fn analyze_int_locals_with_params(
             for init in &acc.inits {
                 if &init.name == name {
                     let pure = if init.scoped_ints.is_empty() {
-                        is_pure_int_expr(init.expr, &int_vars, ulists)
+                        is_pure_int_expr_with_strs(init.expr, &int_vars, ulists, str_vars)
                     } else {
                         let mut eff = int_vars.clone();
                         eff.extend(init.scoped_ints.iter().cloned());
-                        is_pure_int_expr(init.expr, &eff, ulists)
+                        is_pure_int_expr_with_strs(init.expr, &eff, ulists, str_vars)
                     };
                     if !pure {
                         ok = false;
@@ -2425,11 +2576,11 @@ fn analyze_int_locals_with_params(
                 for assign in &acc.assignments {
                     if &assign.name == name {
                         let pure = if assign.scoped_ints.is_empty() {
-                            is_pure_int_expr(assign.expr, &int_vars, ulists)
+                            is_pure_int_expr_with_strs(assign.expr, &int_vars, ulists, str_vars)
                         } else {
                             let mut eff = int_vars.clone();
                             eff.extend(assign.scoped_ints.iter().cloned());
-                            is_pure_int_expr(assign.expr, &eff, ulists)
+                            is_pure_int_expr_with_strs(assign.expr, &eff, ulists, str_vars)
                         };
                         if !pure {
                             ok = false;
@@ -3551,23 +3702,594 @@ fn filter_top_level_ulists(
     safe
 }
 
+fn type_expr_mentions_float(ty: &TypeExpr) -> bool {
+    ty.name == "float"
+        || ty.args.iter().any(type_expr_mentions_float)
+        || ty.union.iter().any(type_expr_mentions_float)
+}
+
+fn expr_has_float_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Float(..) => true,
+        Expr::Int(..)
+        | Expr::Bool(..)
+        | Expr::Str(..)
+        | Expr::Null(..)
+        | Expr::Ident(..)
+        | Expr::Super { .. } => false,
+        Expr::Fn(_) => false,
+        Expr::Unary { expr, .. } | Expr::Await(expr, _) | Expr::Propagate(expr, _) => {
+            expr_has_float_literal(expr)
+        }
+        Expr::Binary { l, r, .. } | Expr::Logical { l, r, .. } | Expr::Coalesce { l, r, .. } => {
+            expr_has_float_literal(l) || expr_has_float_literal(r)
+        }
+        Expr::Assign { target, value, .. } => {
+            expr_has_float_literal(target) || expr_has_float_literal(value)
+        }
+        Expr::Index { object, index, .. } => {
+            expr_has_float_literal(object) || expr_has_float_literal(index)
+        }
+        Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+            expr_has_float_literal(object)
+        }
+        Expr::NamedArg { value, .. }
+        | Expr::Spawn {
+            callable: value, ..
+        } => expr_has_float_literal(value),
+        Expr::List(items, _) => items.iter().any(expr_has_float_literal),
+        Expr::Call { callee, args, .. } => {
+            expr_has_float_literal(callee) || args.iter().any(expr_has_float_literal)
+        }
+        Expr::Method { object, args, .. } => {
+            expr_has_float_literal(object) || args.iter().any(expr_has_float_literal)
+        }
+        Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+            args.iter().any(expr_has_float_literal)
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            expr_has_float_literal(cond)
+                || stmts_have_float_literal(&then.stmts)
+                || els
+                    .as_ref()
+                    .is_some_and(|b| stmts_have_float_literal(&b.stmts))
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_has_float_literal(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_has_float_literal)
+                        || stmts_have_float_literal(&arm.body.stmts)
+                })
+        }
+    }
+}
+
+fn stmts_have_float_literal(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Let { value: Some(e), .. }
+        | Stmt::Const { value: e, .. }
+        | Stmt::LetTuple { value: e, .. }
+        | Stmt::Expr(e)
+        | Stmt::Return { value: Some(e), .. }
+        | Stmt::Throw { value: e, .. }
+        | Stmt::Spawn { callable: e, .. } => expr_has_float_literal(e),
+        Stmt::Yield { value, .. } => expr_has_float_literal(value),
+        Stmt::If {
+            cond,
+            then,
+            elifs,
+            els,
+            ..
+        } => {
+            expr_has_float_literal(cond)
+                || stmts_have_float_literal(&then.stmts)
+                || elifs
+                    .iter()
+                    .any(|(c, b)| expr_has_float_literal(c) || stmts_have_float_literal(&b.stmts))
+                || els
+                    .as_ref()
+                    .is_some_and(|b| stmts_have_float_literal(&b.stmts))
+        }
+        Stmt::While { cond, body, .. }
+        | Stmt::ForIn {
+            iter: cond, body, ..
+        } => expr_has_float_literal(cond) || stmts_have_float_literal(&body.stmts),
+        Stmt::ForC {
+            init,
+            cond,
+            post,
+            body,
+            ..
+        } => {
+            stmts_have_float_literal(std::slice::from_ref(init.as_ref()))
+                || expr_has_float_literal(cond)
+                || expr_has_float_literal(post)
+                || stmts_have_float_literal(&body.stmts)
+        }
+        Stmt::Block(b) => stmts_have_float_literal(&b.stmts),
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            stmts_have_float_literal(&body.stmts)
+                || catch
+                    .as_ref()
+                    .is_some_and(|c| stmts_have_float_literal(&c.body.stmts))
+                || finally
+                    .as_ref()
+                    .is_some_and(|f| stmts_have_float_literal(&f.stmts))
+        }
+        Stmt::Fn(_)
+        | Stmt::Class(_)
+        | Stmt::Interface(_)
+        | Stmt::Enum(_)
+        | Stmt::Import { .. }
+        | Stmt::Let { value: None, .. }
+        | Stmt::Return { value: None, .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
+fn collect_float_hints_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Fn(_) => {}
+        Expr::Assign { target, value, .. } => {
+            if let Expr::Ident(name, _) = target.as_ref() {
+                if expr_has_float_literal(value) {
+                    out.insert(name.clone());
+                }
+            }
+            collect_float_hints_expr(target, out);
+            collect_float_hints_expr(value, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Await(expr, _) | Expr::Propagate(expr, _) => {
+            collect_float_hints_expr(expr, out);
+        }
+        Expr::Binary { l, r, .. }
+        | Expr::Logical { l, r, .. }
+        | Expr::Coalesce { l, r, .. }
+        | Expr::Index {
+            object: l,
+            index: r,
+            ..
+        } => {
+            collect_float_hints_expr(l, out);
+            collect_float_hints_expr(r, out);
+        }
+        Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+            collect_float_hints_expr(object, out);
+        }
+        Expr::NamedArg { value, .. }
+        | Expr::Spawn {
+            callable: value, ..
+        } => {
+            collect_float_hints_expr(value, out);
+        }
+        Expr::List(items, _) => {
+            for it in items {
+                collect_float_hints_expr(it, out);
+            }
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_float_hints_expr(callee, out);
+            for a in args {
+                collect_float_hints_expr(a, out);
+            }
+        }
+        Expr::Method { object, args, .. } => {
+            collect_float_hints_expr(object, out);
+            for a in args {
+                collect_float_hints_expr(a, out);
+            }
+        }
+        Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+            for a in args {
+                collect_float_hints_expr(a, out);
+            }
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_float_hints_expr(cond, out);
+            collect_float_hints_stmts(&then.stmts, out);
+            if let Some(b) = els {
+                collect_float_hints_stmts(&b.stmts, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_float_hints_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_float_hints_expr(g, out);
+                }
+                collect_float_hints_stmts(&arm.body.stmts, out);
+            }
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Bool(..)
+        | Expr::Str(..)
+        | Expr::Null(..)
+        | Expr::Ident(..)
+        | Expr::Super { .. } => {}
+    }
+}
+
+fn collect_float_hints_stmts(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Fn(_)
+            | Stmt::Class(_)
+            | Stmt::Interface(_)
+            | Stmt::Enum(_)
+            | Stmt::Import { .. } => {}
+            Stmt::Let {
+                name, ty, value, ..
+            } => {
+                if ty.as_ref().is_some_and(type_expr_mentions_float)
+                    || value.as_ref().is_some_and(expr_has_float_literal)
+                {
+                    out.insert(name.clone());
+                }
+                if let Some(v) = value {
+                    collect_float_hints_expr(v, out);
+                }
+            }
+            Stmt::Const {
+                name, ty, value, ..
+            } => {
+                if ty.as_ref().is_some_and(type_expr_mentions_float)
+                    || expr_has_float_literal(value)
+                {
+                    out.insert(name.clone());
+                }
+                collect_float_hints_expr(value, out);
+            }
+            Stmt::LetTuple { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Throw { value, .. }
+            | Stmt::Spawn {
+                callable: value, ..
+            } => {
+                collect_float_hints_expr(value, out);
+            }
+            Stmt::Yield { value, .. } => collect_float_hints_expr(value, out),
+            Stmt::Return { value: Some(v), .. } => collect_float_hints_expr(v, out),
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                ..
+            } => {
+                collect_float_hints_expr(cond, out);
+                collect_float_hints_stmts(&then.stmts, out);
+                for (c, b) in elifs {
+                    collect_float_hints_expr(c, out);
+                    collect_float_hints_stmts(&b.stmts, out);
+                }
+                if let Some(b) = els {
+                    collect_float_hints_stmts(&b.stmts, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_float_hints_expr(cond, out);
+                collect_float_hints_stmts(&body.stmts, out);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                collect_float_hints_expr(iter, out);
+                collect_float_hints_stmts(&body.stmts, out);
+            }
+            Stmt::ForC {
+                init,
+                cond,
+                post,
+                body,
+                ..
+            } => {
+                collect_float_hints_stmts(std::slice::from_ref(init.as_ref()), out);
+                collect_float_hints_expr(cond, out);
+                collect_float_hints_expr(post, out);
+                collect_float_hints_stmts(&body.stmts, out);
+            }
+            Stmt::Block(b) => collect_float_hints_stmts(&b.stmts, out),
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                collect_float_hints_stmts(&body.stmts, out);
+                if let Some(c) = catch {
+                    collect_float_hints_stmts(&c.body.stmts, out);
+                }
+                if let Some(f) = finally {
+                    collect_float_hints_stmts(&f.stmts, out);
+                }
+            }
+            Stmt::Return { value: None, .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+}
+
+fn collect_float_hint_vars(params: &[Param], stmts: &[Stmt]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for p in params {
+        if p.ty.as_ref().is_some_and(type_expr_mentions_float) {
+            out.insert(p.name.clone());
+        }
+    }
+    collect_float_hints_stmts(stmts, &mut out);
+    out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromotedKind {
+    Int,
+    Float,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SimKind {
+    Int,
+    Float,
+    Bool,
+}
+
+struct BcePlan {
+    idx_var: String,
+    bound_expr: Expr,
+    inclusive: bool,
+    bce_rows: BTreeSet<String>,
+}
+
+struct HoistedLoopPlan {
+    rows: BTreeMap<String, UnboxedElem>,
+    promoted: BTreeMap<String, (PromotedKind, bool)>,
+    bce: Option<BcePlan>,
+}
+
+fn collect_shadowed_builtins_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Assign { target, value, .. } => {
+            if let Expr::Ident(n, _) = target.as_ref() {
+                out.insert(n.clone());
+            } else {
+                collect_shadowed_builtins_expr(target, out);
+            }
+            collect_shadowed_builtins_expr(value, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Await(expr, _) | Expr::Propagate(expr, _) => {
+            collect_shadowed_builtins_expr(expr, out);
+        }
+        Expr::Binary { l, r, .. }
+        | Expr::Logical { l, r, .. }
+        | Expr::Coalesce { l, r, .. }
+        | Expr::Index {
+            object: l,
+            index: r,
+            ..
+        } => {
+            collect_shadowed_builtins_expr(l, out);
+            collect_shadowed_builtins_expr(r, out);
+        }
+        Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+            collect_shadowed_builtins_expr(object, out);
+        }
+        Expr::NamedArg { value, .. }
+        | Expr::Spawn {
+            callable: value, ..
+        } => {
+            collect_shadowed_builtins_expr(value, out);
+        }
+        Expr::List(items, _) => {
+            for it in items {
+                collect_shadowed_builtins_expr(it, out);
+            }
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_shadowed_builtins_expr(callee, out);
+            for a in args {
+                collect_shadowed_builtins_expr(a, out);
+            }
+        }
+        Expr::Method { object, args, .. } => {
+            collect_shadowed_builtins_expr(object, out);
+            for a in args {
+                collect_shadowed_builtins_expr(a, out);
+            }
+        }
+        Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+            for a in args {
+                collect_shadowed_builtins_expr(a, out);
+            }
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_shadowed_builtins_expr(cond, out);
+            collect_shadowed_builtins_stmts(&then.stmts, out);
+            if let Some(b) = els {
+                collect_shadowed_builtins_stmts(&b.stmts, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_shadowed_builtins_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_shadowed_builtins_expr(g, out);
+                }
+                collect_shadowed_builtins_stmts(&arm.body.stmts, out);
+            }
+        }
+        Expr::Fn(p) => {
+            if let Some(n) = &p.name {
+                out.insert(n.clone());
+            }
+            collect_shadowed_builtins_stmts(&p.body.stmts, out);
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Bool(..)
+        | Expr::Str(..)
+        | Expr::Null(..)
+        | Expr::Ident(..)
+        | Expr::Super { .. } => {}
+    }
+}
+
+fn collect_shadowed_builtins_stmts(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Fn(p) => {
+                if let Some(n) = &p.name {
+                    out.insert(n.clone());
+                }
+                collect_shadowed_builtins_stmts(&p.body.stmts, out);
+            }
+            Stmt::Class(c) => {
+                out.insert(c.name.clone());
+                for m in &c.methods {
+                    collect_shadowed_builtins_stmts(&m.body.stmts, out);
+                }
+            }
+            Stmt::Interface(i) => {
+                out.insert(i.name.clone());
+                for m in &i.default_methods {
+                    collect_shadowed_builtins_stmts(&m.body.stmts, out);
+                }
+            }
+            Stmt::Enum(e) => {
+                out.insert(e.name.clone());
+            }
+            Stmt::Import { alias: Some(a), .. } => {
+                out.insert(a.clone());
+            }
+            Stmt::Let { name, value, .. } => {
+                out.insert(name.clone());
+                if let Some(v) = value {
+                    collect_shadowed_builtins_expr(v, out);
+                }
+            }
+            Stmt::Const { name, value, .. } => {
+                out.insert(name.clone());
+                collect_shadowed_builtins_expr(value, out);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                for n in names {
+                    out.insert(n.clone());
+                }
+                collect_shadowed_builtins_expr(value, out);
+            }
+            Stmt::Expr(e)
+            | Stmt::Throw { value: e, .. }
+            | Stmt::Spawn { callable: e, .. }
+            | Stmt::Return { value: Some(e), .. } => collect_shadowed_builtins_expr(e, out),
+            Stmt::Yield { value, .. } => collect_shadowed_builtins_expr(value, out),
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                ..
+            } => {
+                collect_shadowed_builtins_expr(cond, out);
+                collect_shadowed_builtins_stmts(&then.stmts, out);
+                for (c, b) in elifs {
+                    collect_shadowed_builtins_expr(c, out);
+                    collect_shadowed_builtins_stmts(&b.stmts, out);
+                }
+                if let Some(b) = els {
+                    collect_shadowed_builtins_stmts(&b.stmts, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_shadowed_builtins_expr(cond, out);
+                collect_shadowed_builtins_stmts(&body.stmts, out);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                collect_shadowed_builtins_expr(iter, out);
+                collect_shadowed_builtins_stmts(&body.stmts, out);
+            }
+            Stmt::ForC {
+                init,
+                cond,
+                post,
+                body,
+                ..
+            } => {
+                collect_shadowed_builtins_stmts(std::slice::from_ref(init.as_ref()), out);
+                collect_shadowed_builtins_expr(cond, out);
+                collect_shadowed_builtins_expr(post, out);
+                collect_shadowed_builtins_stmts(&body.stmts, out);
+            }
+            Stmt::Block(b) => collect_shadowed_builtins_stmts(&b.stmts, out),
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                collect_shadowed_builtins_stmts(&body.stmts, out);
+                if let Some(c) = catch {
+                    collect_shadowed_builtins_stmts(&c.body.stmts, out);
+                }
+                if let Some(f) = finally {
+                    collect_shadowed_builtins_stmts(&f.stmts, out);
+                }
+            }
+            Stmt::Import { alias: None, .. }
+            | Stmt::Return { value: None, .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {}
+        }
+    }
+}
+
+fn collect_shadowed_builtins(program: &Program) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_shadowed_builtins_stmts(&program.stmts, &mut out);
+    out
+}
+
 fn analyze_fn_locals(
     proto: &FnProto,
     boxed: &HashSet<String>,
     int_params: &HashSet<String>,
     float_params: &HashSet<String>,
+    shadowed_globals: &HashSet<String>,
 ) -> (
     HashSet<String>,
     HashSet<String>,
     HashMap<String, UnboxedElem>,
+    HashSet<String>,
 ) {
+    let mut shadowed_here = shadowed_globals.clone();
+    for p in &proto.params {
+        shadowed_here.insert(p.name.clone());
+    }
+    collect_declared(&proto.body.stmts, &mut shadowed_here);
+    let str_locals = analyze_str_locals(proto, boxed, &shadowed_here);
     let empty_ulists = HashMap::new();
-    let int_0 = analyze_int_locals_with_params(proto, boxed, int_params, &empty_ulists);
+    let int_0 =
+        analyze_int_locals_with_params(proto, boxed, int_params, &empty_ulists, &str_locals);
     let ulists = analyze_unboxed_lists(proto, boxed, &int_0);
     let safe_ulists = filter_top_level_ulists(&proto.body.stmts, &ulists);
-    let int_locals = analyze_int_locals_with_params(proto, boxed, int_params, &safe_ulists);
+    let int_locals =
+        analyze_int_locals_with_params(proto, boxed, int_params, &safe_ulists, &str_locals);
     let float_locals = analyze_float_locals(proto, boxed, &int_locals, float_params, &safe_ulists);
-    (int_locals, float_locals, ulists)
+    (int_locals, float_locals, ulists, str_locals)
 }
 
 // ---------------------------------------------------------------------------
@@ -3597,8 +4319,10 @@ impl<'ctx> Ir<'ctx> {
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
-                    if matches!(self.lookup(name), Some(VarLoc::UListI64(_)))
-                        && self.is_int_expr(index)
+                    if matches!(
+                        self.lookup(name),
+                        Some(VarLoc::UListI64(_)) | Some(VarLoc::RowViewI64 { .. })
+                    ) && self.is_int_expr(index)
                     {
                         return true;
                     }
@@ -3614,7 +4338,18 @@ impl<'ctx> Ir<'ctx> {
                             Some(VarLoc::UListI64(_)) if name == "len" || name == "pop" => {
                                 return true;
                             }
-                            Some(VarLoc::UListF64(_)) if name == "len" => return true,
+                            Some(VarLoc::UListF64(_))
+                            | Some(VarLoc::RowViewI64 { .. })
+                            | Some(VarLoc::RowViewF64 { .. })
+                                if name == "len" =>
+                            {
+                                return true;
+                            }
+                            _ if name == "len"
+                                && self.str_locals.as_ref().is_some_and(|s| s.contains(vname)) =>
+                            {
+                                return true;
+                            }
                             _ => {}
                         }
                     }
@@ -3723,8 +4458,10 @@ impl<'ctx> Ir<'ctx> {
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
-                    if matches!(self.lookup(name), Some(VarLoc::UListF64(_)))
-                        && self.is_int_expr(index)
+                    if matches!(
+                        self.lookup(name),
+                        Some(VarLoc::UListF64(_)) | Some(VarLoc::RowViewF64 { .. })
+                    ) && self.is_int_expr(index)
                     {
                         return true;
                     }
@@ -4041,6 +4778,1477 @@ impl<'ctx> Ir<'ctx> {
         self.builder.position_at_end(cont_bb);
     }
 
+    fn is_row_bce_hit(&self, list_name: &str, index_expr: &Expr) -> bool {
+        matches!(
+            index_expr,
+            Expr::Ident(id, _) if self.row_bce_vars.get(list_name) == Some(id)
+        )
+    }
+
+    /// Phase 1: emit inline slice read for a hoisted `RowViewI64`, eliding the
+    /// per-iteration bounds check when pre-loop BCE proved `0 <= idx < len`.
+    fn emit_row_view_i64_get(
+        &mut self,
+        bce_hit: bool,
+        data: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+        is_ulist: bool,
+        idx: inkwell::values::IntValue<'ctx>,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        if bce_hit {
+            // SAFETY: pre-loop BCE check proved `0 <= idx < bound <= len`.
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(self.i64_ty(), data, &[idx], "rv.ep")
+                    .unwrap()
+            };
+            return Ok(self
+                .builder
+                .build_load(self.i64_ty(), elem_ptr, "rv.ev")
+                .unwrap()
+                .into_int_value());
+        }
+
+        let inb_raw = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len, "rv.inb")
+            .unwrap();
+        let inb = self.expect_i1(inb_raw, true);
+        let fast_bb = self.new_block("rv.fast");
+        let slow_bb = self.new_block("rv.slow");
+        let cont_bb = self.new_block("rv.cont");
+        self.builder
+            .build_conditional_branch(inb, fast_bb, slow_bb)
+            .unwrap();
+
+        self.builder.position_at_end(fast_bb);
+        // SAFETY: `ULT(idx, len)` above guarantees `0 <= idx < len`.
+        let elem_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(self.i64_ty(), data, &[idx], "rv.ep")
+                .unwrap()
+        };
+        let fast_v = self
+            .builder
+            .build_load(self.i64_ty(), elem_ptr, "rv.ev")
+            .unwrap()
+            .into_int_value();
+        let fast_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(slow_bb);
+        let slow_v = if is_ulist {
+            let ul_ptr = self
+                .builder
+                .build_load(self.ptr_ty(), orig_slot, "rv.ul")
+                .unwrap()
+                .into_pointer_value();
+            let f = self.tramp(
+                "spid3r_ulist_i64_get",
+                &[self.ptr_ty().into(), self.i64_ty().into()],
+                Some(self.i64_ty().into()),
+            );
+            let sv = call_int(self.emit_call(f, &[ul_ptr.into(), idx.into()], "rv.sget"));
+            self.throw_guard();
+            sv
+        } else {
+            let idx_v2 = self.v_int_from_i64(idx);
+            let bv = self.call2p("spid3r_index_get", orig_slot, idx_v2);
+            self.throw_guard();
+            self.call1p_to_i64("spid3r_to_i64", bv)
+        };
+        let slow_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        let phi = self.builder.build_phi(self.i64_ty(), "rv.phi").unwrap();
+        phi.add_incoming(&[(&fast_v, fast_from), (&slow_v, slow_from)]);
+        Ok(phi.as_basic_value().into_int_value())
+    }
+
+    /// Phase 1: emit inline slice read for a hoisted `RowViewF64`, eliding the
+    /// per-iteration bounds check when pre-loop BCE proved `0 <= idx < len`.
+    fn emit_row_view_f64_get(
+        &mut self,
+        bce_hit: bool,
+        data: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+        is_ulist: bool,
+        idx: inkwell::values::IntValue<'ctx>,
+    ) -> IrResult<inkwell::values::FloatValue<'ctx>> {
+        let f64_t = self.ctx.f64_type();
+        if bce_hit {
+            // SAFETY: pre-loop BCE check proved `0 <= idx < bound <= len`.
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(f64_t, data, &[idx], "rv.ep")
+                    .unwrap()
+            };
+            return Ok(self
+                .builder
+                .build_load(f64_t, elem_ptr, "rv.ev")
+                .unwrap()
+                .into_float_value());
+        }
+
+        let inb_raw = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len, "rv.inb")
+            .unwrap();
+        let inb = self.expect_i1(inb_raw, true);
+        let fast_bb = self.new_block("rv.fast");
+        let slow_bb = self.new_block("rv.slow");
+        let cont_bb = self.new_block("rv.cont");
+        self.builder
+            .build_conditional_branch(inb, fast_bb, slow_bb)
+            .unwrap();
+
+        self.builder.position_at_end(fast_bb);
+        // SAFETY: `ULT(idx, len)` above guarantees `0 <= idx < len`.
+        let elem_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(f64_t, data, &[idx], "rv.ep")
+                .unwrap()
+        };
+        let fast_v = self
+            .builder
+            .build_load(f64_t, elem_ptr, "rv.ev")
+            .unwrap()
+            .into_float_value();
+        let fast_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(slow_bb);
+        let slow_v = if is_ulist {
+            let ul_ptr = self
+                .builder
+                .build_load(self.ptr_ty(), orig_slot, "rv.ul")
+                .unwrap()
+                .into_pointer_value();
+            let f = self.tramp(
+                "spid3r_ulist_f64_get",
+                &[self.ptr_ty().into(), self.i64_ty().into()],
+                Some(f64_t.into()),
+            );
+            let call_r = self.emit_call(f, &[ul_ptr.into(), idx.into()], "rv.sget");
+            let sv = match call_r.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                _ => unreachable!(),
+            };
+            self.throw_guard();
+            sv
+        } else {
+            let idx_v2 = self.v_int_from_i64(idx);
+            let bv = self.call2p("spid3r_index_get", orig_slot, idx_v2);
+            self.throw_guard();
+            let tof = self.tramp("spid3r_to_f64", &[self.ptr_ty().into()], Some(f64_t.into()));
+            let call_r = self
+                .builder
+                .build_call(tof, &[bv.into()], "rv.f64")
+                .unwrap();
+            match call_r.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                _ => unreachable!(),
+            }
+        };
+        let slow_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        let phi = self.builder.build_phi(f64_t, "rv.phi").unwrap();
+        phi.add_incoming(&[(&fast_v, fast_from), (&slow_v, slow_from)]);
+        Ok(phi.as_basic_value().into_float_value())
+    }
+
+    /// Phase 1: simulate expression type within a candidate hoisted `while` loop
+    /// using the candidate `rows` and `promoted` maps. Returns `None` if an
+    /// expression falls back to dynamic `ValueV2` operations or uses `%` on floats.
+    fn sim_expr_kind(
+        &self,
+        e: &Expr,
+        rows: &BTreeMap<String, UnboxedElem>,
+        promoted: &BTreeMap<String, (PromotedKind, bool)>,
+        loop_declared: &HashSet<String>,
+    ) -> Option<SimKind> {
+        match e {
+            Expr::Int(..) => Some(SimKind::Int),
+            Expr::Float(..) => Some(SimKind::Float),
+            Expr::Bool(..) => Some(SimKind::Bool),
+            Expr::Ident(name, _) => {
+                if rows.contains_key(name) {
+                    return None;
+                }
+                if loop_declared.contains(name) {
+                    if self.int_locals.as_ref().is_some_and(|s| s.contains(name)) {
+                        return Some(SimKind::Int);
+                    }
+                    if self.float_locals.as_ref().is_some_and(|s| s.contains(name)) {
+                        return Some(SimKind::Float);
+                    }
+                    return None;
+                }
+                if let Some((pk, _)) = promoted.get(name) {
+                    return Some(match pk {
+                        PromotedKind::Int => SimKind::Int,
+                        PromotedKind::Float => SimKind::Float,
+                    });
+                }
+                match self.lookup(name) {
+                    Some(VarLoc::LocalInt(_)) => Some(SimKind::Int),
+                    Some(VarLoc::LocalFloat(_)) => Some(SimKind::Float),
+                    Some(_) => None,
+                    None => self.top_ints.contains_key(name).then_some(SimKind::Int),
+                }
+            }
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } => match self.sim_expr_kind(expr, rows, promoted, loop_declared) {
+                Some(SimKind::Int) => Some(SimKind::Int),
+                Some(SimKind::Float) => Some(SimKind::Float),
+                _ => None,
+            },
+            Expr::Unary {
+                op: UnOp::Not,
+                expr,
+                ..
+            } => matches!(
+                self.sim_expr_kind(expr, rows, promoted, loop_declared),
+                Some(SimKind::Bool)
+            )
+            .then_some(SimKind::Bool),
+            Expr::Binary { op, l, r, .. } => {
+                let lk = self.sim_expr_kind(l, rows, promoted, loop_declared)?;
+                let rk = self.sim_expr_kind(r, rows, promoted, loop_declared)?;
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => match (lk, rk) {
+                        (SimKind::Int, SimKind::Int) => Some(SimKind::Int),
+                        (SimKind::Float, SimKind::Float | SimKind::Int)
+                        | (SimKind::Int, SimKind::Float) => Some(SimKind::Float),
+                        _ => None,
+                    },
+                    BinOp::Mod => match (lk, rk) {
+                        (SimKind::Int, SimKind::Int) => Some(SimKind::Int),
+                        _ => None,
+                    },
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
+                        match (lk, rk) {
+                            (SimKind::Int | SimKind::Float, SimKind::Int | SimKind::Float) => {
+                                Some(SimKind::Bool)
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+            }
+            Expr::Index { object, index, .. } => {
+                let Expr::Ident(name, _) = object.as_ref() else {
+                    return None;
+                };
+                if self.sim_expr_kind(index, rows, promoted, loop_declared) != Some(SimKind::Int) {
+                    return None;
+                }
+                if !loop_declared.contains(name) {
+                    if let Some(&elem) = rows.get(name) {
+                        return Some(match elem {
+                            UnboxedElem::I64 => SimKind::Int,
+                            UnboxedElem::F64 => SimKind::Float,
+                        });
+                    }
+                    match self.lookup(name) {
+                        Some(VarLoc::UListI64(_)) | Some(VarLoc::RowViewI64 { .. }) => {
+                            return Some(SimKind::Int);
+                        }
+                        Some(VarLoc::UListF64(_)) | Some(VarLoc::RowViewF64 { .. }) => {
+                            return Some(SimKind::Float);
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            Expr::Method {
+                object, name, args, ..
+            } if name == "len" && args.is_empty() => {
+                let Expr::Ident(vname, _) = object.as_ref() else {
+                    return None;
+                };
+                if !loop_declared.contains(vname)
+                    && (rows.contains_key(vname)
+                        || matches!(
+                            self.lookup(vname),
+                            Some(VarLoc::UListI64(_))
+                                | Some(VarLoc::UListF64(_))
+                                | Some(VarLoc::RowViewI64 { .. })
+                                | Some(VarLoc::RowViewF64 { .. })
+                        ))
+                {
+                    return Some(SimKind::Int);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Phase 1: analyze a `while` loop for hoisted 2D row views, `ValueV2` scalar
+    /// promotion, and loop-invariant bounds-check elimination (BCE).
+    fn analyze_hoisted_while_loop(&self, cond: &Expr, body: &[Stmt]) -> Option<HoistedLoopPlan> {
+        if body.is_empty() {
+            return None;
+        }
+        struct LoopWalk<'a, 'ctx> {
+            loop_declared: HashSet<String>,
+            assigned_vars: HashSet<String>,
+            nested_assigned: HashSet<String>,
+            indexed_objs: HashSet<String>,
+            standalone_uses: HashSet<String>,
+            all_idents: HashSet<String>,
+            index_vars: HashSet<String>,
+            mod_vars: HashSet<String>,
+            has_continue: bool,
+            uses_mod: bool,
+            has_float_signal: bool,
+            index_pairs: Vec<(String, &'a Expr)>,
+            assigns: Vec<(String, AssignOp, &'a Expr)>,
+            typed_decls: Vec<(String, Option<&'a Expr>)>,
+            all_exprs: Vec<&'a Expr>,
+            float_hint_vars: &'a HashSet<String>,
+            ir: &'a Ir<'ctx>,
+        }
+
+        fn collect_ident_list(e: &Expr, out: &mut HashSet<String>) {
+            match e {
+                Expr::Ident(n, _) => {
+                    out.insert(n.clone());
+                }
+                Expr::Unary { expr, .. } => collect_ident_list(expr, out),
+                Expr::Binary { l, r, .. } | Expr::Logical { l, r, .. } => {
+                    collect_ident_list(l, out);
+                    collect_ident_list(r, out);
+                }
+                Expr::Index { object, index, .. } => {
+                    collect_ident_list(object, out);
+                    collect_ident_list(index, out);
+                }
+                Expr::Method { object, args, .. } => {
+                    collect_ident_list(object, out);
+                    for a in args {
+                        collect_ident_list(a, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn walk_expr<'a, 'ctx>(
+            e: &'a Expr,
+            top_assign: bool,
+            in_index: bool,
+            in_mod: bool,
+            w: &mut LoopWalk<'a, 'ctx>,
+        ) -> bool {
+            w.all_exprs.push(e);
+            match e {
+                Expr::Int(..) | Expr::Bool(..) => true,
+                Expr::Float(..) => {
+                    w.has_float_signal = true;
+                    true
+                }
+                Expr::Ident(name, _) => {
+                    w.all_idents.insert(name.clone());
+                    w.standalone_uses.insert(name.clone());
+                    if in_index {
+                        w.index_vars.insert(name.clone());
+                    }
+                    if in_mod {
+                        w.mod_vars.insert(name.clone());
+                    }
+                    if w.float_hint_vars.contains(name)
+                        || matches!(
+                            w.ir.lookup(name),
+                            Some(VarLoc::LocalFloat(_))
+                                | Some(VarLoc::UListF64(_))
+                                | Some(VarLoc::RowViewF64 { .. })
+                        )
+                    {
+                        w.has_float_signal = true;
+                    }
+                    true
+                }
+                Expr::Unary { expr, .. } => walk_expr(expr, false, in_index, in_mod, w),
+                Expr::Binary { op, l, r, .. } => {
+                    let is_m = *op == BinOp::Mod;
+                    if is_m {
+                        w.uses_mod = true;
+                    }
+                    walk_expr(l, false, in_index, in_mod || is_m, w)
+                        && walk_expr(r, false, in_index, in_mod || is_m, w)
+                }
+                Expr::Logical { l, r, .. } => {
+                    walk_expr(l, false, in_index, in_mod, w)
+                        && walk_expr(r, false, in_index, in_mod, w)
+                }
+                Expr::Assign {
+                    target, op, value, ..
+                } => {
+                    let Expr::Ident(tname, _) = target.as_ref() else {
+                        return false;
+                    };
+                    w.all_idents.insert(tname.clone());
+                    w.assigned_vars.insert(tname.clone());
+                    if !top_assign {
+                        w.nested_assigned.insert(tname.clone());
+                    }
+                    let is_m = *op == AssignOp::ModAssign;
+                    if is_m {
+                        w.uses_mod = true;
+                        w.mod_vars.insert(tname.clone());
+                    }
+                    if w.float_hint_vars.contains(tname)
+                        || matches!(
+                            w.ir.lookup(tname),
+                            Some(VarLoc::LocalFloat(_)) | Some(VarLoc::UListF64(_))
+                        )
+                    {
+                        w.has_float_signal = true;
+                    }
+                    w.assigns.push((tname.clone(), *op, value.as_ref()));
+                    walk_expr(value, false, in_index, in_mod || is_m, w)
+                }
+                Expr::Index { object, index, .. } => {
+                    let Expr::Ident(obj_name, _) = object.as_ref() else {
+                        return false;
+                    };
+                    w.all_idents.insert(obj_name.clone());
+                    w.indexed_objs.insert(obj_name.clone());
+                    if matches!(
+                        w.ir.lookup(obj_name),
+                        Some(VarLoc::UListF64(_)) | Some(VarLoc::RowViewF64 { .. })
+                    ) {
+                        w.has_float_signal = true;
+                    }
+                    w.index_pairs.push((obj_name.clone(), index.as_ref()));
+                    walk_expr(index, false, true, in_mod, w)
+                }
+                Expr::Method {
+                    object, name, args, ..
+                } if name == "len" && args.is_empty() => {
+                    let Expr::Ident(obj_name, _) = object.as_ref() else {
+                        return false;
+                    };
+                    w.all_idents.insert(obj_name.clone());
+                    if matches!(
+                        w.ir.lookup(obj_name),
+                        Some(VarLoc::UListF64(_)) | Some(VarLoc::RowViewF64 { .. })
+                    ) {
+                        w.has_float_signal = true;
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        fn walk_stmt<'a, 'ctx>(s: &'a Stmt, w: &mut LoopWalk<'a, 'ctx>) -> bool {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    w.loop_declared.insert(name.clone());
+                    w.typed_decls.push((name.clone(), value.as_ref()));
+                    value
+                        .as_ref()
+                        .is_none_or(|e| walk_expr(e, false, false, false, w))
+                }
+                Stmt::Const { name, value, .. } => {
+                    w.loop_declared.insert(name.clone());
+                    w.typed_decls.push((name.clone(), Some(value)));
+                    walk_expr(value, false, false, false, w)
+                }
+                Stmt::If {
+                    cond,
+                    then,
+                    elifs,
+                    els,
+                    ..
+                } => {
+                    if !walk_expr(cond, false, false, false, w) || !walk_block(&then.stmts, w) {
+                        return false;
+                    }
+                    for (c, b) in elifs {
+                        if !walk_expr(c, false, false, false, w) || !walk_block(&b.stmts, w) {
+                            return false;
+                        }
+                    }
+                    els.as_ref().is_none_or(|b| walk_block(&b.stmts, w))
+                }
+                Stmt::Block(b) => walk_block(&b.stmts, w),
+                Stmt::Expr(e) => walk_expr(e, true, false, false, w),
+                Stmt::Break { .. } => true,
+                Stmt::Continue { .. } => {
+                    w.has_continue = true;
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        fn walk_block<'a, 'ctx>(stmts: &'a [Stmt], w: &mut LoopWalk<'a, 'ctx>) -> bool {
+            stmts.iter().all(|st| walk_stmt(st, w))
+        }
+
+        let mut w = LoopWalk {
+            loop_declared: HashSet::new(),
+            assigned_vars: HashSet::new(),
+            nested_assigned: HashSet::new(),
+            indexed_objs: HashSet::new(),
+            standalone_uses: HashSet::new(),
+            all_idents: HashSet::new(),
+            index_vars: HashSet::new(),
+            mod_vars: HashSet::new(),
+            has_continue: false,
+            uses_mod: false,
+            has_float_signal: false,
+            index_pairs: Vec::new(),
+            assigns: Vec::new(),
+            typed_decls: Vec::new(),
+            all_exprs: Vec::new(),
+            float_hint_vars: &self.float_hint_vars,
+            ir: self,
+        };
+
+        if !walk_expr(cond, false, false, false, &mut w) || !walk_block(body, &mut w) {
+            return None;
+        }
+
+        let mut rows = BTreeMap::new();
+        let mut had_local_row = false;
+        for name in &w.indexed_objs {
+            if w.loop_declared.contains(name)
+                || w.assigned_vars.contains(name)
+                || w.standalone_uses.contains(name)
+            {
+                continue;
+            }
+            match self.lookup(name) {
+                Some(VarLoc::Local(_)) => {
+                    let elem = if w.has_float_signal && !w.uses_mod {
+                        UnboxedElem::F64
+                    } else {
+                        UnboxedElem::I64
+                    };
+                    rows.insert(name.clone(), elem);
+                    had_local_row = true;
+                }
+                Some(VarLoc::UListI64(_)) => {
+                    rows.insert(name.clone(), UnboxedElem::I64);
+                }
+                Some(VarLoc::UListF64(_)) => {
+                    rows.insert(name.clone(), UnboxedElem::F64);
+                }
+                _ => {}
+            }
+        }
+        if rows.is_empty() {
+            return None;
+        }
+
+        let mut promoted: BTreeMap<String, (PromotedKind, bool)> = BTreeMap::new();
+        for name in &w.all_idents {
+            if rows.contains_key(name)
+                || w.loop_declared.contains(name)
+                || w.nested_assigned.contains(name)
+            {
+                continue;
+            }
+            if matches!(self.lookup(name), Some(VarLoc::Local(_))) {
+                let kind = if self.float_hint_vars.contains(name) {
+                    PromotedKind::Float
+                } else {
+                    PromotedKind::Int
+                };
+                let written = w.assigned_vars.contains(name);
+                promoted.insert(name.clone(), (kind, written));
+            }
+        }
+
+        loop {
+            let mut changed = false;
+            let mut drop_promoted: Option<String> = None;
+            let mut upgrade_float: Option<String> = None;
+            for (tname, op, rhs) in &w.assigns {
+                if let Some(&(kind, _)) = promoted.get(tname) {
+                    let rk = self.sim_expr_kind(rhs, &rows, &promoted, &w.loop_declared);
+                    match kind {
+                        PromotedKind::Int => match rk {
+                            Some(SimKind::Int) => {}
+                            Some(SimKind::Float)
+                                if *op != AssignOp::ModAssign
+                                    && !w.index_vars.contains(tname)
+                                    && !w.mod_vars.contains(tname) =>
+                            {
+                                upgrade_float = Some(tname.clone());
+                                break;
+                            }
+                            _ => {
+                                drop_promoted = Some(tname.clone());
+                                break;
+                            }
+                        },
+                        PromotedKind::Float => {
+                            if *op == AssignOp::ModAssign
+                                || !matches!(rk, Some(SimKind::Float | SimKind::Int))
+                            {
+                                drop_promoted = Some(tname.clone());
+                                break;
+                            }
+                        }
+                    }
+                } else if !w.loop_declared.contains(tname) {
+                    match self.lookup(tname) {
+                        Some(VarLoc::LocalInt(_)) => {
+                            if self.sim_expr_kind(rhs, &rows, &promoted, &w.loop_declared)
+                                != Some(SimKind::Int)
+                            {
+                                return None;
+                            }
+                        }
+                        Some(VarLoc::LocalFloat(_))
+                            if (*op == AssignOp::ModAssign
+                                || !matches!(
+                                    self.sim_expr_kind(rhs, &rows, &promoted, &w.loop_declared),
+                                    Some(SimKind::Float | SimKind::Int)
+                                )) =>
+                        {
+                            return None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(u) = upgrade_float {
+                if let Some(entry) = promoted.get_mut(&u) {
+                    entry.0 = PromotedKind::Float;
+                    changed = true;
+                }
+            } else if let Some(d) = drop_promoted {
+                promoted.remove(&d);
+                changed = true;
+            }
+            if changed {
+                continue;
+            }
+
+            let mut drop_row: Option<String> = None;
+            for (rname, idx_expr) in &w.index_pairs {
+                if rows.contains_key(rname)
+                    && self.sim_expr_kind(idx_expr, &rows, &promoted, &w.loop_declared)
+                        != Some(SimKind::Int)
+                {
+                    drop_row = Some(rname.clone());
+                    break;
+                }
+            }
+            if let Some(r) = drop_row {
+                rows.remove(&r);
+                continue;
+            }
+            break;
+        }
+
+        if rows.is_empty() {
+            return None;
+        }
+
+        // Validate loop-local bindings whose slot type was chosen by function-wide
+        // analysis (`int_locals` / `float_locals`) as well as float `%` safety.
+        for (dname, val_opt) in &w.typed_decls {
+            let is_int = self.int_locals.as_ref().is_some_and(|s| s.contains(dname));
+            let is_float = !is_int
+                && self
+                    .float_locals
+                    .as_ref()
+                    .is_some_and(|s| s.contains(dname));
+            if let Some(v) = val_opt {
+                if is_int
+                    && self.sim_expr_kind(v, &rows, &promoted, &w.loop_declared)
+                        != Some(SimKind::Int)
+                {
+                    return None;
+                }
+                if is_float
+                    && !matches!(
+                        self.sim_expr_kind(v, &rows, &promoted, &w.loop_declared),
+                        Some(SimKind::Float | SimKind::Int)
+                    )
+                {
+                    return None;
+                }
+            }
+        }
+        for (tname, op, rhs) in &w.assigns {
+            if w.loop_declared.contains(tname) {
+                let is_int = self.int_locals.as_ref().is_some_and(|s| s.contains(tname));
+                let is_float = !is_int
+                    && self
+                        .float_locals
+                        .as_ref()
+                        .is_some_and(|s| s.contains(tname));
+                if is_int
+                    && self.sim_expr_kind(rhs, &rows, &promoted, &w.loop_declared)
+                        != Some(SimKind::Int)
+                {
+                    return None;
+                }
+                if is_float
+                    && (*op == AssignOp::ModAssign
+                        || !matches!(
+                            self.sim_expr_kind(rhs, &rows, &promoted, &w.loop_declared),
+                            Some(SimKind::Float | SimKind::Int)
+                        ))
+                {
+                    return None;
+                }
+            }
+        }
+        for e in &w.all_exprs {
+            if let Expr::Binary {
+                op: BinOp::Mod,
+                l,
+                r,
+                ..
+            } = e
+            {
+                let lk = self.sim_expr_kind(l, &rows, &promoted, &w.loop_declared);
+                let rk = self.sim_expr_kind(r, &rows, &promoted, &w.loop_declared);
+                if matches!(lk, Some(SimKind::Float)) || matches!(rk, Some(SimKind::Float)) {
+                    return None;
+                }
+            }
+        }
+
+        // Analyze pre-loop BCE.
+        let bce = if !w.has_continue {
+            if let Expr::Binary {
+                op: cmp_op @ (BinOp::Lt | BinOp::Le),
+                l,
+                r,
+                ..
+            } = cond
+            {
+                if let Expr::Ident(idx_var, _) = l.as_ref() {
+                    let idx_ok = !w.loop_declared.contains(idx_var)
+                        && (matches!(self.lookup(idx_var), Some(VarLoc::LocalInt(_)))
+                            || matches!(promoted.get(idx_var), Some((PromotedKind::Int, _))));
+                    let bound_ok = self.sim_expr_kind(r, &rows, &promoted, &w.loop_declared)
+                        == Some(SimKind::Int);
+                    let mut bound_idents = HashSet::new();
+                    collect_ident_list(r, &mut bound_idents);
+                    let bound_inv = bound_idents
+                        .iter()
+                        .all(|id| !w.assigned_vars.contains(id) && !w.loop_declared.contains(id));
+
+                    let is_unit_inc = matches!(
+                        body.last(),
+                        Some(Stmt::Expr(Expr::Assign { target, op, value, .. }))
+                        if matches!(target.as_ref(), Expr::Ident(tn, _) if tn == idx_var)
+                            && match (op, value.as_ref()) {
+                                (AssignOp::AddAssign, Expr::Int(1, _)) => true,
+                                (AssignOp::Assign, Expr::Binary { op: BinOp::Add, l, r, .. }) => {
+                                    (matches!(l.as_ref(), Expr::Ident(a, _) if a == idx_var)
+                                        && matches!(r.as_ref(), Expr::Int(1, _)))
+                                        || (matches!(l.as_ref(), Expr::Int(1, _))
+                                            && matches!(r.as_ref(), Expr::Ident(b, _) if b == idx_var))
+                                }
+                                _ => false,
+                            }
+                    );
+
+                    if idx_ok && bound_ok && bound_inv && is_unit_inc {
+                        let mut early_check = LoopWalk {
+                            loop_declared: HashSet::new(),
+                            assigned_vars: HashSet::new(),
+                            nested_assigned: HashSet::new(),
+                            indexed_objs: HashSet::new(),
+                            standalone_uses: HashSet::new(),
+                            all_idents: HashSet::new(),
+                            index_vars: HashSet::new(),
+                            mod_vars: HashSet::new(),
+                            has_continue: false,
+                            uses_mod: false,
+                            has_float_signal: false,
+                            index_pairs: Vec::new(),
+                            assigns: Vec::new(),
+                            typed_decls: Vec::new(),
+                            all_exprs: Vec::new(),
+                            float_hint_vars: &self.float_hint_vars,
+                            ir: self,
+                        };
+                        let ok_prefix = walk_expr(cond, false, false, false, &mut early_check)
+                            && walk_block(&body[..body.len() - 1], &mut early_check);
+                        if ok_prefix && !early_check.assigned_vars.contains(idx_var) {
+                            let mut bce_rows = BTreeSet::new();
+                            for rname in rows.keys() {
+                                let mut hits = 0usize;
+                                let mut all_match = true;
+                                for (obj_n, idx_e) in &early_check.index_pairs {
+                                    if obj_n == rname {
+                                        if matches!(idx_e, Expr::Ident(id, _) if id == idx_var) {
+                                            hits += 1;
+                                        } else {
+                                            all_match = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if all_match && hits > 0 {
+                                    bce_rows.insert(rname.clone());
+                                }
+                            }
+                            if !bce_rows.is_empty() {
+                                Some(BcePlan {
+                                    idx_var: idx_var.clone(),
+                                    bound_expr: r.as_ref().clone(),
+                                    inclusive: *cmp_op == BinOp::Le,
+                                    bce_rows,
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !had_local_row && bce.is_none() {
+            return None;
+        }
+
+        Some(HoistedLoopPlan {
+            rows,
+            promoted,
+            bce,
+        })
+    }
+
+    fn emit_while_loop_plain(&mut self, cond: &Expr, body: &Block) -> IrResult<()> {
+        let cond_bb = self.new_block("while.cond");
+        let body_bb = self.new_block("while.body");
+        let end_bb = self.new_block("while.end");
+        self.br_to(cond_bb);
+        self.builder.position_at_end(cond_bb);
+        self.emit_cond_branch(cond, body_bb, end_bb)?;
+        self.builder.position_at_end(body_bb);
+        // Cancellation point: the counter slot is allocated in the
+        // entry block, so it is live for the whole loop.
+        let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+        self.init_entry_slot(counter, self.i64c(0));
+        self.emit_cancel_poll(counter);
+        self.loops.push(LoopFrame {
+            break_bb: end_bb,
+            continue_bb: cond_bb,
+        });
+        let res = self.compile_block(&body.stmts);
+        self.loops.pop();
+        res?;
+        self.br_to(cond_bb);
+        self.builder.position_at_end(end_bb);
+        Ok(())
+    }
+
+    /// Phase 1: emit multiversioned `while` loop with hoisted `RowView*` slice
+    /// views, promoted `ValueV2` scalar accumulators (written back on both
+    /// normal/break and exception exits), and pre-loop BCE with chunked cancel
+    /// polling so LLVM can vectorize the inner loop cleanly.
+    fn emit_hoisted_while_loop(
+        &mut self,
+        cond: &Expr,
+        body: &Block,
+        plan: HoistedLoopPlan,
+    ) -> IrResult<()> {
+        let f64_t = self.ctx.f64_type();
+        let v2_ty = self.val_v2_ty();
+        let hdr_ty = self.ulist_hdr_ty();
+        let lv_ty = self.ctx.struct_type(
+            &[
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+                self.i64_ty().into(),
+            ],
+            false,
+        );
+
+        let fast_prep_bb = self.new_block("whl.prep");
+        let fast_run_bb = self.new_block("whl.fast");
+        let fast_end_bb = self.new_block("whl.fast.end");
+        let fast_exc_bb = self.new_block("whl.fast.exc");
+        let slow_loop_bb = self.new_block("whl.slow");
+        let after_bb = self.new_block("whl.after");
+
+        self.br_to(fast_prep_bb);
+        self.builder.position_at_end(fast_prep_bb);
+
+        let mut acquired_rows: Vec<(String, VarLoc<'ctx>)> = Vec::with_capacity(plan.rows.len());
+        for (name, elem) in &plan.rows {
+            match self.lookup(name) {
+                Some(VarLoc::Local(orig_slot)) => {
+                    let lv_slot = self.alloca_entry_ty(lv_ty, "lv");
+                    let fn_name = match elem {
+                        UnboxedElem::I64 => "spid3r_list_view_i64",
+                        UnboxedElem::F64 => "spid3r_list_view_f64",
+                    };
+                    let f = self.tramp(
+                        fn_name,
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        Some(self.i8_ty().into()),
+                    );
+                    let ok_i8 =
+                        call_int(self.emit_call(f, &[orig_slot.into(), lv_slot.into()], "lv.ok"));
+                    let ok_raw = self
+                        .builder
+                        .build_int_compare(IntPredicate::NE, ok_i8, self.i8c(0), "lv.hit")
+                        .unwrap();
+                    let ok = self.expect_i1(ok_raw, true);
+                    let next_bb = self.new_block("whl.prep.ok");
+                    self.builder
+                        .build_conditional_branch(ok, next_bb, slow_loop_bb)
+                        .unwrap();
+                    self.builder.position_at_end(next_bb);
+
+                    let data_p = self
+                        .builder
+                        .build_struct_gep(lv_ty, lv_slot, 0, "lv.datap")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(self.ptr_ty(), data_p, "lv.data")
+                        .unwrap()
+                        .into_pointer_value();
+                    let len_p = self
+                        .builder
+                        .build_struct_gep(lv_ty, lv_slot, 1, "lv.lenp")
+                        .unwrap();
+                    let len = self
+                        .builder
+                        .build_load(self.i64_ty(), len_p, "lv.len")
+                        .unwrap()
+                        .into_int_value();
+                    let loc = match elem {
+                        UnboxedElem::I64 => VarLoc::RowViewI64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist: false,
+                        },
+                        UnboxedElem::F64 => VarLoc::RowViewF64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist: false,
+                        },
+                    };
+                    acquired_rows.push((name.clone(), loc));
+                }
+                Some(VarLoc::UListI64(orig_slot)) => {
+                    let ul_ptr = self
+                        .builder
+                        .build_load(self.ptr_ty(), orig_slot, "rv.ul")
+                        .unwrap()
+                        .into_pointer_value();
+                    let data_p = self
+                        .builder
+                        .build_struct_gep(hdr_ty, ul_ptr, 0, "ul.datap")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(self.ptr_ty(), data_p, "ul.data")
+                        .unwrap()
+                        .into_pointer_value();
+                    let len = self.emit_ulist_len(ul_ptr);
+                    acquired_rows.push((
+                        name.clone(),
+                        VarLoc::RowViewI64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist: true,
+                        },
+                    ));
+                }
+                Some(VarLoc::UListF64(orig_slot)) => {
+                    let ul_ptr = self
+                        .builder
+                        .build_load(self.ptr_ty(), orig_slot, "rv.ul")
+                        .unwrap()
+                        .into_pointer_value();
+                    let data_p = self
+                        .builder
+                        .build_struct_gep(hdr_ty, ul_ptr, 0, "ul.datap")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(self.ptr_ty(), data_p, "ul.data")
+                        .unwrap()
+                        .into_pointer_value();
+                    let len = self.emit_ulist_len(ul_ptr);
+                    acquired_rows.push((
+                        name.clone(),
+                        VarLoc::RowViewF64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist: true,
+                        },
+                    ));
+                }
+                _ => unreachable!("analyze_hoisted_while_loop checked VarLoc"),
+            }
+        }
+
+        // Guard and unbox every promoted `ValueV2` scalar before entering the loop.
+        struct PromotedSlot<'ctx> {
+            name: String,
+            kind: PromotedKind,
+            written: bool,
+            orig_slot: PointerValue<'ctx>,
+            fast_slot: PointerValue<'ctx>,
+        }
+        let mut promoted_slots: Vec<PromotedSlot<'ctx>> = Vec::with_capacity(plan.promoted.len());
+        for (name, (kind, written)) in &plan.promoted {
+            let Some(VarLoc::Local(orig_slot)) = self.lookup(name) else {
+                unreachable!("analyze_hoisted_while_loop checked Local for promoted scalar");
+            };
+            let tag_p = unsafe {
+                self.builder
+                    .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(0)], "pm.tp")
+                    .unwrap()
+            };
+            let tag = self
+                .builder
+                .build_load(self.i64_ty(), tag_p, "pm.tag")
+                .unwrap()
+                .into_int_value();
+            let expected_tag = match kind {
+                PromotedKind::Int => crate::value::ValueV2::TAG_INT,
+                PromotedKind::Float => crate::value::ValueV2::TAG_FLOAT,
+            };
+            let tag_ok_raw = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    tag,
+                    self.i64c(expected_tag as i64),
+                    "pm.tok",
+                )
+                .unwrap();
+            let tag_ok = self.expect_i1(tag_ok_raw, true);
+            let next_bb = self.new_block("whl.pm.ok");
+            self.builder
+                .build_conditional_branch(tag_ok, next_bb, slow_loop_bb)
+                .unwrap();
+            self.builder.position_at_end(next_bb);
+
+            let pay_p = unsafe {
+                self.builder
+                    .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(1)], "pm.pp")
+                    .unwrap()
+            };
+            let pay = self
+                .builder
+                .build_load(self.i64_ty(), pay_p, "pm.pay")
+                .unwrap()
+                .into_int_value();
+            let fast_slot = match kind {
+                PromotedKind::Int => {
+                    let s = self.alloca_entry_ty(self.i64_ty(), "pm.i");
+                    self.builder.build_store(s, pay).unwrap();
+                    s
+                }
+                PromotedKind::Float => {
+                    let s = self.alloca_entry_ty(f64_t, "pm.f");
+                    let fv = self
+                        .builder
+                        .build_bit_cast(pay, f64_t, "pm.fbits")
+                        .unwrap()
+                        .into_float_value();
+                    self.builder.build_store(s, fv).unwrap();
+                    s
+                }
+            };
+            promoted_slots.push(PromotedSlot {
+                name: name.clone(),
+                kind: *kind,
+                written: *written,
+                orig_slot,
+                fast_slot,
+            });
+        }
+
+        // Bind the hoisted row views and promoted scalar slots into a fast scope.
+        self.push_scope();
+        for (name, loc) in &acquired_rows {
+            self.declare(name, *loc);
+        }
+        for ps in &promoted_slots {
+            let loc = match ps.kind {
+                PromotedKind::Int => VarLoc::LocalInt(ps.fast_slot),
+                PromotedKind::Float => VarLoc::LocalFloat(ps.fast_slot),
+            };
+            self.declare(&ps.name, loc);
+        }
+
+        // Pre-loop BCE guards (evaluated before pushing `fast_exc_bb` so any
+        // error in `bound_expr` unwinds without clobbering promoted scalars).
+        let bce_exec = if let Some(ref bce) = plan.bce {
+            let Some(VarLoc::LocalInt(idx_slot)) = self.lookup(&bce.idx_var) else {
+                unreachable!("BCE idx_var must be LocalInt");
+            };
+            let idx0 = self
+                .builder
+                .build_load(self.i64_ty(), idx_slot, "bce.idx0")
+                .unwrap()
+                .into_int_value();
+            let non_neg_raw = self
+                .builder
+                .build_int_compare(IntPredicate::SGE, idx0, self.i64c(0), "bce.ge0")
+                .unwrap();
+            let non_neg = self.expect_i1(non_neg_raw, true);
+            let nn_bb = self.new_block("bce.nn");
+            self.builder
+                .build_conditional_branch(non_neg, nn_bb, slow_loop_bb)
+                .unwrap();
+            self.builder.position_at_end(nn_bb);
+
+            let bound_val = match self.compile_expr_i64(&bce.bound_expr) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.pop_scope();
+                    return Err(e);
+                }
+            };
+            for rname in &bce.bce_rows {
+                let row_len = match self.lookup(rname) {
+                    Some(VarLoc::RowViewI64 { len, .. }) | Some(VarLoc::RowViewF64 { len, .. }) => {
+                        len
+                    }
+                    _ => unreachable!("BCE row must be RowView*"),
+                };
+                let pred = if bce.inclusive {
+                    IntPredicate::SLT
+                } else {
+                    IntPredicate::SLE
+                };
+                let inb_raw = self
+                    .builder
+                    .build_int_compare(pred, bound_val, row_len, "bce.bnd")
+                    .unwrap();
+                let inb = self.expect_i1(inb_raw, true);
+                let ok_bb = self.new_block("bce.ok");
+                self.builder
+                    .build_conditional_branch(inb, ok_bb, slow_loop_bb)
+                    .unwrap();
+                self.builder.position_at_end(ok_bb);
+            }
+            let limit_val = if bce.inclusive {
+                // SAFETY/no-overflow: `SLT(bound_val, row_len <= i64::MAX)` above
+                // proves `bound_val < i64::MAX`, so `bound_val + 1 <= i64::MAX`.
+                self.builder
+                    .build_int_add(bound_val, self.i64c(1), "bce.lim")
+                    .unwrap()
+            } else {
+                bound_val
+            };
+            Some((idx_slot, limit_val, bce))
+        } else {
+            None
+        };
+
+        self.br_to(fast_run_bb);
+        self.builder.position_at_end(fast_run_bb);
+
+        let outer_exc = self.exc.last().copied();
+        if outer_exc.is_some() {
+            self.exc.push(fast_exc_bb);
+        }
+        let mut new_bce = HashMap::new();
+        if let Some((_, _, bce)) = &bce_exec {
+            for rname in &bce.bce_rows {
+                new_bce.insert(rname.clone(), bce.idx_var.clone());
+            }
+        }
+        let prev_bce = std::mem::replace(&mut self.row_bce_vars, new_bce);
+
+        let body_res: IrResult<()> = if let Some((idx_slot, limit_val, bce)) = &bce_exec {
+            let _ = bce;
+            if self.budget_counter_gv.is_none() {
+                const CANCEL_POLL_INTERVAL: i64 = 2048;
+                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+                self.init_entry_slot(counter, self.i64c(0));
+
+                let outer_cond_bb = self.new_block("bce.outer.cond");
+                let outer_body_bb = self.new_block("bce.outer.body");
+                let cancel_chk_bb = self.new_block("bce.cancel.chk");
+                let inner_cond_bb = self.new_block("bce.inner.cond");
+                let inner_body_bb = self.new_block("bce.inner.body");
+
+                self.br_to(outer_cond_bb);
+                self.builder.position_at_end(outer_cond_bb);
+                let idx_o = self
+                    .builder
+                    .build_load(self.i64_ty(), *idx_slot, "bce.io")
+                    .unwrap()
+                    .into_int_value();
+                let more = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, idx_o, *limit_val, "bce.more")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(more, outer_body_bb, fast_end_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(outer_body_bb);
+                let rem = self
+                    .builder
+                    .build_int_sub(*limit_val, idx_o, "bce.rem")
+                    .unwrap();
+                let max_chunk = self.i64c(CANCEL_POLL_INTERVAL);
+                let gt_chunk = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, rem, max_chunk, "bce.gt")
+                    .unwrap();
+                let step = self
+                    .builder
+                    .build_select(gt_chunk, max_chunk, rem, "bce.step")
+                    .unwrap()
+                    .into_int_value();
+                let chunk_end = self.builder.build_int_add(idx_o, step, "bce.cend").unwrap();
+
+                let cur_c = self
+                    .builder
+                    .build_load(self.i64_ty(), counter, "cancel.n")
+                    .unwrap()
+                    .into_int_value();
+                let next_c = self
+                    .builder
+                    .build_int_add(cur_c, step, "cancel.ns")
+                    .unwrap();
+                self.builder.build_store(counter, next_c).unwrap();
+                let hit_raw = self
+                    .builder
+                    .build_int_compare(IntPredicate::UGE, next_c, max_chunk, "cancel.hit")
+                    .unwrap();
+                let hit = self.expect_i1(hit_raw, false);
+                self.builder
+                    .build_conditional_branch(hit, cancel_chk_bb, inner_cond_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(cancel_chk_bb);
+                self.builder.build_store(counter, self.i64c(0)).unwrap();
+                let f_chk = self.tramp("spid3r_cancel_check", &[], Some(self.i8_ty().into()));
+                let _r = self.emit_call(f_chk, &[], "cancel.chk");
+                self.throw_guard();
+                self.br_to(inner_cond_bb);
+
+                self.builder.position_at_end(inner_cond_bb);
+                let idx_i = self
+                    .builder
+                    .build_load(self.i64_ty(), *idx_slot, "bce.ii")
+                    .unwrap()
+                    .into_int_value();
+                let in_chunk = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, idx_i, chunk_end, "bce.incnk")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(in_chunk, inner_body_bb, outer_cond_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(inner_body_bb);
+                self.loops.push(LoopFrame {
+                    break_bb: fast_end_bb,
+                    continue_bb: inner_cond_bb,
+                });
+                let r = self.compile_block(&body.stmts[..body.stmts.len() - 1]);
+                self.loops.pop();
+                if r.is_ok() && !self.sealed() {
+                    let cur_idx = self
+                        .builder
+                        .build_load(self.i64_ty(), *idx_slot, "bce.idx")
+                        .unwrap()
+                        .into_int_value();
+                    let next_idx = self
+                        .builder
+                        .build_int_add(cur_idx, self.i64c(1), "bce.inc")
+                        .unwrap();
+                    self.builder.build_store(*idx_slot, next_idx).unwrap();
+                    self.br_to(inner_cond_bb);
+                }
+                r
+            } else {
+                let fast_cond_bb = self.new_block("whl.fast.cond");
+                let fast_body_bb = self.new_block("whl.fast.body");
+                self.br_to(fast_cond_bb);
+                self.builder.position_at_end(fast_cond_bb);
+                let idx_v = self
+                    .builder
+                    .build_load(self.i64_ty(), *idx_slot, "bce.iv")
+                    .unwrap()
+                    .into_int_value();
+                let go = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, idx_v, *limit_val, "bce.go")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(go, fast_body_bb, fast_end_bb)
+                    .unwrap();
+                self.builder.position_at_end(fast_body_bb);
+                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+                self.init_entry_slot(counter, self.i64c(0));
+                self.emit_cancel_poll(counter);
+                self.loops.push(LoopFrame {
+                    break_bb: fast_end_bb,
+                    continue_bb: fast_cond_bb,
+                });
+                let r = self.compile_block(&body.stmts[..body.stmts.len() - 1]);
+                self.loops.pop();
+                if r.is_ok() && !self.sealed() {
+                    let cur_idx = self
+                        .builder
+                        .build_load(self.i64_ty(), *idx_slot, "bce.idx")
+                        .unwrap()
+                        .into_int_value();
+                    let next_idx = self
+                        .builder
+                        .build_int_add(cur_idx, self.i64c(1), "bce.inc")
+                        .unwrap();
+                    self.builder.build_store(*idx_slot, next_idx).unwrap();
+                    self.br_to(fast_cond_bb);
+                }
+                r
+            }
+        } else {
+            let fast_cond_bb = self.new_block("whl.fast.cond");
+            let fast_body_bb = self.new_block("whl.fast.body");
+            self.br_to(fast_cond_bb);
+            self.builder.position_at_end(fast_cond_bb);
+            let cond_r = self.emit_cond_branch(cond, fast_body_bb, fast_end_bb);
+            if cond_r.is_ok() {
+                self.builder.position_at_end(fast_body_bb);
+                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+                self.init_entry_slot(counter, self.i64c(0));
+                self.emit_cancel_poll(counter);
+                self.loops.push(LoopFrame {
+                    break_bb: fast_end_bb,
+                    continue_bb: fast_cond_bb,
+                });
+                let r = self.compile_block(&body.stmts);
+                self.loops.pop();
+                if r.is_ok() {
+                    self.br_to(fast_cond_bb);
+                }
+                r
+            } else {
+                cond_r
+            }
+        };
+
+        self.row_bce_vars = prev_bce;
+        if outer_exc.is_some() {
+            self.exc.pop();
+        }
+        self.pop_scope();
+        body_res?;
+
+        // Normal / break exit: write back updated promoted scalars to `ValueV2`.
+        self.builder.position_at_end(fast_end_bb);
+        for ps in &promoted_slots {
+            if !ps.written {
+                continue;
+            }
+            match ps.kind {
+                PromotedKind::Int => {
+                    let v = self
+                        .builder
+                        .build_load(self.i64_ty(), ps.fast_slot, "wb.i")
+                        .unwrap()
+                        .into_int_value();
+                    self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_INT, v);
+                }
+                PromotedKind::Float => {
+                    let fv = self
+                        .builder
+                        .build_load(f64_t, ps.fast_slot, "wb.f")
+                        .unwrap()
+                        .into_float_value();
+                    let bits = self
+                        .builder
+                        .build_bit_cast(fv, self.i64_ty(), "wb.fb")
+                        .unwrap()
+                        .into_int_value();
+                    self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_FLOAT, bits);
+                }
+            }
+        }
+        self.br_to(after_bb);
+
+        // Exception exit: write back updated promoted scalars before propagating.
+        self.builder.position_at_end(fast_exc_bb);
+        for ps in &promoted_slots {
+            if !ps.written {
+                continue;
+            }
+            match ps.kind {
+                PromotedKind::Int => {
+                    let v = self
+                        .builder
+                        .build_load(self.i64_ty(), ps.fast_slot, "ewb.i")
+                        .unwrap()
+                        .into_int_value();
+                    self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_INT, v);
+                }
+                PromotedKind::Float => {
+                    let fv = self
+                        .builder
+                        .build_load(f64_t, ps.fast_slot, "ewb.f")
+                        .unwrap()
+                        .into_float_value();
+                    let bits = self
+                        .builder
+                        .build_bit_cast(fv, self.i64_ty(), "ewb.fb")
+                        .unwrap()
+                        .into_int_value();
+                    self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_FLOAT, bits);
+                }
+            }
+        }
+        if let Some(outer) = outer_exc {
+            self.br_to(outer);
+        } else {
+            self.builder.build_unreachable().unwrap();
+        }
+
+        // Slow fallback path (guards failed).
+        self.builder.position_at_end(slow_loop_bb);
+        self.emit_while_loop_plain(cond, body)?;
+        self.br_to(after_bb);
+
+        self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
     fn emit_f64_binop(
         &mut self,
         lhs: inkwell::values::FloatValue<'ctx>,
@@ -4182,14 +6390,29 @@ impl<'ctx> Ir<'ctx> {
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
-                    if let Some(VarLoc::UListF64(slot)) = self.lookup(name) {
-                        let ptr = self
-                            .builder
-                            .build_load(self.ptr_ty(), slot, "ul")
-                            .unwrap()
-                            .into_pointer_value();
-                        let idx = self.compile_expr_i64(index)?;
-                        return self.emit_ulist_f64_get_inline(ptr, idx);
+                    match self.lookup(name) {
+                        Some(VarLoc::UListF64(slot)) => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = self.compile_expr_i64(index)?;
+                            return self.emit_ulist_f64_get_inline(ptr, idx);
+                        }
+                        Some(VarLoc::RowViewF64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist,
+                        }) => {
+                            let idx = self.compile_expr_i64(index)?;
+                            let bce_hit = self.is_row_bce_hit(name, index);
+                            return self.emit_row_view_f64_get(
+                                bce_hit, data, len, orig_slot, is_ulist, idx,
+                            );
+                        }
+                        _ => {}
                     }
                 }
                 if self.is_int_expr(e) {
@@ -4888,14 +7111,29 @@ impl<'ctx> Ir<'ctx> {
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
-                    if let Some(VarLoc::UListI64(slot)) = self.lookup(name) {
-                        let ptr = self
-                            .builder
-                            .build_load(self.ptr_ty(), slot, "ul")
-                            .unwrap()
-                            .into_pointer_value();
-                        let idx = self.compile_expr_i64(index)?;
-                        return self.emit_ulist_i64_get_inline(ptr, idx);
+                    match self.lookup(name) {
+                        Some(VarLoc::UListI64(slot)) => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = self.compile_expr_i64(index)?;
+                            return self.emit_ulist_i64_get_inline(ptr, idx);
+                        }
+                        Some(VarLoc::RowViewI64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist,
+                        }) => {
+                            let idx = self.compile_expr_i64(index)?;
+                            let bce_hit = self.is_row_bce_hit(name, index);
+                            return self.emit_row_view_i64_get(
+                                bce_hit, data, len, orig_slot, is_ulist, idx,
+                            );
+                        }
+                        _ => {}
                     }
                 }
                 panic!("compile_expr_i64 called on non-int index")
@@ -4912,6 +7150,10 @@ impl<'ctx> Ir<'ctx> {
                                 .into_pointer_value();
                             return Ok(self.emit_ulist_len(ptr));
                         }
+                        (Some(VarLoc::RowViewI64 { len, .. }), "len")
+                        | (Some(VarLoc::RowViewF64 { len, .. }), "len") => {
+                            return Ok(len);
+                        }
                         (Some(VarLoc::UListI64(slot)), "pop") => {
                             let ptr = self
                                 .builder
@@ -4926,6 +7168,12 @@ impl<'ctx> Ir<'ctx> {
                             let out = call_int(self.emit_call(f, &[ptr.into()], "ul.pop"));
                             self.throw_guard();
                             return Ok(out);
+                        }
+                        _ if name == "len"
+                            && self.str_locals.as_ref().is_some_and(|s| s.contains(vname)) =>
+                        {
+                            let obj = self.compile_ident(vname)?;
+                            return self.emit_v2_len_inline_i64(obj);
                         }
                         _ => {}
                     }
@@ -5194,27 +7442,11 @@ impl<'ctx> Ir<'ctx> {
                 Ok(())
             }
             Stmt::While { cond, body, .. } => {
-                let cond_bb = self.new_block("while.cond");
-                let body_bb = self.new_block("while.body");
-                let end_bb = self.new_block("while.end");
-                self.br_to(cond_bb);
-                self.builder.position_at_end(cond_bb);
-                self.emit_cond_branch(cond, body_bb, end_bb)?;
-                self.builder.position_at_end(body_bb);
-                // Cancellation point: the counter slot is allocated in the
-                // entry block, so it is live for the whole loop.
-                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
-                self.init_entry_slot(counter, self.i64c(0));
-                self.emit_cancel_poll(counter);
-                self.loops.push(LoopFrame {
-                    break_bb: end_bb,
-                    continue_bb: cond_bb,
-                });
-                self.compile_block(&body.stmts)?;
-                self.loops.pop();
-                self.br_to(cond_bb);
-                self.builder.position_at_end(end_bb);
-                Ok(())
+                if let Some(plan) = self.analyze_hoisted_while_loop(cond, &body.stmts) {
+                    self.emit_hoisted_while_loop(cond, body, plan)
+                } else {
+                    self.emit_while_loop_plain(cond, body)
+                }
             }
             Stmt::ForIn {
                 var,
@@ -5982,6 +8214,22 @@ impl<'ctx> Ir<'ctx> {
         }
     }
 
+    /// Branch to the active exception handler if an `extern "C"` call returned
+    /// a non-zero `i8` throw flag, avoiding a separate `@spid3r_threw()` FFI call.
+    fn throw_guard_i8_call(&mut self, call_r: inkwell::values::CallSiteValue<'ctx>) {
+        self.expr_guarded = true;
+        if self.exc.is_empty() {
+            return;
+        }
+        let b = call_int(call_r);
+        let cname = self.tmp_name("exc");
+        let is_raw = self
+            .builder
+            .build_int_compare(IntPredicate::NE, b, self.i8c(0), &cname)
+            .unwrap();
+        self.throw_guard_i1(is_raw);
+    }
+
     /// Fetch (and clear) the pending thrown value from the runtime.
     fn take_thrown(&mut self) -> PointerValue<'ctx> {
         self.call0p("spid3r_take_thrown")
@@ -6173,11 +8421,593 @@ impl<'ctx> Ir<'ctx> {
         )
     }
 
+    fn is_unshadowed_builtin(&self, name: &str) -> bool {
+        self.lookup(name).is_none() && !self.shadowed_builtins.contains(name)
+    }
+
+    fn target_is_little_endian(&self) -> bool {
+        let Some(ref triple) = self.target_triple else {
+            return cfg!(target_endian = "little");
+        };
+        let arch = triple.split('-').next().unwrap_or("");
+        !matches!(
+            arch,
+            "sparc" | "sparcv9" | "mips" | "mips64" | "powerpc" | "powerpc64" | "s390x" | "m68k"
+        )
+    }
+
+    fn emit_v2_len_probe(
+        &mut self,
+        obj: PointerValue<'ctx>,
+        want_i64: bool,
+    ) -> IrResult<(PointerValue<'ctx>, Option<inkwell::values::IntValue<'ctx>>)> {
+        if !self.target_is_little_endian() {
+            let out = self.call1p("spid3r_list_len", obj);
+            self.throw_guard();
+            if want_i64 {
+                return Ok((out, Some(self.call1p_to_i64("spid3r_to_i64", out))));
+            }
+            self.expr_guarded = true;
+            return Ok((out, None));
+        }
+
+        let v2_ty = self.val_v2_ty();
+        let out = self.alloc_v2_slot();
+        let tag_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, obj, &[self.i64c(0), self.i32c(0)], "len.tp")
+                .unwrap()
+        };
+        let tag = self
+            .builder
+            .build_load(self.i64_ty(), tag_p, "len.tag")
+            .unwrap()
+            .into_int_value();
+        let pay_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, obj, &[self.i64c(0), self.i32c(1)], "len.pp")
+                .unwrap()
+        };
+        let pay = self
+            .builder
+            .build_load(self.i64_ty(), pay_p, "len.pay")
+            .unwrap()
+            .into_int_value();
+
+        let is_ra_raw = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                self.i64c(crate::value::ValueV2::TAG_ROPE_ASCII as i64),
+                "len.ra",
+            )
+            .unwrap();
+        let ra_bb = self.new_block("len.ra");
+        let chk_sso_bb = self.new_block("len.chksso");
+        let sso_bb = self.new_block("len.sso");
+        let slow_bb = self.new_block("len.slow");
+        let cont_bb = self.new_block("len.cont");
+
+        self.builder
+            .build_conditional_branch(is_ra_raw, ra_bb, chk_sso_bb)
+            .unwrap();
+
+        self.builder.position_at_end(ra_bb);
+        let ra_len = self
+            .builder
+            .build_and(pay, self.i64c(0xFFFF_FFFF), "len.rav")
+            .unwrap();
+        if !want_i64 {
+            self.store_v2_inline(out, crate::value::ValueV2::TAG_INT, ra_len);
+        }
+        let ra_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(chk_sso_bb);
+        let lo = self
+            .builder
+            .build_and(tag, self.i64c(0xFF), "len.lo")
+            .unwrap();
+        let sso_len = self
+            .builder
+            .build_int_sub(
+                lo,
+                self.i64c(crate::value::ValueV2::TAG_SSO_BASE as i64),
+                "len.ssov",
+            )
+            .unwrap();
+        let in_range = self
+            .builder
+            .build_int_compare(IntPredicate::ULE, sso_len, self.i64c(15), "len.in15")
+            .unwrap();
+        let t_hi = self
+            .builder
+            .build_and(tag, self.i64c(0x8080_8080_8080_8000u64 as i64), "len.thi")
+            .unwrap();
+        let p_hi = self
+            .builder
+            .build_and(pay, self.i64c(0x8080_8080_8080_8080u64 as i64), "len.phi")
+            .unwrap();
+        let hi_or = self.builder.build_or(t_hi, p_hi, "len.hior").unwrap();
+        let is_ascii = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, hi_or, self.i64c(0), "len.asc")
+            .unwrap();
+        let sso_ok = self
+            .builder
+            .build_and(in_range, is_ascii, "len.ssook")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(sso_ok, sso_bb, slow_bb)
+            .unwrap();
+
+        self.builder.position_at_end(sso_bb);
+        if !want_i64 {
+            self.store_v2_inline(out, crate::value::ValueV2::TAG_INT, sso_len);
+        }
+        let sso_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(slow_bb);
+        let f_len = self.tramp(
+            "spid3r_list_len",
+            &[self.ptr_ty().into(), self.ptr_ty().into()],
+            None,
+        );
+        self.builder
+            .build_call(f_len, &[out.into(), obj.into()], "")
+            .unwrap();
+        self.throw_guard();
+        let slow_i64 = if want_i64 {
+            Some(self.call1p_to_i64("spid3r_to_i64", out))
+        } else {
+            None
+        };
+        let slow_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        if let Some(sv) = slow_i64 {
+            let phi = self.builder.build_phi(self.i64_ty(), "len.phi").unwrap();
+            phi.add_incoming(&[(&ra_len, ra_from), (&sso_len, sso_from), (&sv, slow_from)]);
+            Ok((out, Some(phi.as_basic_value().into_int_value())))
+        } else {
+            self.expr_guarded = true;
+            Ok((out, None))
+        }
+    }
+
+    fn emit_v2_len_inline_i64(
+        &mut self,
+        obj: PointerValue<'ctx>,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        let (_, iv) = self.emit_v2_len_probe(obj, true)?;
+        Ok(iv.expect("emit_v2_len_probe(true) returns i64"))
+    }
+
+    fn emit_v2_len_inline(&mut self, obj: PointerValue<'ctx>) -> IrResult<PointerValue<'ctx>> {
+        let (out, _) = self.emit_v2_len_probe(obj, false)?;
+        Ok(out)
+    }
+
+    /// Phase 2: inline scalar `ValueV2` fast path for int `Add`/`Sub`/`Mul` and
+    /// comparisons; falls back on cold path to `spid3r_binop` + `throw_guard`.
+    fn emit_v2_binop_inline(
+        &mut self,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        op: BinOp,
+    ) -> IrResult<PointerValue<'ctx>> {
+        let v2_ty = self.val_v2_ty();
+        let out = self.alloc_v2_slot();
+
+        let lt_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, a, &[self.i64c(0), self.i32c(0)], "v2b.ltp")
+                .unwrap()
+        };
+        let rt_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, b, &[self.i64c(0), self.i32c(0)], "v2b.rtp")
+                .unwrap()
+        };
+        let l_tag = self
+            .builder
+            .build_load(self.i64_ty(), lt_p, "v2b.lt")
+            .unwrap()
+            .into_int_value();
+        let r_tag = self
+            .builder
+            .build_load(self.i64_ty(), rt_p, "v2b.rt")
+            .unwrap()
+            .into_int_value();
+        let int_tag = self.i64c(crate::value::ValueV2::TAG_INT as i64);
+        let l_is_int = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, l_tag, int_tag, "v2b.li")
+            .unwrap();
+        let r_is_int = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, r_tag, int_tag, "v2b.ri")
+            .unwrap();
+        let both_raw = self
+            .builder
+            .build_and(l_is_int, r_is_int, "v2b.bi")
+            .unwrap();
+        let both = self.expect_i1(both_raw, true);
+
+        let fast_bb = self.new_block("v2b.fast");
+        let slow_bb = self.new_block("v2b.slow");
+        let cont_bb = self.new_block("v2b.cont");
+        self.builder
+            .build_conditional_branch(both, fast_bb, slow_bb)
+            .unwrap();
+
+        self.builder.position_at_end(fast_bb);
+        let lp_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, a, &[self.i64c(0), self.i32c(1)], "v2b.lpp")
+                .unwrap()
+        };
+        let rp_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, b, &[self.i64c(0), self.i32c(1)], "v2b.rpp")
+                .unwrap()
+        };
+        let lhs = self
+            .builder
+            .build_load(self.i64_ty(), lp_p, "v2b.lp")
+            .unwrap()
+            .into_int_value();
+        let rhs = self
+            .builder
+            .build_load(self.i64_ty(), rp_p, "v2b.rp")
+            .unwrap()
+            .into_int_value();
+        match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                let intr = match op {
+                    BinOp::Add => "llvm.sadd.with.overflow.i64",
+                    BinOp::Sub => "llvm.ssub.with.overflow.i64",
+                    BinOp::Mul => "llvm.smul.with.overflow.i64",
+                    _ => unreachable!(),
+                };
+                let ovf_f = self.overflow_intrinsic(intr);
+                let cname = self.tmp_name("v2ovf");
+                let call = self
+                    .builder
+                    .build_call(ovf_f, &[lhs.into(), rhs.into()], &cname)
+                    .unwrap();
+                let pair = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v.into_struct_value(),
+                    _ => panic!("spid3r: overflow intrinsic did not return a struct"),
+                };
+                let res = self
+                    .builder
+                    .build_extract_value(pair, 0, "v2b.res")
+                    .unwrap()
+                    .into_int_value();
+                let ovf_raw = self
+                    .builder
+                    .build_extract_value(pair, 1, "v2b.ovf")
+                    .unwrap()
+                    .into_int_value();
+                let ovf = self.expect_i1(ovf_raw, false);
+                let no_ovf_bb = self.new_block("v2b.ok");
+                self.builder
+                    .build_conditional_branch(ovf, slow_bb, no_ovf_bb)
+                    .unwrap();
+                self.builder.position_at_end(no_ovf_bb);
+                self.store_v2_inline(out, crate::value::ValueV2::TAG_INT, res);
+                self.br_to(cont_bb);
+            }
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let pred = match op {
+                    BinOp::Eq => IntPredicate::EQ,
+                    BinOp::Ne => IntPredicate::NE,
+                    BinOp::Lt => IntPredicate::SLT,
+                    BinOp::Le => IntPredicate::SLE,
+                    BinOp::Gt => IntPredicate::SGT,
+                    BinOp::Ge => IntPredicate::SGE,
+                    _ => unreachable!(),
+                };
+                let cmp_i1 = self
+                    .builder
+                    .build_int_compare(pred, lhs, rhs, "v2b.cmp")
+                    .unwrap();
+                let cmp_i64 = self
+                    .builder
+                    .build_int_z_extend(cmp_i1, self.i64_ty(), "v2b.b64")
+                    .unwrap();
+                self.store_v2_inline(out, crate::value::ValueV2::TAG_BOOL, cmp_i64);
+                self.br_to(cont_bb);
+            }
+            _ => unreachable!("emit_v2_binop_inline called on unsupported BinOp"),
+        }
+
+        self.builder.position_at_end(slow_bb);
+        let f_slow = self.tramp(
+            "spid3r_binop",
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+            ],
+            None,
+        );
+        self.builder
+            .build_call(
+                f_slow,
+                &[
+                    out.into(),
+                    a.into(),
+                    b.into(),
+                    self.i64c(binop_code(op) as i64).into(),
+                ],
+                "",
+            )
+            .unwrap();
+        self.throw_guard();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        self.expr_guarded = true;
+        Ok(out)
+    }
+
+    fn is_unshadowed_str_int_call<'a>(&self, e: &'a Expr) -> Option<&'a Expr> {
+        if let Expr::Call {
+            callee,
+            type_args,
+            args,
+            ..
+        } = e
+        {
+            if type_args.is_empty()
+                && args.len() == 1
+                && matches!(callee.as_ref(), Expr::Ident(n, _) if n == "string" && self.is_unshadowed_builtin("string"))
+                && self.is_int_expr(&args[0])
+            {
+                return Some(&args[0]);
+            }
+        }
+        None
+    }
+
+    fn is_guaranteed_str_chain_expr(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Str(..) => true,
+            Expr::Ident(n, _) => self.str_locals.as_ref().is_some_and(|s| s.contains(n)),
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } if type_args.is_empty() && args.len() == 1 => matches!(
+                callee.as_ref(),
+                Expr::Ident(fn_name, _)
+                    if (fn_name == "string" || fn_name == "json_write")
+                        && self.is_unshadowed_builtin(fn_name)
+            ),
+            Expr::Binary {
+                op: BinOp::Add,
+                l,
+                r,
+                ..
+            } => self.is_guaranteed_str_chain_expr(l) && self.is_guaranteed_str_chain_expr(r),
+            _ => false,
+        }
+    }
+
+    fn expr_contains_generic_call(e: &Expr) -> bool {
+        match e {
+            Expr::Call {
+                type_args,
+                callee,
+                args,
+                ..
+            } => {
+                !type_args.is_empty()
+                    || Self::expr_contains_generic_call(callee)
+                    || args.iter().any(Self::expr_contains_generic_call)
+            }
+            Expr::Unary { expr, .. } => Self::expr_contains_generic_call(expr),
+            Expr::Binary { l, r, .. } => {
+                Self::expr_contains_generic_call(l) || Self::expr_contains_generic_call(r)
+            }
+            Expr::Index { object, index, .. } => {
+                Self::expr_contains_generic_call(object) || Self::expr_contains_generic_call(index)
+            }
+            _ => false,
+        }
+    }
+
+    fn try_compile_str_add_chain(&mut self, e: &Expr) -> IrResult<Option<PointerValue<'ctx>>> {
+        fn collect_left_parts<'a>(ir: &Ir<'_>, node: &'a Expr, out: &mut Vec<&'a Expr>) {
+            if let Expr::Binary {
+                op: BinOp::Add,
+                l,
+                r,
+                ..
+            } = node
+            {
+                if ir.is_guaranteed_str_chain_expr(l) {
+                    collect_left_parts(ir, l, out);
+                    out.push(r.as_ref());
+                    return;
+                }
+            }
+            out.push(node);
+        }
+
+        let Expr::Binary {
+            op: BinOp::Add,
+            l,
+            r,
+            ..
+        } = e
+        else {
+            return Ok(None);
+        };
+        if !self.is_guaranteed_str_chain_expr(l) {
+            return Ok(None);
+        }
+        let mut parts: Vec<&Expr> = Vec::new();
+        collect_left_parts(self, l, &mut parts);
+        parts.push(r.as_ref());
+
+        // Fast 2-part specialization: `"prefix" + string(int_expr)`.
+        if parts.len() == 2 {
+            if let Expr::Str(lit, _) = parts[0] {
+                if let Some(arg) = self.is_unshadowed_str_int_call(parts[1]) {
+                    let iv = self.compile_expr_i64(arg)?;
+                    let (gp, glen) = self.str_global(lit);
+                    let out = self.alloc_v2_slot();
+                    let f = self.tramp(
+                        "spid3r_str_lit_i64",
+                        &[
+                            self.ptr_ty().into(),
+                            self.ptr_ty().into(),
+                            self.i64_ty().into(),
+                            self.i64_ty().into(),
+                        ],
+                        None,
+                    );
+                    self.builder
+                        .build_call(
+                            f,
+                            &[
+                                out.into(),
+                                gp.into(),
+                                self.i64c(glen as i64).into(),
+                                iv.into(),
+                            ],
+                            "",
+                        )
+                        .unwrap();
+                    if !Self::expr_contains_generic_call(arg) {
+                        self.expr_guarded = true;
+                    }
+                    return Ok(Some(out));
+                }
+            }
+        }
+
+        enum CompiledPart<'ctx> {
+            Lit(PointerValue<'ctx>, usize),
+            Int(inkwell::values::IntValue<'ctx>, bool),
+            Val(PointerValue<'ctx>),
+        }
+        let mut compiled = Vec::with_capacity(parts.len());
+        let mut has_val = false;
+        let mut has_generic_call = false;
+        for p in &parts {
+            match p {
+                Expr::Str(lit, _) => {
+                    let (gp, glen) = self.str_global(lit);
+                    compiled.push(CompiledPart::Lit(gp, glen));
+                }
+                _ if self.is_unshadowed_str_int_call(p).is_some() => {
+                    let arg = self.is_unshadowed_str_int_call(p).unwrap();
+                    let iv = self.compile_expr_i64(arg)?;
+                    let gc = Self::expr_contains_generic_call(arg);
+                    has_generic_call |= gc;
+                    compiled.push(CompiledPart::Int(iv, gc));
+                }
+                other => {
+                    has_val = true;
+                    let pv = self.compile_expr(other)?;
+                    compiled.push(CompiledPart::Val(pv));
+                }
+            }
+        }
+
+        let part_ty = self.ctx.struct_type(
+            &[
+                self.i64_ty().into(),
+                self.i64_ty().into(),
+                self.i64_ty().into(),
+            ],
+            false,
+        );
+        let arr_ty = part_ty.array_type(compiled.len() as u32);
+        let arr_slot = self.alloca_entry_ty(arr_ty, "str.parts");
+        for (idx, cp) in compiled.into_iter().enumerate() {
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(part_ty, arr_slot, &[self.i64c(idx as i64)], "str.p")
+                    .unwrap()
+            };
+            let (k_val, a_val, b_val) = match cp {
+                CompiledPart::Lit(gp, glen) => {
+                    let ai = self
+                        .builder
+                        .build_ptr_to_int(gp, self.i64_ty(), "sp.p")
+                        .unwrap();
+                    (self.i64c(0), ai, self.i64c(glen as i64))
+                }
+                CompiledPart::Int(iv, _) => (self.i64c(1), iv, self.i64c(0)),
+                CompiledPart::Val(pv) => {
+                    let ai = self
+                        .builder
+                        .build_ptr_to_int(pv, self.i64_ty(), "sp.v")
+                        .unwrap();
+                    (self.i64c(2), ai, self.i64c(0))
+                }
+            };
+            let f0 = self
+                .builder
+                .build_struct_gep(part_ty, elem_ptr, 0, "sp.k")
+                .unwrap();
+            let f1 = self
+                .builder
+                .build_struct_gep(part_ty, elem_ptr, 1, "sp.a")
+                .unwrap();
+            let f2 = self
+                .builder
+                .build_struct_gep(part_ty, elem_ptr, 2, "sp.b")
+                .unwrap();
+            self.builder.build_store(f0, k_val).unwrap();
+            self.builder.build_store(f1, a_val).unwrap();
+            self.builder.build_store(f2, b_val).unwrap();
+        }
+        let out = self.alloc_v2_slot();
+        let f_build = self.tramp(
+            "spid3r_str_build",
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+            ],
+            None,
+        );
+        self.builder
+            .build_call(
+                f_build,
+                &[
+                    out.into(),
+                    arr_slot.into(),
+                    self.i64c(parts.len() as i64).into(),
+                ],
+                "",
+            )
+            .unwrap();
+        if !has_val && !has_generic_call {
+            self.expr_guarded = true;
+        }
+        Ok(Some(out))
+    }
+
     fn compile_expr(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
-        let v = self.compile_expr_inner(e)?;
+        let prev = std::mem::replace(&mut self.expr_guarded, false);
+        let v_res = self.compile_expr_inner(e);
+        let handled = std::mem::replace(&mut self.expr_guarded, prev);
+        let v = v_res?;
         // Any operation that threw set the pending-throw flag; route to the
         // current handler instead of using this (placeholder) value further.
-        if Self::expr_can_throw(e) {
+        if !handled && Self::expr_can_throw(e) {
             self.throw_guard();
         }
         Ok(v)
@@ -6322,6 +9152,11 @@ impl<'ctx> Ir<'ctx> {
                         .builder
                         .build_int_compare(predicate, lhs, rhs, "cmp")
                         .unwrap();
+                    if !Self::expr_contains_generic_call(left)
+                        && !Self::expr_contains_generic_call(right)
+                    {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_bool_from_i1(c));
                 }
                 if let Some((cmp_op, left, right)) = self.is_float_compare(e) {
@@ -6340,6 +9175,11 @@ impl<'ctx> Ir<'ctx> {
                         .builder
                         .build_float_compare(predicate, lhs, rhs, "fcmp")
                         .unwrap();
+                    if !Self::expr_contains_generic_call(left)
+                        && !Self::expr_contains_generic_call(right)
+                    {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_bool_from_i1(c));
                 }
                 // Phase 3: hybrid int compare over boxed leaves — see
@@ -6358,8 +9198,27 @@ impl<'ctx> Ir<'ctx> {
                     let fv = self.compile_expr_f64(e)?;
                     return Ok(self.v_float_from_f64(fv));
                 }
+                if *op == BinOp::Add {
+                    if let Some(sv) = self.try_compile_str_add_chain(e)? {
+                        return Ok(sv);
+                    }
+                }
                 let a = self.compile_expr(l)?;
                 let b = self.compile_expr(r)?;
+                if matches!(
+                    op,
+                    BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Eq
+                        | BinOp::Ne
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge
+                ) {
+                    return self.emit_v2_binop_inline(a, b, *op);
+                }
                 Ok(self.call_binop(a, b, binop_code(*op)))
             }
             Expr::Logical { op, l, r, .. } => {
@@ -6455,6 +9314,13 @@ impl<'ctx> Ir<'ctx> {
                             let iv = self.emit_ulist_len(ptr);
                             return Ok(self.v_int_from_i64(iv));
                         }
+                        (
+                            Some(VarLoc::RowViewI64 { len, .. })
+                            | Some(VarLoc::RowViewF64 { len, .. }),
+                            "len",
+                        ) if args.is_empty() => {
+                            return Ok(self.v_int_from_i64(len));
+                        }
                         (Some(VarLoc::UListI64(slot)), "pop") if args.is_empty() => {
                             let ptr = self
                                 .builder
@@ -6532,9 +9398,10 @@ impl<'ctx> Ir<'ctx> {
                 }
                 let is_self = matches!(object.as_ref(), Expr::Ident(id, _) if id == "self");
                 if !is_self {
-                    // Track 3 RT-5: direct trampolines for `.len()` and `.push(x)`.
+                    // Track 3 RT-5 / Phase 2: inline `.len()` on ASCII ropes and
+                    // SSO strings with `spid3r_list_len` fallback, plus `.push(x)`.
                     if name == "len" && argv.is_empty() {
-                        return Ok(self.call1p("spid3r_list_len", obj));
+                        return self.emit_v2_len_inline(obj);
                     }
                     if name == "push" && argv.len() == 1 {
                         return Ok(self.call2p("spid3r_list_push", obj, argv[0]));
@@ -6677,26 +9544,65 @@ impl<'ctx> Ir<'ctx> {
                             let fv = self.emit_ulist_f64_get_inline(ptr, idx)?;
                             return Ok(self.v_float_from_f64(fv));
                         }
+                        Some(VarLoc::RowViewI64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist,
+                        }) => {
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let bce_hit = self.is_row_bce_hit(name, index);
+                            let iv = self.emit_row_view_i64_get(
+                                bce_hit, data, len, orig_slot, is_ulist, idx,
+                            )?;
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        Some(VarLoc::RowViewF64 {
+                            data,
+                            len,
+                            orig_slot,
+                            is_ulist,
+                        }) => {
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let bce_hit = self.is_row_bce_hit(name, index);
+                            let fv = self.emit_row_view_f64_get(
+                                bce_hit, data, len, orig_slot, is_ulist, idx,
+                            )?;
+                            return Ok(self.v_float_from_f64(fv));
+                        }
                         _ => {}
                     }
                 }
                 let obj = self.compile_expr(object)?;
-                // Track 3 RT-5: direct string-literal map lookup trampoline
-                // skipping `spid3r_value_str` / `Arc<str>` allocation.
+                // Track 3 RT-5 / Phase 2: compile-time pre-hashed string-literal
+                // map lookup trampoline (`spid3r_map_get_str_h`).
                 if let Expr::Str(lit, _) = &**index {
                     let out = self.alloc_v2_slot();
                     let (kp, klen) = self.str_global(lit);
+                    let hash = crate::value::collections::fx_hash_str(lit);
                     let f = self.tramp(
-                        "spid3r_map_get_str",
+                        "spid3r_map_get_str_h",
                         &[
                             self.ptr_ty().into(),
                             self.ptr_ty().into(),
                             self.ptr_ty().into(),
                             self.i64_ty().into(),
+                            self.i64_ty().into(),
                         ],
-                        None,
+                        Some(self.i8_ty().into()),
                     );
-                    self.builder
+                    let call_r = self
+                        .builder
                         .build_call(
                             f,
                             &[
@@ -6704,14 +9610,31 @@ impl<'ctx> Ir<'ctx> {
                                 obj.into(),
                                 kp.into(),
                                 self.i64c(klen as i64).into(),
+                                self.i64c(hash as i64).into(),
                             ],
-                            "",
+                            "mget.threw",
                         )
                         .unwrap();
+                    self.throw_guard_i8_call(call_r);
                     return Ok(out);
                 }
                 let idx = self.compile_expr(index)?;
-                Ok(self.call2p("spid3r_index_get", obj, idx))
+                let out = self.alloc_v2_slot();
+                let f = self.tramp(
+                    "spid3r_index_get_chk",
+                    &[
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                    ],
+                    Some(self.i8_ty().into()),
+                );
+                let call_r = self
+                    .builder
+                    .build_call(f, &[out.into(), obj.into(), idx.into()], "idx.threw")
+                    .unwrap();
+                self.throw_guard_i8_call(call_r);
+                Ok(out)
             }
             Expr::Field { object, name, .. } => {
                 let obj = self.compile_expr(object)?;
@@ -6835,7 +9758,10 @@ impl<'ctx> Ir<'ctx> {
                 Ok(self.call1p("spid3r_cell_get", cell))
             }
             Some(VarLoc::Upvalue(i)) => Ok(self.read_upvalue(i)),
-            Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {
+            Some(VarLoc::UListI64(_))
+            | Some(VarLoc::UListF64(_))
+            | Some(VarLoc::RowViewI64 { .. })
+            | Some(VarLoc::RowViewF64 { .. }) => {
                 Err(self.err("internal: unboxed list identifier escaped"))
             }
             None => {
@@ -7847,6 +10773,7 @@ impl<'ctx> Ir<'ctx> {
 
             let saved_frame_ph = self.frame_base_placeholder.take();
             let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+            self.begin_v2_frame();
 
             let ret_int_slot = if ret_sc.as_deref() == Some("int") {
                 Some(self.builder.build_alloca(self.i64_ty(), "mret.i").unwrap())
@@ -7874,8 +10801,13 @@ impl<'ctx> Ir<'ctx> {
                     float_params.insert(p.name.clone());
                 }
             }
-            let (int_locals, float_locals, ulists) =
-                analyze_fn_locals(&proto, &boxed_set, &int_params, &float_params);
+            let (int_locals, float_locals, ulists, str_locals) = analyze_fn_locals(
+                &proto,
+                &boxed_set,
+                &int_params,
+                &float_params,
+                &self.shadowed_builtins,
+            );
             let saved = (
                 self.env_param.take(),
                 self.ret_bb.replace(ret_bb),
@@ -7894,6 +10826,11 @@ impl<'ctx> Ir<'ctx> {
                 self.mono_ret_float_slot.take(),
                 self.mono_ret_bool_slot.take(),
                 self.mono_ret_threw_slot.take(),
+                std::mem::replace(
+                    &mut self.float_hint_vars,
+                    collect_float_hint_vars(&proto.params, &proto.body.stmts),
+                ),
+                self.str_locals.replace(str_locals),
             );
             self.ret_slots.push(ret_val_slot);
             self.exc = vec![propagate_bb];
@@ -7989,9 +10926,12 @@ impl<'ctx> Ir<'ctx> {
                     self.builder.build_return(Some(&rv)).unwrap();
                 }
             }
+            self.finish_v2_frame_if_used(fv, ret_bb);
             self.frame_slot_count = saved_frame_cnt;
             self.frame_base_placeholder = saved_frame_ph;
 
+            self.str_locals = saved.18;
+            self.float_hint_vars = saved.17;
             self.mono_ret_threw_slot = saved.16;
             self.mono_ret_bool_slot = saved.15;
             self.mono_ret_float_slot = saved.14;
@@ -8162,6 +11102,7 @@ impl<'ctx> Ir<'ctx> {
             };
             let saved_frame_ph = self.frame_base_placeholder.take();
             let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+            self.begin_v2_frame();
             let ret_val_slot = self
                 .builder
                 .build_alloca(self.val_v2_ty(), "rret.v")
@@ -8202,8 +11143,13 @@ impl<'ctx> Ir<'ctx> {
                     float_params.insert(p.name.clone());
                 }
             }
-            let (int_locals, float_locals, ulists) =
-                analyze_fn_locals(&proto, &boxed_set, &int_params, &float_params);
+            let (int_locals, float_locals, ulists, str_locals) = analyze_fn_locals(
+                &proto,
+                &boxed_set,
+                &int_params,
+                &float_params,
+                &self.shadowed_builtins,
+            );
             let saved = (
                 self.env_param.take(),
                 self.ret_bb.replace(ret_bb),
@@ -8222,6 +11168,11 @@ impl<'ctx> Ir<'ctx> {
                 std::mem::replace(&mut self.mono_ret_float_slot, ret_float_slot),
                 std::mem::replace(&mut self.mono_ret_bool_slot, ret_bool_slot),
                 self.mono_ret_threw_slot.replace(ret_threw_slot),
+                std::mem::replace(
+                    &mut self.float_hint_vars,
+                    collect_float_hint_vars(&proto.params, &proto.body.stmts),
+                ),
+                self.str_locals.replace(str_locals),
             );
             self.ret_slots.push(ret_val_slot);
             self.exc = vec![propagate_bb];
@@ -8333,9 +11284,12 @@ impl<'ctx> Ir<'ctx> {
                 .into_struct_value();
             self.builder.build_return(Some(&agg2)).unwrap();
 
+            self.finish_v2_frame_if_used(fv, ret_bb);
             self.frame_slot_count = saved_frame_cnt;
             self.frame_base_placeholder = saved_frame_ph;
 
+            self.str_locals = saved.18;
+            self.float_hint_vars = saved.17;
             self.mono_ret_threw_slot = saved.16;
             self.mono_ret_bool_slot = saved.15;
             self.mono_ret_float_slot = saved.14;
@@ -8457,6 +11411,26 @@ impl<'ctx> Ir<'ctx> {
                 return self.compile_extern_call(name, fv, args);
             }
             match name.as_str() {
+                "string"
+                    if args.len() == 1
+                        && self.is_unshadowed_builtin("string")
+                        && self.is_int_expr(&args[0]) =>
+                {
+                    let iv = self.compile_expr_i64(&args[0])?;
+                    let out = self.alloc_v2_slot();
+                    let f = self.tramp(
+                        "spid3r_str_from_i64",
+                        &[self.ptr_ty().into(), self.i64_ty().into()],
+                        None,
+                    );
+                    self.builder
+                        .build_call(f, &[out.into(), iv.into()], "")
+                        .unwrap();
+                    if !Self::expr_contains_generic_call(&args[0]) {
+                        self.expr_guarded = true;
+                    }
+                    return Ok(out);
+                }
                 "ffi_callback" => return self.compile_ffi_callback(args),
                 "dl_call" => return self.compile_dl_call(args),
                 "dl_open" => {
@@ -8729,7 +11703,10 @@ impl<'ctx> Ir<'ctx> {
                         .unwrap();
                     Ok(v)
                 }
-                Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {
+                Some(VarLoc::UListI64(_))
+                | Some(VarLoc::UListF64(_))
+                | Some(VarLoc::RowViewI64 { .. })
+                | Some(VarLoc::RowViewF64 { .. }) => {
                     Err(self.err("internal: cannot reassign unboxed list"))
                 }
                 None => {
@@ -8849,8 +11826,13 @@ impl<'ctx> Ir<'ctx> {
             self.builder.position_at_end(entry_bb);
         }
         let boxed_set = boxing_set(proto);
-        let (int_locals, float_locals, unboxed_lists) =
-            analyze_fn_locals(proto, &boxed_set, &HashSet::new(), &HashSet::new());
+        let (int_locals, float_locals, unboxed_lists, str_locals) = analyze_fn_locals(
+            proto,
+            &boxed_set,
+            &HashSet::new(),
+            &HashSet::new(),
+            &self.shadowed_builtins,
+        );
         let saved = (
             self.env_param.replace(env),
             self.ret_bb.replace(ret_bb),
@@ -8869,6 +11851,11 @@ impl<'ctx> Ir<'ctx> {
             self.mono_ret_float_slot.take(),
             self.mono_ret_bool_slot.take(),
             self.mono_ret_threw_slot.take(),
+            std::mem::replace(
+                &mut self.float_hint_vars,
+                collect_float_hint_vars(&proto.params, &proto.body.stmts),
+            ),
+            self.str_locals.replace(str_locals),
         );
         self.ret_slots.push(ret_slot);
         self.exc = vec![propagate_bb];
@@ -8975,6 +11962,8 @@ impl<'ctx> Ir<'ctx> {
         self.frame_base_placeholder = saved_frame_ph;
 
         // restore
+        self.str_locals = saved.18;
+        self.float_hint_vars = saved.17;
         self.mono_ret_threw_slot = saved.16;
         self.mono_ret_bool_slot = saved.15;
         self.mono_ret_float_slot = saved.14;
@@ -9021,7 +12010,11 @@ impl<'ctx> Ir<'ctx> {
                     caps.push(name.clone());
                     env_sources.push(loc);
                 }
-                None | Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {} // global or uncaptured unboxed list
+                None
+                | Some(VarLoc::UListI64(_))
+                | Some(VarLoc::UListF64(_))
+                | Some(VarLoc::RowViewI64 { .. })
+                | Some(VarLoc::RowViewF64 { .. }) => {} // global or uncaptured unboxed list
             }
         }
         let name_hint = proto.name.clone().unwrap_or_else(|| "anon".to_string());
@@ -9065,7 +12058,10 @@ impl<'ctx> Ir<'ctx> {
                         let env = self.cur_env();
                         self.call_env_slot(env, *j)
                     }
-                    VarLoc::UListI64(_) | VarLoc::UListF64(_) => unreachable!(),
+                    VarLoc::UListI64(_)
+                    | VarLoc::UListF64(_)
+                    | VarLoc::RowViewI64 { .. }
+                    | VarLoc::RowViewF64 { .. } => unreachable!(),
                 };
                 self.call_env_set_slot(env, i, cell);
             }
@@ -9196,6 +12192,15 @@ impl<'ctx> Ir<'ctx> {
             self.mono_ret_float_slot.take(),
             self.mono_ret_bool_slot.take(),
             self.mono_ret_threw_slot.take(),
+            std::mem::replace(
+                &mut self.float_hint_vars,
+                collect_float_hint_vars(&[], &program.stmts),
+            ),
+            std::mem::replace(
+                &mut self.shadowed_builtins,
+                collect_shadowed_builtins(program),
+            ),
+            self.str_locals.take(),
         );
         let (tc, ti) = collect_top_const_maps(program);
         self.top_consts = tc;
@@ -9223,6 +12228,16 @@ impl<'ctx> Ir<'ctx> {
         }
         self.exc = vec![uncaught_bb];
         self.push_scope();
+
+        if !self.freestanding {
+            let core_reg = self.tramp("spid3r_reg_core", &[], None);
+            self.builder.build_call(core_reg, &[], "").unwrap();
+            for group in collect_used_stdlib_groups(program) {
+                let sym = format!("spid3r_reg_{}", group);
+                let g_reg = self.tramp(&sym, &[], None);
+                self.builder.build_call(g_reg, &[], "").unwrap();
+            }
+        }
 
         // register classes first (parents before children, as declared)
         for s in &program.stmts {
@@ -9277,6 +12292,9 @@ impl<'ctx> Ir<'ctx> {
         self.frame_slot_count = saved_frame_cnt;
         self.frame_base_placeholder = saved_frame_ph;
 
+        self.str_locals = saved.24;
+        self.shadowed_builtins = saved.23;
+        self.float_hint_vars = saved.22;
         self.mono_ret_threw_slot = saved.21;
         self.mono_ret_bool_slot = saved.20;
         self.mono_ret_float_slot = saved.19;
@@ -9456,7 +12474,7 @@ impl<'ctx> Ir<'ctx> {
         let bb = self.ctx.append_basic_block(main, "entry");
         self.builder.position_at_end(bb);
         let f = self.tramp(
-            "spid3r_rt_start",
+            "spid3r_rt_start_slim",
             &[self.ptr_ty().into()],
             Some(i32_ty.into()),
         );
@@ -9464,6 +12482,211 @@ impl<'ctx> Ir<'ctx> {
         let code = call_int(r);
         self.builder.build_return(Some(&code)).unwrap();
     }
+}
+
+fn collect_used_stdlib_groups(program: &Program) -> Vec<&'static str> {
+    fn walk_pattern(p: &crate::ast::Pattern, out: &mut HashSet<&'static str>) {
+        match p {
+            crate::ast::Pattern::Wild | crate::ast::Pattern::Bind(_) => {}
+            crate::ast::Pattern::Literal(e) => walk_expr(e, out),
+            crate::ast::Pattern::Variant { args, .. } => {
+                for a in args {
+                    walk_pattern(a, out);
+                }
+            }
+        }
+    }
+    fn walk_fn(f: &FnProto, out: &mut HashSet<&'static str>) {
+        for p in &f.params {
+            if let Some(d) = &p.default {
+                walk_expr(d, out);
+            }
+        }
+        walk_block(&f.body, out);
+    }
+    fn walk_block(b: &Block, out: &mut HashSet<&'static str>) {
+        for s in &b.stmts {
+            walk_stmt(s, out);
+        }
+    }
+    fn walk_expr(e: &Expr, out: &mut HashSet<&'static str>) {
+        match e {
+            Expr::Ident(name, _) => {
+                if let Some(g) = crate::stdlib::stdlib_group_for_name(name) {
+                    out.insert(g);
+                }
+            }
+            Expr::List(items, _) => {
+                for it in items {
+                    walk_expr(it, out);
+                }
+            }
+            Expr::Fn(f) => walk_fn(f, out),
+            Expr::Unary { expr, .. }
+            | Expr::Await(expr, _)
+            | Expr::Spawn { callable: expr, .. }
+            | Expr::Propagate(expr, _)
+            | Expr::NamedArg { value: expr, .. }
+            | Expr::Field { object: expr, .. }
+            | Expr::OptField { object: expr, .. } => walk_expr(expr, out),
+            Expr::Binary { l, r, .. }
+            | Expr::Logical { l, r, .. }
+            | Expr::Index {
+                object: l,
+                index: r,
+                ..
+            }
+            | Expr::Assign {
+                target: l,
+                value: r,
+                ..
+            }
+            | Expr::Coalesce { l, r, .. } => {
+                walk_expr(l, out);
+                walk_expr(r, out);
+            }
+            Expr::Call { callee, args, .. } => {
+                walk_expr(callee, out);
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            Expr::Method { object, args, .. } => {
+                walk_expr(object, out);
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                walk_expr(cond, out);
+                walk_block(then, out);
+                if let Some(eb) = els {
+                    walk_block(eb, out);
+                }
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                walk_expr(scrutinee, out);
+                for arm in arms {
+                    walk_pattern(&arm.pattern, out);
+                    if let Some(g) = &arm.guard {
+                        walk_expr(g, out);
+                    }
+                    walk_block(&arm.body, out);
+                }
+            }
+            Expr::Int(_, _)
+            | Expr::Float(_, _)
+            | Expr::Str(_, _)
+            | Expr::Bool(_, _)
+            | Expr::Null(_)
+            | Expr::Super { .. } => {}
+        }
+    }
+    fn walk_stmt(s: &Stmt, out: &mut HashSet<&'static str>) {
+        match s {
+            Stmt::Import { .. } | Stmt::Enum(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Fn(f) => walk_fn(f, out),
+            Stmt::Class(c) => {
+                for m in &c.methods {
+                    walk_fn(m, out);
+                }
+            }
+            Stmt::Interface(i) => {
+                for (_, params, _, _) in &i.methods {
+                    for p in params {
+                        if let Some(d) = &p.default {
+                            walk_expr(d, out);
+                        }
+                    }
+                }
+                for m in &i.default_methods {
+                    walk_fn(m, out);
+                }
+            }
+            Stmt::Let { value: Some(e), .. }
+            | Stmt::Const { value: e, .. }
+            | Stmt::LetTuple { value: e, .. }
+            | Stmt::Expr(e)
+            | Stmt::Spawn { callable: e, .. }
+            | Stmt::Throw { value: e, .. } => walk_expr(e, out),
+            Stmt::Let { value: None, .. } | Stmt::Return { value: None, .. } => {}
+            Stmt::Return { value: Some(e), .. } => walk_expr(e, out),
+            Stmt::Yield { value, .. } => walk_expr(value, out),
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                ..
+            } => {
+                walk_expr(cond, out);
+                walk_block(then, out);
+                for (c, b) in elifs {
+                    walk_expr(c, out);
+                    walk_block(b, out);
+                }
+                if let Some(eb) = els {
+                    walk_block(eb, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_expr(cond, out);
+                walk_block(body, out);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                walk_expr(iter, out);
+                walk_block(body, out);
+            }
+            Stmt::ForC {
+                init,
+                cond,
+                post,
+                body,
+                ..
+            } => {
+                walk_stmt(init, out);
+                walk_expr(cond, out);
+                walk_expr(post, out);
+                walk_block(body, out);
+            }
+            Stmt::Block(b) => walk_block(b, out),
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                walk_block(body, out);
+                if let Some(c) = catch {
+                    walk_block(&c.body, out);
+                }
+                if let Some(f) = finally {
+                    walk_block(f, out);
+                }
+            }
+        }
+    }
+
+    const ALL_GROUPS: [&str; 10] = [
+        "json", "fs", "net", "db", "media", "tz", "unicode", "crypto", "data", "info",
+    ];
+    let mut used = HashSet::new();
+    for s in &program.stmts {
+        walk_stmt(s, &mut used);
+    }
+    ALL_GROUPS
+        .into_iter()
+        .filter(|g| used.contains(g))
+        .collect()
 }
 
 /// Compile a checked program to an LLVM module.
@@ -9488,6 +12711,7 @@ pub fn build_module_with_opts(
     ir.target_triple = opts.target_triple.clone();
     ir.allow_dlopen = opts.allow_dlopen;
     ir.enforce_budget = opts.enforce_budget;
+    ir.freestanding = opts.freestanding;
     if let Some(limit) = opts.enforce_budget {
         let gv = ir
             .module

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use super::NativeDef;
 use crate::value::collections;
-use crate::value::{display_value, new_ref, type_name, NativeCtx, Value};
+use crate::value::{display_value, new_ref, type_name, MapKey, NativeCtx, ThinArcStr, Value};
 
 /// Largest accepted request/response head (request line + headers).
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -38,6 +38,149 @@ const MAX_READ_BYTES: i64 = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Read/write timeout for `http_fetch`.
 const FETCH_IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default capacity for per-connection recycled HTTP read/write buffers.
+const CONN_BUF_INIT_CAP: usize = 4096;
+/// Buffers grown above this ceiling for huge requests are shrunk back to
+/// `CONN_BUF_INIT_CAP` on recycle so peak RSS stays flat.
+const CONN_BUF_SHRINK_CAP: usize = 65536;
+
+/// Cached HTTP `Date` header value, refreshed at most once per Unix second.
+fn with_cached_http_date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
+    static CACHE: OnceLock<Mutex<(u64, String)>> = OnceLock::new();
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let slot = CACHE.get_or_init(|| Mutex::new((u64::MAX, String::with_capacity(32))));
+    let mut guard = slot.lock().unwrap();
+    if guard.0 != secs {
+        let (y, mo, d, h, mi, s, wd) = super::datetime::datetime_parts(secs as i64);
+        let wd_name = DAYS.get(wd as usize).copied().unwrap_or("Thu");
+        let mo_name = MONTHS
+            .get(mo.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or("Jan");
+        guard.1.clear();
+        let _ = std::fmt::Write::write_fmt(
+            &mut guard.1,
+            format_args!(
+                "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+                wd_name, d, mo_name, y, h, mi, s
+            ),
+        );
+        guard.0 = secs;
+    }
+    f(guard.1.as_bytes())
+}
+
+/// Cached `ThinArcStr` singletons for common HTTP methods & protocol versions.
+fn cached_http_method(raw: &str) -> ThinArcStr {
+    static METHODS: OnceLock<[ThinArcStr; 7]> = OnceLock::new();
+    let tbl = METHODS.get_or_init(|| {
+        [
+            ThinArcStr::from("GET"),
+            ThinArcStr::from("POST"),
+            ThinArcStr::from("PUT"),
+            ThinArcStr::from("PATCH"),
+            ThinArcStr::from("DELETE"),
+            ThinArcStr::from("HEAD"),
+            ThinArcStr::from("OPTIONS"),
+        ]
+    });
+    if raw.eq_ignore_ascii_case("GET") {
+        tbl[0].clone()
+    } else if raw.eq_ignore_ascii_case("POST") {
+        tbl[1].clone()
+    } else if raw.eq_ignore_ascii_case("PUT") {
+        tbl[2].clone()
+    } else if raw.eq_ignore_ascii_case("PATCH") {
+        tbl[3].clone()
+    } else if raw.eq_ignore_ascii_case("DELETE") {
+        tbl[4].clone()
+    } else if raw.eq_ignore_ascii_case("HEAD") {
+        tbl[5].clone()
+    } else if raw.eq_ignore_ascii_case("OPTIONS") {
+        tbl[6].clone()
+    } else {
+        ThinArcStr::from(raw.to_ascii_uppercase())
+    }
+}
+
+fn cached_http_version(raw: &str) -> ThinArcStr {
+    static VERSIONS: OnceLock<[ThinArcStr; 2]> = OnceLock::new();
+    let tbl = VERSIONS.get_or_init(|| [ThinArcStr::from("HTTP/1.1"), ThinArcStr::from("HTTP/1.0")]);
+    match raw {
+        "HTTP/1.1" => tbl[0].clone(),
+        "HTTP/1.0" => tbl[1].clone(),
+        other => ThinArcStr::from(other),
+    }
+}
+
+struct BufGuard<'a> {
+    slot: &'a Mutex<Vec<u8>>,
+    buf: Vec<u8>,
+}
+
+impl<'a> BufGuard<'a> {
+    fn take(slot: &'a Mutex<Vec<u8>>) -> Self {
+        let mut g = slot.lock().unwrap();
+        let buf = std::mem::take(&mut *g);
+        Self { slot, buf }
+    }
+}
+
+impl Drop for BufGuard<'_> {
+    fn drop(&mut self) {
+        let mut buf = std::mem::take(&mut self.buf);
+        buf.clear();
+        if buf.capacity() > CONN_BUF_SHRINK_CAP {
+            buf = Vec::with_capacity(CONN_BUF_INIT_CAP);
+        }
+        if let Ok(mut g) = self.slot.lock() {
+            if g.capacity() < buf.capacity() {
+                *g = buf;
+            }
+        }
+    }
+}
+
+struct ListenerState {
+    listener: Arc<TcpListener>,
+    nonblock_waiters: Mutex<usize>,
+}
+
+struct ListenerNonblockGuard<'a> {
+    state: &'a ListenerState,
+}
+
+impl<'a> ListenerNonblockGuard<'a> {
+    fn acquire(state: &'a ListenerState, who: &str) -> Result<Self, String> {
+        let mut g = state.nonblock_waiters.lock().unwrap();
+        if *g == 0 {
+            state
+                .listener
+                .set_nonblocking(true)
+                .map_err(|e| io_msg(who, &e))?;
+        }
+        *g += 1;
+        Ok(Self { state })
+    }
+}
+
+impl Drop for ListenerNonblockGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.state.nonblock_waiters.lock() {
+            *g = g.saturating_sub(1);
+            if *g == 0 {
+                let _ = self.state.listener.set_nonblocking(false);
+            }
+        }
+    }
+}
 
 pub fn native_defs() -> Vec<NativeDef> {
     vec![
@@ -89,7 +232,7 @@ pub fn native_defs() -> Vec<NativeDef> {
 
 #[derive(Clone)]
 enum Sock {
-    Listener(Arc<TcpListener>),
+    Listener(Arc<ListenerState>),
     #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
     TlsListener(Arc<native_tls::TlsAcceptor>, Arc<TcpListener>),
     #[cfg(unix)]
@@ -262,6 +405,9 @@ struct Conn {
     stream: Mutex<ConnStream>,
     writer: Option<Mutex<ConnStream>>,
     pending: Mutex<Vec<u8>>,
+    read_buf: Mutex<Vec<u8>>,
+    write_buf: Mutex<Vec<u8>>,
+    peer_addr_cached: OnceLock<ThinArcStr>,
     /// WebSocket role, set once at upgrade time: `true` for connections
     /// upgraded by `ws_accept` (server side), `false` for `ws_connect`
     /// (client side). RFC 6455 §5.1: clients MUST mask outgoing frames,
@@ -283,6 +429,9 @@ impl Conn {
             stream: Mutex::new(ConnStream::Plain(stream)),
             writer,
             pending: Mutex::new(Vec::new()),
+            read_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            write_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            peer_addr_cached: OnceLock::new(),
             ws_server_side: AtomicBool::new(false),
         }
     }
@@ -293,6 +442,9 @@ impl Conn {
             stream: Mutex::new(ConnStream::Tls(Box::new(stream))),
             writer: None,
             pending: Mutex::new(Vec::new()),
+            read_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            write_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            peer_addr_cached: OnceLock::new(),
             ws_server_side: AtomicBool::new(false),
         }
     }
@@ -307,6 +459,9 @@ impl Conn {
             stream: Mutex::new(ConnStream::Uds(stream)),
             writer,
             pending: Mutex::new(Vec::new()),
+            read_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            write_buf: Mutex::new(Vec::with_capacity(CONN_BUF_INIT_CAP)),
+            peer_addr_cached: OnceLock::new(),
             ws_server_side: AtomicBool::new(false),
         }
     }
@@ -354,9 +509,9 @@ pub(crate) fn raw_fd_of(id: i64) -> Option<i32> {
     lookup(id).map(|s| sock_raw_fd(&s))
 }
 
-fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
+fn get_listener_state(id: i64, who: &str) -> Result<Arc<ListenerState>, String> {
     match lookup(id) {
-        Some(Sock::Listener(l)) => Ok(l),
+        Some(Sock::Listener(state)) => Ok(state),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Some(Sock::TlsListener(_, _)) => Err(format!(
             "{}: handle {} is a TLS listener, not a plain TCP listener",
@@ -381,6 +536,10 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
         )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
+}
+
+fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
+    get_listener_state(id, who).map(|state| state.listener.clone())
 }
 
 #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
@@ -561,7 +720,7 @@ fn header_pairs(v: &Value, who: &str) -> Result<Vec<(String, String)>, String> {
         // A list of `{name, value}` maps: needed when the same header name
         // must appear more than once (multiple Set-Cookie headers).
         Value::List(l) => {
-            let items = l.lock().unwrap().items.clone();
+            let items = l.lock().unwrap().clone_items();
             let mut out = Vec::with_capacity(items.len());
             for item in &items {
                 let m = match item {
@@ -702,7 +861,12 @@ fn n_tcp_listen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_listen", &args, 1)?;
     let addr = want_str(&args[0], "tcp_listen")?;
     match TcpListener::bind(&addr) {
-        Ok(l) => ok(Value::Int(register(Sock::Listener(Arc::new(l))))),
+        Ok(l) => ok(Value::Int(register(Sock::Listener(Arc::new(
+            ListenerState {
+                listener: Arc::new(l),
+                nonblock_waiters: Mutex::new(0),
+            },
+        ))))),
         Err(e) => err(format!("tcp_listen '{}': {}", addr, e)),
     }
 }
@@ -746,6 +910,44 @@ fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
+/// Wait up to `wait_ms` for an incoming connection on `listener` via OS readiness
+/// while marking the thread as blocked for scheduler GC quiescence.
+fn wait_listener_readable(listener: &TcpListener, wait_ms: i32) {
+    let _blocked = crate::sched::enter_blocked();
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        let mut pfd = sys::PollFd {
+            fd: listener.as_raw_socket() as usize,
+            events: sys::POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { sys::WSAPoll(&mut pfd, 1, wait_ms) };
+        if rc < 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let mut pfd = sys::PollFd {
+            fd: listener.as_raw_fd(),
+            events: sys::POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { sys::poll(&mut pfd, 1, wait_ms) };
+        if rc < 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = listener;
+        let _ = wait_ms;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// `tcp_accept_timeout(listener, timeout_ms)` -> `ok(conn)` / `null` on
 /// timeout / `err(msg)`.
 ///
@@ -756,9 +958,8 @@ fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// self-connect leaves it blocked forever. A server that polls needs a bound it
 /// controls, not a wake it hopes for.
 ///
-/// This flips the listener non-blocking for the duration of the call, retries
-/// `accept` until the deadline, and restores blocking mode before returning, so
-/// a caller that mixes the two forms keeps the old behaviour.
+/// Uses a refcounted non-blocking guard so multiple worker acceptors can poll the
+/// same listener safely without racing on `set_nonblocking(false)`.
 fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_accept_timeout", &args, 2)?;
     let id = want_int(&args[0], "tcp_accept_timeout")?;
@@ -788,7 +989,8 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
                     if Instant::now() >= deadline {
                         break Ok(Value::Null);
                     }
-                    std::thread::sleep(Duration::from_millis(5));
+                    let _blocked = crate::sched::enter_blocked();
+                    std::thread::sleep(Duration::from_millis(1));
                 }
                 Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
             }
@@ -796,44 +998,40 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
         let _ = listener.set_nonblocking(false);
         return outcome;
     }
-    let listener = get_listener(id, "tcp_accept_timeout")?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| io_msg("tcp_accept_timeout", &e))?;
+    let state = get_listener_state(id, "tcp_accept_timeout")?;
+    let listener = &state.listener;
+    let _nb_guard = ListenerNonblockGuard::acquire(&state, "tcp_accept_timeout")?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    // The loop *is* the result: every arm breaks with the value to return, so
-    // there is no placeholder to keep in sync.
-    let outcome: Result<Value, String> = loop {
+    loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 // Same closure check as the blocking form: `tcp_close` may have
                 // removed the handle while we waited.
                 if lookup(id).is_none() {
                     let _ = stream.shutdown(Shutdown::Both);
-                    break err("tcp_accept: listener closed");
+                    return err("tcp_accept: listener closed");
                 }
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_nodelay(true);
-                break ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
+                return ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
                     stream,
                 ))))));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if lookup(id).is_none() {
-                    break err("tcp_accept: listener closed");
+                    return err("tcp_accept: listener closed");
                 }
-                if Instant::now() >= deadline {
-                    break Ok(Value::Null);
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(Value::Null);
                 }
-                std::thread::sleep(Duration::from_millis(5));
+                let rem_ms = deadline.duration_since(now).as_millis().clamp(1, 20) as i32;
+                wait_listener_readable(listener, rem_ms);
             }
-            Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
+            Err(e) => return err(io_msg("tcp_accept_timeout", &e)),
         }
-    };
-    // Restore the mode the listener had, whatever happened above.
-    let _ = listener.set_nonblocking(false);
-    outcome
+    }
 }
 
 /// `tls_listen(cert_path, key_path, port)` -> `ok(listener)` / `err(msg)`.
@@ -1382,8 +1580,8 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             drop(s);
             Ok(Value::Bool(true))
         }
-        Some(Sock::Listener(l)) => {
-            close_listener(l);
+        Some(Sock::Listener(state)) => {
+            close_listener(state.listener.clone());
             Ok(Value::Bool(true))
         }
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
@@ -1410,7 +1608,7 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     arity("tcp_local_addr", &args, 1)?;
     let id = want_int(&args[0], "tcp_local_addr")?;
     let addr = match lookup(id) {
-        Some(Sock::Listener(l)) => l.local_addr().map(|a| a.to_string()),
+        Some(Sock::Listener(state)) => state.listener.local_addr().map(|a| a.to_string()),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Some(Sock::TlsListener(_, l)) => l.local_addr().map(|a| a.to_string()),
         #[cfg(unix)]
@@ -2368,7 +2566,7 @@ fn sock_raw_fd(sock: &Sock) -> usize {
     use std::os::windows::io::AsRawSocket;
     match sock {
         Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().raw_socket(),
-        Sock::Listener(l) => l.as_raw_socket() as usize,
+        Sock::Listener(state) => state.listener.as_raw_socket() as usize,
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Sock::TlsListener(_, l) => l.as_raw_socket() as usize,
         Sock::Udp(u) => u.as_raw_socket() as usize,
@@ -2380,7 +2578,7 @@ fn sock_raw_fd(sock: &Sock) -> i32 {
     use std::os::unix::io::AsRawFd;
     match sock {
         Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().raw_fd(),
-        Sock::Listener(l) => l.as_raw_fd(),
+        Sock::Listener(state) => state.listener.as_raw_fd(),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Sock::TlsListener(_, l) => l.as_raw_fd(),
         Sock::UdsListener(l, _) => l.as_raw_fd(),
@@ -2781,6 +2979,72 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+#[inline]
+fn find_crlf2(buf: &[u8], start_at: usize) -> Option<usize> {
+    let mut pos = start_at;
+    while pos + 4 <= buf.len() {
+        let search_end = buf.len() - 3;
+        let rel = super::swar::find_byte(&buf[pos..search_end], b'\r')?;
+        let i = pos + rel;
+        if buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n' {
+            return Some(i);
+        }
+        pos = i + 1;
+    }
+    None
+}
+
+#[inline]
+fn find_crlf(buf: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    while pos + 2 <= buf.len() {
+        let rel = super::swar::find_byte(&buf[pos..buf.len() - 1], b'\r')?;
+        let i = pos + rel;
+        if buf[i + 1] == b'\n' {
+            return Some(i);
+        }
+        pos = i + 1;
+    }
+    None
+}
+
+#[inline]
+fn contains_ascii_ignore_case(hay: &str, needle_lower: &str) -> bool {
+    let nb = needle_lower.as_bytes();
+    if hay.len() < nb.len() {
+        return false;
+    }
+    hay.as_bytes()
+        .windows(nb.len())
+        .any(|w| w.eq_ignore_ascii_case(nb))
+}
+
+#[inline]
+fn push_usize_decimal(mut n: usize, out: &mut Vec<u8>) {
+    if n < 10 {
+        out.push(b'0' + n as u8);
+        return;
+    }
+    let mut buf = [0u8; 24];
+    let mut pos = buf.len();
+    while n >= 100 {
+        let rem = n % 100;
+        n /= 100;
+        pos -= 2;
+        buf[pos] = b'0' + (rem / 10) as u8;
+        buf[pos + 1] = b'0' + (rem % 10) as u8;
+    }
+    if n >= 10 {
+        pos -= 2;
+        buf[pos] = b'0' + (n / 10) as u8;
+        buf[pos + 1] = b'0' + (n % 10) as u8;
+    } else {
+        pos -= 1;
+        buf[pos] = b'0' + n as u8;
+    }
+    out.extend_from_slice(&buf[pos..]);
+}
+
 /// Percent-decode; `plus_is_space` applies form-encoding rules (`+` = space).
 fn percent_decode(s: &str, plus_is_space: bool) -> String {
     let bytes = s.as_bytes();
@@ -2804,6 +3068,20 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+#[inline]
+fn percent_decode_thin(s: &str, plus_is_space: bool) -> ThinArcStr {
+    if s.is_empty() {
+        return ThinArcStr::empty();
+    }
+    let b = s.as_bytes();
+    if super::swar::find_byte(b, b'%').is_none()
+        && (!plus_is_space || super::swar::find_byte(b, b'+').is_none())
+    {
+        return ThinArcStr::from(s);
+    }
+    ThinArcStr::from(percent_decode(s, plus_is_space))
+}
+
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -2818,6 +3096,11 @@ fn percent_encode(s: &str) -> String {
 
 /// Parse `a=1&b=two` into a Spid3r map (later duplicates win).
 fn parse_query(q: &str) -> Result<Value, String> {
+    if q.is_empty() {
+        return Ok(Value::Map(new_ref(collections::MapData::from_entries(
+            Vec::new(),
+        ))));
+    }
     let mut pairs = Vec::new();
     for part in q.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = part.split_once('=').unwrap_or((part, ""));
@@ -2833,6 +3116,22 @@ fn headers_value(headers: &[(String, String)]) -> Result<Value, String> {
             .map(|(k, v)| (k.clone(), str_val(v.clone())))
             .collect(),
     )
+}
+
+fn header_lower_interned(name: &str) -> collections::KeyStr {
+    let bytes = name.as_bytes();
+    if bytes.len() <= 64 && name.is_ascii() {
+        let mut stack = [0u8; 64];
+        for (i, &b) in bytes.iter().enumerate() {
+            stack[i] = b.to_ascii_lowercase();
+        }
+        // SAFETY: `name.is_ascii()` guarantees every byte and its ASCII
+        // lowercase equivalent are valid UTF-8.
+        let s = std::str::from_utf8(&stack[..bytes.len()]).unwrap();
+        collections::intern_key(s)
+    } else {
+        collections::intern_key(&name.to_ascii_lowercase())
+    }
 }
 
 /// `http_read_request(conn)` -> `ok(request)` where request is a map:
@@ -2854,75 +3153,252 @@ fn n_http_read_request(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Stri
         }
     };
     let mut stream = conn.stream.lock().unwrap();
-    match read_request(&mut stream, ahead) {
+    let mut buf_guard = BufGuard::take(&conn.read_buf);
+    if !ahead.is_empty() {
+        buf_guard.buf.extend_from_slice(&ahead);
+    }
+    match read_request_with_buf(
+        &mut stream,
+        &mut buf_guard.buf,
+        Some(&conn.peer_addr_cached),
+    ) {
         Ok(v) => ok(v),
         Err(e) => err(e),
     }
 }
 
+#[cfg(test)]
 fn read_request(stream: &mut ConnStream, ahead: Vec<u8>) -> Result<Value, String> {
+    let mut buf = ahead;
+    read_request_with_buf(stream, &mut buf, None)
+}
+
+fn read_request_with_buf(
+    stream: &mut ConnStream,
+    buf: &mut Vec<u8>,
+    peer_cached: Option<&OnceLock<ThinArcStr>>,
+) -> Result<Value, String> {
     const WHO: &str = "http_read_request";
     // A-16: bound the header phase unless the program set its own timeout.
     ensure_io_timeout(&*stream)?;
-    let head = read_head_from(&mut *stream, ahead, WHO)?;
-    let parts: Vec<&str> = head.start_line.split_whitespace().collect();
-    if parts.len() != 3 || !parts[2].starts_with("HTTP/") {
-        return Err(format!(
-            "{}: malformed request line '{}'",
-            WHO, head.start_line
-        ));
+    if buf.capacity() < CONN_BUF_INIT_CAP {
+        buf.reserve(CONN_BUF_INIT_CAP - buf.capacity());
     }
-    let method = parts[0].to_ascii_uppercase();
-    let target = parts[1];
-    let version = parts[2].to_string();
+    let mut scan_from = 0usize;
+    let mut chunk = [0u8; 8192];
+    let end = loop {
+        if let Some(pos) = find_crlf2(buf, scan_from) {
+            break pos;
+        }
+        if buf.len() > MAX_HEAD_BYTES {
+            return Err(format!(
+                "{}: header section larger than {} bytes",
+                WHO, MAX_HEAD_BYTES
+            ));
+        }
+        scan_from = buf.len().saturating_sub(3);
+        let room = (MAX_HEAD_BYTES + 1 - buf.len()).min(chunk.len());
+        let n = {
+            let _blocked = crate::sched::enter_blocked();
+            stream.read(&mut chunk[..room])
+        }
+        .map_err(|e| io_msg(WHO, &e))?;
+        if n == 0 {
+            return Err(if buf.is_empty() {
+                format!("{}: connection closed before any data", WHO)
+            } else {
+                format!("{}: connection closed mid-header", WHO)
+            });
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
 
-    let leftover = head.leftover.clone();
-    let is_chunked = head
-        .header("transfer-encoding")
-        .is_some_and(|te| te.to_ascii_lowercase().contains("chunked"));
-    let (body, pipelined) = if is_chunked {
-        if head.header("content-length").is_some() {
+    let head_bytes = &buf[..end];
+    let (start_bytes, hdr_bytes) = match find_crlf(head_bytes) {
+        Some(line_end) => (&head_bytes[..line_end], &head_bytes[line_end + 2..]),
+        None => (head_bytes, &head_bytes[head_bytes.len()..]),
+    };
+
+    let start_cow = String::from_utf8_lossy(start_bytes);
+    let mut sit = start_cow.split_whitespace();
+    let (method_raw, target_raw, ver_raw) = match (sit.next(), sit.next(), sit.next(), sit.next()) {
+        (Some(m), Some(t), Some(v), None) if v.starts_with("HTTP/") => (m, t, v),
+        _ => return Err(format!("{}: malformed request line '{}'", WHO, start_cow)),
+    };
+    let method_val = cached_http_method(method_raw);
+    let version_val = cached_http_version(ver_raw);
+    let (raw_path, raw_query) = target_raw.split_once('?').unwrap_or((target_raw, ""));
+    let path_val = percent_decode_thin(raw_path, false);
+    let query_val = parse_query(raw_query)?;
+    let raw_query_val = if raw_query.is_empty() {
+        ThinArcStr::empty()
+    } else {
+        ThinArcStr::from(raw_query)
+    };
+
+    let mut hdr_entries: Vec<(MapKey, Value)> = Vec::with_capacity(12);
+    let mut cursor = 0usize;
+    let mut is_chunked = false;
+    let mut content_len_seen = false;
+    let mut content_len_parsed: Option<usize> = None;
+    let mut content_len_bad: Option<String> = None;
+
+    while cursor <= hdr_bytes.len() {
+        let next_end = find_crlf(&hdr_bytes[cursor..])
+            .map(|r| cursor + r)
+            .unwrap_or(hdr_bytes.len());
+        let line_bytes = &hdr_bytes[cursor..next_end];
+        let at_end = next_end == hdr_bytes.len();
+        cursor = next_end + 2;
+        if !(hdr_bytes.is_empty() && at_end) {
+            let line_cow = String::from_utf8_lossy(line_bytes);
+            let Some((raw_name, raw_value)) = line_cow.split_once(':') else {
+                return Err(format!("{}: malformed header line '{}'", WHO, line_cow));
+            };
+            let trimmed_name = raw_name.trim();
+            let val_trimmed = raw_value.trim();
+            let key_str = header_lower_interned(trimmed_name);
+            let kname = key_str.as_str();
+            if kname == "transfer-encoding" && contains_ascii_ignore_case(val_trimmed, "chunked") {
+                is_chunked = true;
+            }
+            if let Some((_, existing)) = hdr_entries
+                .iter_mut()
+                .find(|(k, _)| matches!(k, MapKey::Str(ek) if ek.as_str() == kname))
+            {
+                if let Value::Str(prev) = existing {
+                    let combined = format!("{}, {}", prev.as_str(), val_trimmed);
+                    if kname == "content-length" {
+                        content_len_seen = true;
+                        content_len_parsed = None;
+                        content_len_bad = Some(combined.clone());
+                    }
+                    *existing = Value::Str(ThinArcStr::from(combined));
+                }
+            } else {
+                if kname == "content-length" {
+                    content_len_seen = true;
+                    match val_trimmed.parse::<usize>() {
+                        Ok(n) => content_len_parsed = Some(n),
+                        Err(_) => content_len_bad = Some(val_trimmed.to_string()),
+                    }
+                }
+                hdr_entries.push((
+                    MapKey::Str(key_str),
+                    Value::Str(ThinArcStr::from(val_trimmed)),
+                ));
+            }
+        }
+        if at_end {
+            break;
+        }
+    }
+
+    let leftover = &buf[end + 4..];
+    let (body_str, body_bytes_vec, pipelined) = if is_chunked {
+        if content_len_seen {
             return Err(format!(
                 "{}: conflicting transfer-encoding and content-length",
                 WHO
             ));
         }
-        read_chunked_ext(&mut *stream, leftover, WHO)?
-    } else {
-        let len = match head.header("content-length") {
-            Some(v) => v
-                .parse::<usize>()
-                .map_err(|_| format!("{}: bad content-length '{}'", WHO, v))?,
-            None => 0,
+        let (b, pip) = read_chunked_ext(&mut *stream, leftover.to_vec(), WHO)?;
+        let bs = if b.is_empty() {
+            ThinArcStr::empty()
+        } else {
+            ThinArcStr::from(String::from_utf8_lossy(&b).as_ref())
         };
-        let has_trailing = leftover.len() > len;
-        let b = read_exact_body(&mut *stream, leftover, len, WHO)?;
-        (b, has_trailing)
+        (bs, b, pip)
+    } else {
+        let len = if let Some(n) = content_len_parsed {
+            n
+        } else if let Some(bad) = content_len_bad {
+            return Err(format!("{}: bad content-length '{}'", WHO, bad));
+        } else {
+            0
+        };
+        if len == 0 {
+            (ThinArcStr::empty(), Vec::new(), !leftover.is_empty())
+        } else {
+            let cap = max_body_bytes();
+            if len > cap {
+                return Err(format!(
+                    "{}: body of {} bytes exceeds the {} byte limit",
+                    WHO, len, cap
+                ));
+            }
+            let has_trailing = leftover.len() > len;
+            let mut body = Vec::with_capacity(len);
+            let copy_now = leftover.len().min(len);
+            body.extend_from_slice(&leftover[..copy_now]);
+            while body.len() < len {
+                let n = stream.read(&mut chunk).map_err(|e| io_msg(WHO, &e))?;
+                if n == 0 {
+                    return Err(format!(
+                        "{}: connection closed mid-body ({} of {} bytes)",
+                        WHO,
+                        body.len(),
+                        len
+                    ));
+                }
+                let need = len - body.len();
+                body.extend_from_slice(&chunk[..n.min(need)]);
+            }
+            let bs = ThinArcStr::from(String::from_utf8_lossy(&body).as_ref());
+            (bs, body, has_trailing)
+        }
     };
 
-    let (raw_path, raw_query) = target.split_once('?').unwrap_or((target, ""));
-    let remote = stream.peer_addr_str().unwrap_or_default();
-    make_map(vec![
-        ("method".to_string(), str_val(method)),
-        ("path".to_string(), str_val(percent_decode(raw_path, false))),
-        ("query".to_string(), parse_query(raw_query)?),
-        ("raw_query".to_string(), str_val(raw_query)),
-        ("version".to_string(), str_val(version)),
-        ("headers".to_string(), headers_value(&head.headers)?),
+    let remote_val = match peer_cached {
+        Some(cell) => cell
+            .get_or_init(|| ThinArcStr::from(stream.peer_addr_str().unwrap_or_default()))
+            .clone(),
+        None => ThinArcStr::from(stream.peer_addr_str().unwrap_or_default()),
+    };
+
+    let headers_map = Value::Map(new_ref(collections::MapData::from_entries(hdr_entries)));
+    let entries = vec![
         (
-            "body".to_string(),
-            str_val(String::from_utf8_lossy(&body).into_owned()),
+            MapKey::Str(collections::intern_key("method")),
+            Value::Str(method_val),
+        ),
+        (
+            MapKey::Str(collections::intern_key("path")),
+            Value::Str(path_val),
+        ),
+        (MapKey::Str(collections::intern_key("query")), query_val),
+        (
+            MapKey::Str(collections::intern_key("raw_query")),
+            Value::Str(raw_query_val),
+        ),
+        (
+            MapKey::Str(collections::intern_key("version")),
+            Value::Str(version_val),
+        ),
+        (MapKey::Str(collections::intern_key("headers")), headers_map),
+        (
+            MapKey::Str(collections::intern_key("body")),
+            Value::Str(body_str),
         ),
         // The same bytes without a UTF-8 round trip. A multipart upload of a
         // PNG is not text: `body` would replace every invalid sequence with
         // U+FFFD, so file uploads must read this field.
         (
-            "body_bytes".to_string(),
-            Value::Bytes(new_ref(body.clone())),
+            MapKey::Str(collections::intern_key("body_bytes")),
+            Value::Bytes(new_ref(body_bytes_vec)),
         ),
-        ("remote".to_string(), str_val(remote)),
-        ("pipelined".to_string(), Value::Bool(pipelined)),
-    ])
+        (
+            MapKey::Str(collections::intern_key("remote")),
+            Value::Str(remote_val),
+        ),
+        (
+            MapKey::Str(collections::intern_key("pipelined")),
+            Value::Bool(pipelined),
+        ),
+    ];
+    Ok(Value::Map(new_ref(collections::MapData::from_entries(
+        entries,
+    ))))
 }
 
 fn reason_phrase(status: i64) -> &'static str {
@@ -2981,59 +3457,168 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     if !(100..=999).contains(&status) {
         return Err(format!("{}: status {} is out of range", WHO, status));
     }
-    let headers = header_pairs(&args[2], WHO)?;
-    // A `bytes` body is written verbatim (binary responses: images, wasm,
-    // any pre-encoded payload); everything else renders as text.
-    let (body_text, body_raw): (String, Option<Vec<u8>>) = match &args[3] {
-        Value::Str(s) => (s.to_string(), None),
-        Value::Null => (String::new(), None),
-        Value::Bytes(b) => (String::new(), Some(b.lock().unwrap().clone())),
-        other => (display_value(other), None),
-    };
-    let body_len = body_raw.as_ref().map_or(body_text.len(), |b| b.len());
     let stream = get_stream(id, WHO)?;
 
-    let is_chunked_head = matches!(&args[3], Value::Null)
-        && headers.iter().any(|(n, v)| {
-            n.eq_ignore_ascii_case("transfer-encoding")
-                && v.to_ascii_lowercase().contains("chunked")
-        });
-
-    let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
-    let mut has_type = false;
-    for (name, value) in &headers {
-        let lower = name.to_ascii_lowercase();
-        if lower == "content-length" || lower == "connection" || lower == "transfer-encoding" {
-            continue; // framing is owned by the runtime
-        }
-        has_type |= lower == "content-type";
-        out.push_str(&format!("{}: {}\r\n", name, value));
-    }
-    if !has_type {
-        out.push_str("content-type: text/plain; charset=utf-8\r\n");
-    }
-    if is_chunked_head {
-        out.push_str(&format!(
-            "transfer-encoding: chunked\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
-            if keep_alive { "keep-alive" } else { "close" }
-        ));
+    let mut buf_guard = BufGuard::take(&stream.write_buf);
+    let out = &mut buf_guard.buf;
+    if status == 200 {
+        out.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
     } else {
-        out.push_str(&format!(
-            "content-length: {}\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
-            body_len,
-            if keep_alive { "keep-alive" } else { "close" }
-        ));
+        let _ = std::io::Write::write_fmt(
+            out,
+            format_args!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status)),
+        );
     }
-    let mut bytes = out.into_bytes();
+
+    let mut has_type = false;
+    let mut has_chunked_te = false;
+    match &args[2] {
+        Value::Null => {}
+        Value::Map(m) => {
+            let guard = m.lock().unwrap();
+            for (k, val) in &guard.entries {
+                let name_owned;
+                let name = match k {
+                    MapKey::Str(ks) => ks.as_str(),
+                    other => {
+                        name_owned = other.display();
+                        name_owned.as_str()
+                    }
+                };
+                let val_owned;
+                let val_s = match val {
+                    Value::Str(s) => s.as_str(),
+                    other => {
+                        val_owned = display_value(other);
+                        val_owned.as_str()
+                    }
+                };
+                if name.contains(['\r', '\n']) || val_s.contains(['\r', '\n']) {
+                    return Err(format!("{}: header '{}' contains a line break", WHO, name));
+                }
+                if name.trim().is_empty() {
+                    return Err(format!("{}: empty header name", WHO));
+                }
+                if name.eq_ignore_ascii_case("content-length")
+                    || name.eq_ignore_ascii_case("connection")
+                {
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("transfer-encoding") {
+                    if contains_ascii_ignore_case(val_s, "chunked") {
+                        has_chunked_te = true;
+                    }
+                    continue;
+                }
+                has_type |= name.eq_ignore_ascii_case("content-type");
+                if name.eq_ignore_ascii_case("date") && val_s == "auto" {
+                    with_cached_http_date(|d| {
+                        out.extend_from_slice(name.as_bytes());
+                        out.extend_from_slice(b": ");
+                        out.extend_from_slice(d);
+                        out.extend_from_slice(b"\r\n");
+                    });
+                    continue;
+                }
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(val_s.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        other => {
+            let headers = header_pairs(other, WHO)?;
+            for (name, value) in &headers {
+                if name.eq_ignore_ascii_case("content-length")
+                    || name.eq_ignore_ascii_case("connection")
+                {
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("transfer-encoding") {
+                    if contains_ascii_ignore_case(value, "chunked") {
+                        has_chunked_te = true;
+                    }
+                    continue;
+                }
+                has_type |= name.eq_ignore_ascii_case("content-type");
+                if name.eq_ignore_ascii_case("date") && value == "auto" {
+                    with_cached_http_date(|d| {
+                        out.extend_from_slice(name.as_bytes());
+                        out.extend_from_slice(b": ");
+                        out.extend_from_slice(d);
+                        out.extend_from_slice(b"\r\n");
+                    });
+                    continue;
+                }
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(value.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+    }
+
+    if !has_type {
+        out.extend_from_slice(b"content-type: text/plain; charset=utf-8\r\n");
+    }
+
+    let is_chunked_head = matches!(&args[3], Value::Null) && has_chunked_te;
+    let mut rendered_body: Option<String> = None;
+    if is_chunked_head {
+        out.extend_from_slice(b"transfer-encoding: chunked\r\n");
+    } else {
+        match &args[3] {
+            Value::Str(s) => {
+                out.extend_from_slice(b"content-length: ");
+                push_usize_decimal(s.len(), out);
+                out.extend_from_slice(b"\r\n");
+            }
+            Value::Null => {
+                out.extend_from_slice(b"content-length: 0\r\n");
+            }
+            Value::Bytes(b) => {
+                let len = b.lock().unwrap().len();
+                out.extend_from_slice(b"content-length: ");
+                push_usize_decimal(len, out);
+                out.extend_from_slice(b"\r\n");
+            }
+            other => {
+                let rendered = display_value(other);
+                out.extend_from_slice(b"content-length: ");
+                push_usize_decimal(rendered.len(), out);
+                out.extend_from_slice(b"\r\n");
+                rendered_body = Some(rendered);
+            }
+        }
+    }
+    out.extend_from_slice(if keep_alive {
+        b"connection: keep-alive\r\nserver: spid3r\r\n\r\n"
+    } else {
+        b"connection: close\r\nserver: spid3r\r\n\r\n"
+    });
     if !is_chunked_head {
-        match body_raw {
-            Some(raw) => bytes.extend_from_slice(&raw),
-            None => bytes.extend_from_slice(body_text.as_bytes()),
+        if let Some(rendered) = &rendered_body {
+            out.extend_from_slice(rendered.as_bytes());
+        } else {
+            match &args[3] {
+                Value::Str(s) => out.extend_from_slice(s.as_bytes()),
+                Value::Null => {}
+                Value::Bytes(b) => {
+                    let guard = b.lock().unwrap();
+                    out.extend_from_slice(&guard);
+                }
+                _ => {}
+            }
         }
     }
     let mut s = stream.stream.lock().unwrap();
-    match s.write_all(&bytes).and_then(|_| s.flush()) {
-        Ok(()) => ok(Value::Int(bytes.len() as i64)),
+    let res = match &mut *s {
+        ConnStream::Plain(p) => p.write_all(out),
+        #[allow(unreachable_patterns)]
+        _ => s.write_all(out).and_then(|_| s.flush()),
+    };
+    match res {
+        Ok(()) => ok(Value::Int(out.len() as i64)),
         Err(e) => err(io_msg(WHO, &e)),
     }
 }
@@ -3487,5 +4072,14 @@ mod tests {
             "expected mid-chunk EOF error on truncated trailer, got: {}",
             err_trailer
         );
+    }
+
+    #[test]
+    fn cached_http_date_formats_rfc7231() {
+        with_cached_http_date(|bytes| {
+            let s = std::str::from_utf8(bytes).expect("utf-8 RFC 7231 date");
+            assert_eq!(s.len(), 29, "unexpected HTTP date length: {}", s);
+            assert!(s.ends_with(" GMT"), "unexpected HTTP date suffix: {}", s);
+        });
     }
 }

@@ -10,16 +10,26 @@ use super::{deep_clone, key_to_value, new_ref, values_equal, Value};
 // ---------------------------------------------------------------- list, vec
 
 #[inline]
-fn is_non_recursive_scalar(v: &Value) -> bool {
+pub fn is_non_recursive_scalar(v: &Value) -> bool {
     matches!(
         v,
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)
     )
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct VecData {
-    pub items: Vec<Value>,
+    items: Vec<Value>,
+    gen: u64,
+    dense_i64: Option<Vec<i64>>,
+    dense_f64: Option<Vec<f64>>,
+    pub gc_tracked: bool,
+}
+
+impl Default for VecData {
+    fn default() -> Self {
+        Self::from_items(Vec::new())
+    }
 }
 
 impl Drop for VecData {
@@ -27,6 +37,8 @@ impl Drop for VecData {
         if self.items.iter().all(is_non_recursive_scalar) {
             return;
         }
+        self.dense_i64 = None;
+        self.dense_f64 = None;
         // F4/A-17: drain nested containers iteratively; the shared helper knows
         // every container type, so mixed chains (list -> stack -> map -> ...)
         // are covered too.
@@ -35,6 +47,224 @@ impl Drop for VecData {
 }
 
 impl VecData {
+    pub fn from_items(items: Vec<Value>) -> Self {
+        Self {
+            items,
+            gen: 0,
+            dense_i64: None,
+            dense_f64: None,
+            gc_tracked: true,
+        }
+    }
+
+    #[inline]
+    pub fn from_items_untracked(items: Vec<Value>) -> Self {
+        Self {
+            items,
+            gen: 0,
+            dense_i64: None,
+            dense_f64: None,
+            gc_tracked: false,
+        }
+    }
+
+    #[inline]
+    pub fn needs_track_for(&mut self, v: &Value) -> bool {
+        if !self.gc_tracked && !is_non_recursive_scalar(v) {
+            self.gc_tracked = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[Value] {
+        &self.items
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    #[inline]
+    pub fn generation(&self) -> u64 {
+        self.gen
+    }
+
+    #[inline]
+    pub fn clone_items(&self) -> Vec<Value> {
+        self.items.clone()
+    }
+
+    #[inline]
+    pub fn invalidate(&mut self) {
+        self.gen = self.gen.wrapping_add(1);
+        self.dense_i64 = None;
+        self.dense_f64 = None;
+    }
+
+    #[inline]
+    pub fn push_item(&mut self, v: Value) {
+        self.gen = self.gen.wrapping_add(1);
+        if let Some(ref mut d) = self.dense_i64 {
+            if let Value::Int(n) = v {
+                d.push(n);
+            } else {
+                self.dense_i64 = None;
+            }
+        }
+        if let Some(ref mut d) = self.dense_f64 {
+            if let Value::Float(f) = v {
+                d.push(f);
+            } else {
+                self.dense_f64 = None;
+            }
+        }
+        self.items.push(v);
+    }
+
+    #[inline]
+    pub fn pop_item(&mut self) -> Option<Value> {
+        self.gen = self.gen.wrapping_add(1);
+        if let Some(ref mut d) = self.dense_i64 {
+            d.pop();
+        }
+        if let Some(ref mut d) = self.dense_f64 {
+            d.pop();
+        }
+        self.items.pop()
+    }
+
+    #[inline]
+    pub fn set_item(&mut self, idx: usize, v: Value) {
+        self.gen = self.gen.wrapping_add(1);
+        if let Some(ref mut d) = self.dense_i64 {
+            if let Value::Int(n) = v {
+                if let Some(slot) = d.get_mut(idx) {
+                    *slot = n;
+                } else {
+                    self.dense_i64 = None;
+                }
+            } else {
+                self.dense_i64 = None;
+            }
+        }
+        if let Some(ref mut d) = self.dense_f64 {
+            if let Value::Float(f) = v {
+                if let Some(slot) = d.get_mut(idx) {
+                    *slot = f;
+                } else {
+                    self.dense_f64 = None;
+                }
+            } else {
+                self.dense_f64 = None;
+            }
+        }
+        self.items[idx] = v;
+    }
+
+    #[inline]
+    pub fn insert_item(&mut self, idx: usize, v: Value) {
+        self.invalidate();
+        self.items.insert(idx, v);
+    }
+
+    #[inline]
+    pub fn remove_item(&mut self, idx: usize) -> Value {
+        self.invalidate();
+        self.items.remove(idx)
+    }
+
+    #[inline]
+    pub fn clear_items(&mut self) {
+        self.invalidate();
+        self.items.clear();
+    }
+
+    #[inline]
+    pub fn extend_items(&mut self, extra: impl IntoIterator<Item = Value>) {
+        self.invalidate();
+        self.items.extend(extra);
+    }
+
+    #[inline]
+    pub fn set_items(&mut self, items: Vec<Value>) {
+        self.invalidate();
+        self.items = items;
+    }
+
+    #[inline]
+    pub fn take_items(&mut self) -> Vec<Value> {
+        self.invalidate();
+        std::mem::take(&mut self.items)
+    }
+
+    pub(crate) fn clear_for_pool(&mut self, out: &mut Vec<Value>) -> bool {
+        if self.gc_tracked || self.items.capacity() > 4096 {
+            return false;
+        }
+        if self.items.iter().all(is_non_recursive_scalar) {
+            self.items.clear();
+        } else {
+            for v in self.items.drain(..) {
+                if !is_non_recursive_scalar(&v) {
+                    out.push(v);
+                }
+            }
+        }
+        self.gen = 0;
+        self.dense_i64 = None;
+        self.dense_f64 = None;
+        true
+    }
+
+    /// Ensure an unboxed dense `i64` mirror of `items` exists when every
+    /// element is `Value::Int`, returning `(ptr, len, gen)`.
+    pub fn ensure_dense_i64(&mut self) -> Option<(*const i64, usize, u64)> {
+        if self.dense_i64.is_none() {
+            let mut buf = Vec::with_capacity(self.items.len());
+            for it in &self.items {
+                if let Value::Int(n) = *it {
+                    buf.push(n);
+                } else {
+                    return None;
+                }
+            }
+            self.dense_f64 = None;
+            self.dense_i64 = Some(buf);
+        }
+        self.dense_i64
+            .as_ref()
+            .map(|d| (d.as_ptr(), d.len(), self.gen))
+    }
+
+    /// Ensure an unboxed dense `f64` mirror of `items` exists when every
+    /// element is `Value::Float`, returning `(ptr, len, gen)`.
+    pub fn ensure_dense_f64(&mut self) -> Option<(*const f64, usize, u64)> {
+        if self.dense_f64.is_none() {
+            let mut buf = Vec::with_capacity(self.items.len());
+            for it in &self.items {
+                if let Value::Float(f) = *it {
+                    buf.push(f);
+                } else {
+                    return None;
+                }
+            }
+            self.dense_i64 = None;
+            self.dense_f64 = Some(buf);
+        }
+        self.dense_f64
+            .as_ref()
+            .map(|d| (d.as_ptr(), d.len(), self.gen))
+    }
+
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
             "len" => {
@@ -47,7 +277,7 @@ impl VecData {
             }
             "clear" => {
                 want(name, args, 0)?;
-                self.items.clear();
+                self.clear_items();
                 Ok(Value::Null)
             }
             "capacity" => {
@@ -56,12 +286,12 @@ impl VecData {
             }
             "push" => {
                 want(name, args, 1)?;
-                self.items.push(args[0].clone());
+                self.push_item(args[0].clone());
                 Ok(Value::Null)
             }
             "pop" => {
                 want(name, args, 0)?;
-                match self.items.pop() {
+                match self.pop_item() {
                     Some(v) => Ok(v),
                     None => Err("pop on an empty list".to_string()),
                 }
@@ -88,16 +318,15 @@ impl VecData {
             "set" => {
                 want(name, args, 2)?;
                 let i = want_index(&args[0], "list.set")?;
-                match self.items.get_mut(i) {
-                    Some(slot) => {
-                        *slot = args[1].clone();
-                        Ok(Value::Null)
-                    }
-                    None => Err(format!(
+                if i < self.items.len() {
+                    self.set_item(i, args[1].clone());
+                    Ok(Value::Null)
+                } else {
+                    Err(format!(
                         "index {} out of bounds for length {}",
                         i,
                         self.items.len()
-                    )),
+                    ))
                 }
             }
             "insert" => {
@@ -110,7 +339,7 @@ impl VecData {
                         self.items.len()
                     ));
                 }
-                self.items.insert(i, args[1].clone());
+                self.insert_item(i, args[1].clone());
                 Ok(Value::Null)
             }
             "remove_at" => {
@@ -123,13 +352,13 @@ impl VecData {
                         self.items.len()
                     ));
                 }
-                Ok(self.items.remove(i))
+                Ok(self.remove_item(i))
             }
             "remove" => {
                 want(name, args, 1)?;
                 let pos = self.items.iter().position(|v| values_equal(v, &args[0]));
                 match pos {
-                    Some(i) => Ok(self.items.remove(i)),
+                    Some(i) => Ok(self.remove_item(i)),
                     None => Err("value not in list".to_string()),
                 }
             }
@@ -146,24 +375,25 @@ impl VecData {
             }
             "reverse" => {
                 want(name, args, 0)?;
+                self.invalidate();
                 self.items.reverse();
                 Ok(Value::Null)
             }
             "sort" => {
                 want(name, args, 0)?;
-                let mut vals = std::mem::take(&mut self.items);
+                let mut vals = self.take_items();
                 let all_num = vals
                     .iter()
                     .all(|v| matches!(v, Value::Int(_) | Value::Float(_)));
                 let all_str = vals.iter().all(|v| matches!(v, Value::Str(_)));
                 if !(all_num || all_str) {
-                    self.items = vals;
+                    self.set_items(vals);
                     return Err(
                         "cannot sort: values are not all numbers or all strings".to_string()
                     );
                 }
                 vals.sort_by(natural_cmp);
-                self.items = vals;
+                self.set_items(vals);
                 Ok(Value::Null)
             }
             "slice" => {
@@ -182,9 +412,9 @@ impl VecData {
                 if a > b || b > self.items.len() {
                     return Err(format!("slice range {}..{} out of bounds", a, b));
                 }
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items[a..b].iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items[a..b].iter().map(deep_clone).collect(),
+                ))))
             }
             "join" => {
                 want(name, args, 1)?;
@@ -200,7 +430,7 @@ impl VecData {
                 let other = match &args[0] {
                     Value::List(d) | Value::VecDyn(d) => {
                         let d = d.lock().unwrap();
-                        d.items.clone()
+                        d.clone_items()
                     }
                     other => {
                         return Err(format!(
@@ -209,14 +439,14 @@ impl VecData {
                         ))
                     }
                 };
-                self.items.extend(other);
+                self.extend_items(other);
                 Ok(Value::Null)
             }
             "clone" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             "sorted" => {
                 want(name, args, 0)?;
@@ -231,13 +461,13 @@ impl VecData {
                     );
                 }
                 vals.sort_by(natural_cmp);
-                Ok(Value::List(new_ref(VecData { items: vals })))
+                Ok(Value::List(new_ref(VecData::from_items(vals))))
             }
             "reversed" => {
                 want(name, args, 0)?;
                 let mut vals = self.items.clone();
                 vals.reverse();
-                Ok(Value::List(new_ref(VecData { items: vals })))
+                Ok(Value::List(new_ref(VecData::from_items(vals))))
             }
             _ => Err(unknown(name, "list")),
         }
@@ -294,9 +524,9 @@ pub fn vec_detached(
                     // matched (identity/scalar check — no locking), so a
                     // concurrent mutation cannot make us remove a different
                     // element. If it moved, the dispatcher retries.
-                    match g.items.get(i) {
+                    match g.as_slice().get(i) {
                         Some(cur) if crate::value::same_slot(cur, &items[i]) => {
-                            Ok(g.items.remove(i))
+                            Ok(g.remove_item(i))
                         }
                         _ => Err(CONFLICT.to_string()),
                     }
@@ -320,9 +550,9 @@ pub fn vec_detached(
             if a > b || b > items.len() {
                 return Err(format!("slice range {}..{} out of bounds", a, b));
             }
-            Ok(Value::List(new_ref(VecData {
-                items: items[a..b].iter().map(deep_clone).collect(),
-            })))
+            Ok(Value::List(new_ref(VecData::from_items(
+                items[a..b].iter().map(deep_clone).collect(),
+            ))))
         }
         "join" => {
             want(name, args, 1)?;
@@ -371,9 +601,9 @@ pub fn seq_detached(items: &[Value], name: &str, args: &[Value]) -> Result<Value
 /// Deep-clone a value snapshot into a plain list with no container lock held
 /// (audit A-7): an item can be (or reach) the source container.
 pub fn items_to_list_detached(items: &[Value]) -> Value {
-    Value::List(new_ref(VecData {
-        items: items.iter().map(deep_clone).collect(),
-    }))
+    Value::List(new_ref(VecData::from_items(
+        items.iter().map(deep_clone).collect(),
+    )))
 }
 
 /// Detached set operations (audit A-7, same rationale as [`vec_detached`]).
@@ -489,9 +719,9 @@ impl StackData {
             }
             "to_list" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             "clone" => {
                 want(name, args, 0)?;
@@ -572,9 +802,9 @@ impl QueueData {
             }
             "to_list" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             "clone" => {
                 want(name, args, 0)?;
@@ -649,9 +879,9 @@ impl DequeData {
             }
             "to_list" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             "clone" => {
                 want(name, args, 0)?;
@@ -685,23 +915,24 @@ fn map_tag(hash: u64) -> u8 {
 ///   array avoids any heap allocation (huge win for small JSON objects).
 /// - Above 16 entries, a flat open-addressed `(hash, entry_idx + 1)` table
 ///   (`0` = empty) stores only indices without cloning `MapKey`s.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MapData {
     pub entries: Vec<(super::MapKey, Value)>,
     /// 1-byte hash tags used when `slots.is_empty()` (`entries.len() <= 16`).
     small_tags: [u8; SMALL_MAP_MAX],
-    /// Open-addressed linear-probing index `(hash, entry_idx + 1)` (`0` = empty).
-    /// Capacity is always 0 or a power of two.
-    slots: Vec<(u64, u32)>,
+    /// Open-addressed linear-probing index `(hash >> 32, entry_idx + 1)` (`0` = empty).
+    /// Capacity is always 0 or a power of two (8 bytes per slot).
+    slots: Vec<(u32, u32)>,
     /// True when this map is a **module namespace** — the value bound to an
     /// import alias (`import "m" as mu`). Such a map is a read-only view of
     /// the module's exports: it cannot be mutated, and an exported name
     /// shadows a built-in map method (`mu.get()` is the module's `get`, not
     /// `map.get`).
     pub namespace: bool,
+    pub gc_tracked: bool,
     /// The module's `public const` exports. They are frozen: a namespace copy
     /// of a constant must not be rebindable (`mu["VERSION"] = 9`).
-    pub frozen: super::FxHashSet<super::MapKey>,
+    pub frozen: Option<Box<super::FxHashSet<super::MapKey>>>,
     /// Monotonic mutation counter (Phase 5). Bumped by every value or
     /// structural mutation so a future inline cache can detect invalidation.
     /// `Value::Map` is `Ref<MapData>` (pointer-sized `Arc<Mutex<..>>`), so
@@ -709,6 +940,12 @@ pub struct MapData {
     /// no GC change. Wrapping (not `+= 1`) keeps `overflow-checks = true`
     /// builds safe after 2^64 mutations.
     pub generation: u64,
+}
+
+impl Default for MapData {
+    fn default() -> Self {
+        Self::from_entries(Vec::new())
+    }
 }
 
 impl Drop for MapData {
@@ -732,7 +969,8 @@ impl MapData {
             small_tags: [0; SMALL_MAP_MAX],
             slots: Vec::new(),
             namespace: false,
-            frozen: super::FxHashSet::default(),
+            gc_tracked: true,
+            frozen: None,
             generation: 0,
         };
         if m.entries.len() <= SMALL_MAP_MAX {
@@ -740,6 +978,28 @@ impl MapData {
                 m.small_tags[i] = map_tag(super::fx_hash_map_key(k));
             }
         } else {
+            m.rebuild_slots();
+        }
+        m
+    }
+
+    /// Build a map outside the cycle-GC registry (`gc_tracked: false`) when the
+    /// constructor knows its entries contain no cycles (e.g. `json_parse`).
+    #[inline]
+    pub fn from_entries_untracked(
+        entries: Vec<(super::MapKey, Value)>,
+        small_tags: [u8; SMALL_MAP_MAX],
+    ) -> MapData {
+        let mut m = MapData {
+            entries,
+            small_tags,
+            slots: Vec::new(),
+            namespace: false,
+            gc_tracked: false,
+            frozen: None,
+            generation: 0,
+        };
+        if m.entries.len() > SMALL_MAP_MAX {
             m.rebuild_slots();
         }
         m
@@ -758,8 +1018,19 @@ impl MapData {
             small_tags,
             slots: Vec::new(),
             namespace: false,
-            frozen: super::FxHashSet::default(),
+            gc_tracked: true,
+            frozen: None,
             generation: 0,
+        }
+    }
+
+    #[inline]
+    pub fn needs_track_for(&mut self, v: &Value) -> bool {
+        if !self.gc_tracked && !is_non_recursive_scalar(v) {
+            self.gc_tracked = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -768,18 +1039,19 @@ impl MapData {
         let cap = (self.entries.len().saturating_mul(2))
             .next_power_of_two()
             .max(32);
-        let mut slots = vec![(0u64, 0u32); cap];
+        let mut slots = vec![(0u32, 0u32); cap];
         let mask = cap - 1;
         for (i, (k, _)) in self.entries.iter().enumerate() {
             let h = super::fx_hash_map_key(k);
+            let h32 = (h >> 32) as u32;
             let mut pos = (h as usize) & mask;
             loop {
                 let (sh, idx1) = slots[pos];
                 if idx1 == 0 {
-                    slots[pos] = (h, (i + 1) as u32);
+                    slots[pos] = (h32, (i + 1) as u32);
                     break;
                 }
-                if sh == h && self.entries[(idx1 - 1) as usize].0 == *k {
+                if sh == h32 && self.entries[(idx1 - 1) as usize].0 == *k {
                     // Last duplicate wins, matching previous FxHashMap::insert.
                     slots[pos].1 = (i + 1) as u32;
                     break;
@@ -806,14 +1078,18 @@ impl MapData {
     ) -> MapData {
         let mut m = MapData::from_entries(entries);
         m.namespace = true;
-        m.frozen = frozen;
+        m.frozen = if frozen.is_empty() {
+            None
+        } else {
+            Some(Box::new(frozen))
+        };
         m
     }
 
     /// Whether a key may not be rebound (a `public const` export).
     #[inline]
     pub fn is_frozen(&self, k: &super::MapKey) -> bool {
-        self.frozen.contains(k)
+        self.frozen.as_ref().is_some_and(|f| f.contains(k))
     }
 
     /// The error a mutation of this map must produce, or `None` when the
@@ -842,13 +1118,16 @@ impl MapData {
         let h = super::fx_hash_map_key(k);
         if self.slots.is_empty() {
             let tag = map_tag(h);
-            for i in (0..self.entries.len()).rev() {
-                if self.small_tags[i] == tag && self.entries[i].0 == *k {
+            let n = self.entries.len().min(SMALL_MAP_MAX);
+            let tags = &self.small_tags[..n];
+            for i in (0..n).rev() {
+                if tags[i] == tag && self.entries[i].0 == *k {
                     return Some(i);
                 }
             }
             return None;
         }
+        let h32 = (h >> 32) as u32;
         let mask = self.slots.len() - 1;
         let mut pos = (h as usize) & mask;
         loop {
@@ -856,8 +1135,51 @@ impl MapData {
             if idx1 == 0 {
                 return None;
             }
-            if sh == h && self.entries[(idx1 - 1) as usize].0 == *k {
+            if sh == h32 && self.entries[(idx1 - 1) as usize].0 == *k {
                 return Some((idx1 - 1) as usize);
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+
+    /// Zero-allocation lookup for string keys using a caller-provided hash.
+    #[inline]
+    pub fn find_str_with_hash(&self, s: &str, h: u64) -> Option<usize> {
+        self.find_str_bytes_with_hash(s.as_bytes(), h)
+    }
+
+    /// Zero-allocation lookup for raw UTF-8 key bytes using a caller-provided hash.
+    #[inline]
+    pub fn find_str_bytes_with_hash(&self, s: &[u8], h: u64) -> Option<usize> {
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            let n = self.entries.len().min(SMALL_MAP_MAX);
+            let tags = &self.small_tags[..n];
+            for i in (0..n).rev() {
+                if tags[i] == tag {
+                    if let super::MapKey::Str(k) = &self.entries[i].0 {
+                        if k.as_bytes() == s {
+                            return Some(i);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        let h32 = (h >> 32) as u32;
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                return None;
+            }
+            if sh == h32 {
+                if let super::MapKey::Str(k) = &self.entries[(idx1 - 1) as usize].0 {
+                    if k.as_bytes() == s {
+                        return Some((idx1 - 1) as usize);
+                    }
+                }
             }
             pos = (pos + 1) & mask;
         }
@@ -866,36 +1188,35 @@ impl MapData {
     /// Zero-allocation lookup for string keys (Track 3 RT-3).
     #[inline]
     pub fn find_str(&self, s: &str) -> Option<usize> {
-        let h = super::fx_hash_str(s);
-        if self.slots.is_empty() {
-            let tag = map_tag(h);
-            for i in (0..self.entries.len()).rev() {
-                if self.small_tags[i] == tag {
-                    if let super::MapKey::Str(k) = &self.entries[i].0 {
-                        if k.as_ref() == s {
-                            return Some(i);
-                        }
-                    }
+        self.find_str_bytes(s.as_bytes())
+    }
+
+    /// Zero-allocation lookup for raw UTF-8 key bytes.
+    #[inline]
+    pub fn find_str_bytes(&self, s: &[u8]) -> Option<usize> {
+        self.find_str_bytes_with_hash(s, super::fxhash::fx_hash_bytes(s))
+    }
+
+    pub(crate) fn clear_for_pool(&mut self, out: &mut Vec<Value>) -> bool {
+        if self.gc_tracked
+            || self.namespace
+            || self.frozen.is_some()
+            || self.entries.capacity() > 32
+        {
+            return false;
+        }
+        if self.entries.iter().all(|(_, v)| is_non_recursive_scalar(v)) {
+            self.entries.clear();
+        } else {
+            for (_, v) in self.entries.drain(..) {
+                if !is_non_recursive_scalar(&v) {
+                    out.push(v);
                 }
             }
-            return None;
         }
-        let mask = self.slots.len() - 1;
-        let mut pos = (h as usize) & mask;
-        loop {
-            let (sh, idx1) = self.slots[pos];
-            if idx1 == 0 {
-                return None;
-            }
-            if sh == h {
-                if let super::MapKey::Str(k) = &self.entries[(idx1 - 1) as usize].0 {
-                    if k.as_ref() == s {
-                        return Some((idx1 - 1) as usize);
-                    }
-                }
-            }
-            pos = (pos + 1) & mask;
-        }
+        self.slots.clear();
+        self.generation = 0;
+        true
     }
 
     #[inline]
@@ -919,6 +1240,7 @@ impl MapData {
             }
             return;
         }
+        let h32 = (h >> 32) as u32;
         let mask = self.slots.len() - 1;
         let mut pos = (h as usize) & mask;
         loop {
@@ -929,11 +1251,11 @@ impl MapData {
                 if self.entries.len() * 10 >= self.slots.len() * 7 {
                     self.rebuild_slots();
                 } else {
-                    self.slots[pos] = (h, (idx + 1) as u32);
+                    self.slots[pos] = (h32, (idx + 1) as u32);
                 }
                 return;
             }
-            if sh == h && self.entries[(idx1 - 1) as usize].0 == k {
+            if sh == h32 && self.entries[(idx1 - 1) as usize].0 == k {
                 self.entries[(idx1 - 1) as usize].1 = val;
                 return;
             }
@@ -1029,13 +1351,12 @@ impl MapData {
             }
             "items" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self
-                        .entries
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.entries
                         .iter()
                         .map(|(k, v)| Value::Tuple(new_ref(vec![key_to_value(k), v.clone()])))
                         .collect(),
-                })))
+                ))))
             }
             "contains" => {
                 want(name, args, 1)?;
@@ -1044,9 +1365,9 @@ impl MapData {
             }
             "keys" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.entries.iter().map(|(k, _)| key_to_value(k)).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.entries.iter().map(|(k, _)| key_to_value(k)).collect(),
+                ))))
             }
             "values" => {
                 want(name, args, 0)?;
@@ -1090,9 +1411,272 @@ pub fn is_builtin_map_method(name: &str) -> bool {
 /// itself as a value re-locked it and hung (audit F3/p05). Callers snapshot
 /// `entries` under the lock and build the result here without it.
 pub fn map_values_out(entries: &[(super::MapKey, Value)]) -> Value {
-    Value::List(new_ref(VecData {
-        items: entries.iter().map(|(_, v)| deep_clone(v)).collect(),
-    }))
+    Value::List(new_ref(VecData::from_items(
+        entries.iter().map(|(_, v)| deep_clone(v)).collect(),
+    )))
+}
+
+const MAP_POOL_CAP: usize = 1024;
+const LIST_POOL_CAP: usize = 256;
+
+thread_local! {
+    static MAP_POOL: std::cell::RefCell<Vec<crate::value::Ref<MapData>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static LIST_POOL: std::cell::RefCell<Vec<crate::value::Ref<VecData>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline]
+pub fn push_pooled_map(arc: crate::value::Ref<MapData>) {
+    MAP_POOL.with(|cell| {
+        if let Ok(mut pool) = cell.try_borrow_mut() {
+            if pool.len() < MAP_POOL_CAP {
+                pool.push(arc);
+            }
+        }
+    });
+}
+
+#[inline]
+pub fn push_pooled_list(arc: crate::value::Ref<VecData>) {
+    LIST_POOL.with(|cell| {
+        if let Ok(mut pool) = cell.try_borrow_mut() {
+            if pool.len() < LIST_POOL_CAP {
+                pool.push(arc);
+            }
+        }
+    });
+}
+
+/// Check out a recycled untracked `MapData` `Arc` and its pre-allocated `entries` buffer.
+#[inline]
+pub fn checkout_pooled_map() -> (crate::value::Ref<MapData>, Vec<(super::MapKey, Value)>) {
+    let pooled = MAP_POOL.with(|cell| cell.try_borrow_mut().ok().and_then(|mut p| p.pop()));
+    if let Some(mut arc) = pooled {
+        if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+            fm.reset_owner_tid();
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            let entries = std::mem::take(&mut d.entries);
+            return (arc, entries);
+        }
+    }
+    (
+        crate::value::new_untracked_ref(MapData::from_entries_untracked(
+            Vec::new(),
+            [0; SMALL_MAP_MAX],
+        )),
+        Vec::with_capacity(4),
+    )
+}
+
+/// Populate `arc` with parsed entries and return `Value::Map(arc)`.
+#[inline]
+pub fn commit_pooled_map(
+    mut arc: crate::value::Ref<MapData>,
+    entries: Vec<(super::MapKey, Value)>,
+    small_tags: [u8; SMALL_MAP_MAX],
+) -> Value {
+    if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+        let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+        d.entries = entries;
+        d.small_tags = small_tags;
+        d.slots.clear();
+        d.namespace = false;
+        d.gc_tracked = false;
+        d.frozen = None;
+        d.generation = 0;
+        if d.entries.len() > SMALL_MAP_MAX {
+            d.rebuild_slots();
+        }
+        return Value::Map(arc);
+    }
+    Value::Map(crate::value::new_untracked_ref(
+        MapData::from_entries_untracked(entries, small_tags),
+    ))
+}
+
+/// Return a checked-out map and discard partial entries on parse failure.
+pub fn return_pooled_map(
+    mut arc: crate::value::Ref<MapData>,
+    mut entries: Vec<(super::MapKey, Value)>,
+) {
+    if !entries.iter().all(|(_, v)| is_non_recursive_scalar(v)) {
+        let mut work = Vec::new();
+        for (_, v) in entries.drain(..) {
+            if !is_non_recursive_scalar(&v) {
+                work.push(v);
+            }
+        }
+        if !work.is_empty() {
+            super::drop_iteratively(work);
+        }
+    } else {
+        entries.clear();
+    }
+    if entries.capacity() <= 32 {
+        if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+            fm.reset_owner_tid();
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            d.entries = entries;
+            d.slots.clear();
+            d.namespace = false;
+            d.gc_tracked = false;
+            d.frozen = None;
+            d.generation = 0;
+            push_pooled_map(arc);
+        }
+    }
+}
+
+/// Check out a recycled untracked `VecData` `Arc` and its pre-allocated `items` buffer.
+#[inline]
+pub fn checkout_pooled_list() -> (crate::value::Ref<VecData>, Vec<Value>) {
+    let pooled = LIST_POOL.with(|cell| cell.try_borrow_mut().ok().and_then(|mut p| p.pop()));
+    if let Some(mut arc) = pooled {
+        if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+            fm.reset_owner_tid();
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            let items = std::mem::take(&mut d.items);
+            return (arc, items);
+        }
+    }
+    (
+        crate::value::new_untracked_ref(VecData::from_items_untracked(Vec::new())),
+        Vec::with_capacity(8),
+    )
+}
+
+/// Populate `arc` with parsed items and return `Value::List(arc)`.
+#[inline]
+pub fn commit_pooled_list(mut arc: crate::value::Ref<VecData>, items: Vec<Value>) -> Value {
+    if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+        let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+        d.items = items;
+        d.gen = 0;
+        d.dense_i64 = None;
+        d.dense_f64 = None;
+        d.gc_tracked = false;
+        return Value::List(arc);
+    }
+    Value::List(crate::value::new_untracked_ref(
+        VecData::from_items_untracked(items),
+    ))
+}
+
+/// Return a checked-out list and discard partial items on parse failure.
+pub fn return_pooled_list(mut arc: crate::value::Ref<VecData>, mut items: Vec<Value>) {
+    if !items.iter().all(is_non_recursive_scalar) {
+        let mut work = Vec::new();
+        for v in items.drain(..) {
+            if !is_non_recursive_scalar(&v) {
+                work.push(v);
+            }
+        }
+        if !work.is_empty() {
+            super::drop_iteratively(work);
+        }
+    } else {
+        items.clear();
+    }
+    if items.capacity() <= 4096 {
+        if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+            fm.reset_owner_tid();
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            d.items = items;
+            d.gen = 0;
+            d.dense_i64 = None;
+            d.dense_f64 = None;
+            d.gc_tracked = false;
+            push_pooled_list(arc);
+        }
+    }
+}
+
+/// Transitively register `root` and any reachable untracked JSON-parsed containers
+/// with the cycle GC. Each mutex lock is dropped before visiting child cells.
+pub fn track_reachable_untracked(root: &Value) {
+    if is_non_recursive_scalar(root) {
+        return;
+    }
+    let mut stack = vec![root.clone()];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::List(d) | Value::VecDyn(d) => {
+                let extra = {
+                    let mut g = crate::value::lock_ref(&d);
+                    if g.gc_tracked {
+                        None
+                    } else {
+                        g.gc_tracked = true;
+                        Some(
+                            g.as_slice()
+                                .iter()
+                                .filter(|x| !is_non_recursive_scalar(x))
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                };
+                if let Some(children) = extra {
+                    crate::value::gc::track(d);
+                    stack.extend(children);
+                }
+            }
+            Value::Map(m) => {
+                let extra = {
+                    let mut g = crate::value::lock_ref(&m);
+                    if g.gc_tracked {
+                        None
+                    } else {
+                        g.gc_tracked = true;
+                        Some(
+                            g.entries
+                                .iter()
+                                .filter(|(_, x)| !is_non_recursive_scalar(x))
+                                .map(|(_, x)| x.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                };
+                if let Some(children) = extra {
+                    crate::value::gc::track(m);
+                    stack.extend(children);
+                }
+            }
+            Value::Option(Some(inner)) if !is_non_recursive_scalar(&inner) => {
+                stack.push(*inner);
+            }
+            Value::Result(r) => match *r {
+                Ok(inner) | Err(inner) if !is_non_recursive_scalar(&inner) => {
+                    stack.push(inner);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+/// Ensure a non-scalar container inserted into another container is GC-tracked.
+#[inline]
+pub fn track_if_untracked(val: &Value) {
+    match val {
+        Value::List(d) | Value::VecDyn(d) => {
+            if !crate::value::lock_ref(d).gc_tracked {
+                track_reachable_untracked(val);
+            }
+        }
+        Value::Map(m) => {
+            if !crate::value::lock_ref(m).gc_tracked {
+                track_reachable_untracked(val);
+            }
+        }
+        Value::Option(Some(inner)) => track_if_untracked(inner),
+        Value::Result(r) => match r.as_ref() {
+            Ok(inner) | Err(inner) => track_if_untracked(inner),
+        },
+        _ => {}
+    }
 }
 
 // --------------------------------------------------------------------- set
@@ -1272,9 +1856,9 @@ impl SetData {
             }
             "to_list" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::List(new_ref(VecData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             "clone" => {
                 want(name, args, 0)?;
@@ -1336,7 +1920,7 @@ pub fn set_op(op: &str, self_items: Vec<Value>, other_items: Vec<Value>) -> Resu
     }
 }
 
-fn as_set(v: &Value) -> Result<std::sync::MutexGuard<'_, SetData>, String> {
+fn as_set(v: &Value) -> Result<crate::value::FastMutexGuard<'_, SetData>, String> {
     match v {
         Value::Set(d) => Ok(d.lock().unwrap()),
         other => Err(format!("expected a set, found {}", super::type_name(other))),
@@ -1622,7 +2206,7 @@ pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
         Value::List(d) | Value::VecDyn(d) => {
             // Snapshot under the lock, deep-clone outside it (audit F3: items
             // can reach the container itself and deep_clone re-locks it).
-            let items = d.lock().unwrap().items.clone();
+            let items = d.lock().unwrap().clone_items();
             Ok(items.iter().map(deep_clone).collect())
         }
         other => Err(format!(
@@ -1633,7 +2217,7 @@ pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
 }
 
 pub fn make_list(items: Vec<Value>) -> Value {
-    Value::List(new_ref(VecData { items }))
+    Value::List(new_ref(VecData::from_items(items)))
 }
 
 #[cfg(test)]
@@ -1689,14 +2273,117 @@ mod tests {
 
     #[test]
     fn list_remove_with_a_shifted_slot_reports_conflict() {
-        let list = new_ref(VecData {
-            items: vec![s("a"), s("b")],
-        });
-        let stale = list.lock().unwrap().items.clone();
-        list.lock().unwrap().items.insert(0, s("z"));
+        let list = new_ref(VecData::from_items(vec![s("a"), s("b")]));
+        let stale = list.lock().unwrap().clone_items();
+        list.lock().unwrap().insert_item(0, s("z"));
         let r = vec_detached(&list, &stale, "remove", &[s("b")]);
         assert!(matches!(r, Err(ref e) if e == CONFLICT), "got {:?}", r);
         // The original element is still there, untouched.
-        assert_eq!(list.lock().unwrap().items.len(), 3);
+        assert_eq!(list.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn vecdata_dense_caches_populate_sync_and_invalidate() {
+        let mut v = VecData::from_items(vec![Value::Int(10), Value::Int(20)]);
+        let (p0, len0, gen0) = v.ensure_dense_i64().expect("all-int list");
+        assert_eq!(len0, 2);
+        assert_eq!(gen0, 0);
+        // SAFETY: `p0` points to `dense_i64` of length 2 before any mutation.
+        assert_eq!(unsafe { std::slice::from_raw_parts(p0, len0) }, &[10, 20]);
+        assert!(v.ensure_dense_f64().is_none());
+
+        v.push_item(Value::Int(30));
+        let (p1, len1, gen1) = v.ensure_dense_i64().expect("still all-int after push");
+        assert_eq!(len1, 3);
+        assert!(gen1 > gen0);
+        // SAFETY: `p1` points to `dense_i64` of length 3 before any mutation.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(p1, len1) },
+            &[10, 20, 30]
+        );
+
+        v.set_item(1, Value::Int(99));
+        let (p2, len2, gen2) = v.ensure_dense_i64().expect("still all-int after set");
+        assert_eq!(len2, 3);
+        assert!(gen2 > gen1);
+        // SAFETY: `p2` points to `dense_i64` of length 3 before any mutation.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(p2, len2) },
+            &[10, 99, 30]
+        );
+
+        assert!(matches!(v.pop_item(), Some(Value::Int(30))));
+        let (_, len3, gen3) = v.ensure_dense_i64().expect("still all-int after pop");
+        assert_eq!(len3, 2);
+        assert!(gen3 > gen2);
+
+        // Mixing in a string invalidates dense_i64 and returns None.
+        v.push_item(s("mixed"));
+        assert!(v.ensure_dense_i64().is_none());
+
+        // Resetting to floats populates dense_f64.
+        v.set_items(vec![Value::Float(1.5), Value::Float(2.5)]);
+        assert!(v.ensure_dense_i64().is_none());
+        let (pf, lf, _) = v.ensure_dense_f64().expect("all-float list");
+        assert_eq!(lf, 2);
+        // SAFETY: `pf` points to `dense_f64` of length 2.
+        assert_eq!(unsafe { std::slice::from_raw_parts(pf, lf) }, &[1.5, 2.5]);
+
+        // Reversal invalidates dense_f64 and recomputes the reversed slice cleanly.
+        v.method("reverse", &[]).unwrap();
+        let (pf2, lf2, _) = v.ensure_dense_f64().expect("reversed float list");
+        // SAFETY: `pf2` points to `dense_f64` of length 2.
+        assert_eq!(unsafe { std::slice::from_raw_parts(pf2, lf2) }, &[2.5, 1.5]);
+
+        v.clear_items();
+        let (_, lf3, _) = v
+            .ensure_dense_f64()
+            .expect("empty list has empty dense view");
+        assert_eq!(lf3, 0);
+    }
+
+    #[test]
+    fn mapdata_compact_slots_and_prehashed_find_str() {
+        let mut m = MapData::from_entries(Vec::new());
+        for i in 0..10 {
+            let k = format!("k{i}");
+            m.set_key(super::super::MapKey::Str(k.into()), Value::Int(i));
+        }
+        assert!(m.slots.is_empty());
+        assert_eq!(
+            m.find_str_with_hash("k7", super::super::fx_hash_str("k7")),
+            Some(7)
+        );
+        assert_eq!(
+            m.find_str_with_hash("missing", super::super::fx_hash_str("missing")),
+            None
+        );
+
+        for i in 10..64 {
+            let k = format!("key_long_{i}");
+            m.set_key(super::super::MapKey::Str(k.into()), Value::Int(i * 10));
+        }
+        assert!(!m.slots.is_empty());
+        for i in 0..10 {
+            let k = format!("k{i}");
+            let h = super::super::fx_hash_str(&k);
+            let idx = m.find_str_with_hash(&k, h).expect("small key still found");
+            assert!(matches!(m.entries[idx].1, Value::Int(v) if v == i));
+            assert_eq!(m.find(&super::super::MapKey::Str(k.into())), Some(idx));
+        }
+        for i in 10..64 {
+            let k = format!("key_long_{i}");
+            let h = super::super::fx_hash_str(&k);
+            let idx = m.find_str_with_hash(&k, h).expect("large key found");
+            assert!(matches!(m.entries[idx].1, Value::Int(v) if v == i * 10));
+        }
+        m.set_key(super::super::MapKey::Str("k3".into()), Value::Int(333));
+        assert!(matches!(
+            m.entries[m.find_str("k3").unwrap()].1,
+            Value::Int(333)
+        ));
+        m.remove_at(&super::super::MapKey::Str("key_long_20".into()), 20);
+        assert!(m.find_str("key_long_20").is_none());
+        assert_eq!(m.find_str_with_hash("k999", 0), None);
     }
 }

@@ -36,13 +36,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_agent_frame"
-path = "fuzz_targets/fuzz_agent_frame.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "fuzz_ini_parser"
 path = "fuzz_targets/fuzz_ini_parser.rs"
 test = false
@@ -59,13 +52,6 @@ bench = false
 [[bin]]
 name = "fuzz_http_ws"
 path = "fuzz_targets/fuzz_http_ws.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_oci_manifest"
-path = "fuzz_targets/fuzz_oci_manifest.rs"
 test = false
 doc = false
 bench = false

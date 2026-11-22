@@ -1,7 +1,0 @@
-// Spid3rOS freestanding userland init program (R13.6 + R9.4).
-// Build object for x86_64-unknown-none:
-//   spid3r build --freestanding --entry _start --target x86_64-unknown-none --emit-obj kernel/init/init.matrix -o kernel/build/init.o
-
-fn main() {
-    return 0;
-}

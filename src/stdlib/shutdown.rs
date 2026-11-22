@@ -64,7 +64,6 @@ extern "C" fn on_signal(sig: i32) {
     {
         if sig == SIGHUP {
             SIG_HUP.store(true, Ordering::SeqCst);
-            crate::agent::notify_sighup();
             return;
         }
         if sig == SIGUSR1 {

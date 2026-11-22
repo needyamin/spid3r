@@ -353,10 +353,9 @@ checked with `--engine vm` before shipping.
 
 ## Control panel (spid3r-control)
 
-`spid3r-control.exe` is the desktop panel over the same op layer as `spid3r control`. Tabs: Overview, **Language**, Safety, Configuration, Agent, Devices, **Remote hosts**, and **Logs & Audit**.
+`spid3r-control.exe` is the desktop panel over the same op layer as `spid3r control`. Tabs: Overview, **Language**, Safety, Configuration, and **Logs**.
 
-- **Overview & Agent**: live `spid3r.ini` reload, schema validation, local maintenance ops (`self_test`, `gc_collect`, `rotate_log`, `dump_diagnostics`, `restart_runtime`), detached agent start/stop, and one-time 48-hex pairing code generation (`pair_create`).
-- **Safety & Configuration**: manages all 60 schema keys across all 13 `spid3r.ini` sections with `live`/`startup` and `host-only` badges, per-key and bulk reset, and enforced capability switches (`security.deny_*`, `modules.allow_wasm`, `modules.allow_host`).
-- **Remote hosts**: pairs and manages remote Spid3r hosts over the encrypted `spid3r-agent/1` protocol (predefined, role-checked ops only — never an unrestricted shell).
-- **Language**: drives the whole toolchain (including `container` and `kernel`) by launching the real `spid3r` binary found beside the panel (or on PATH) as a child process, with a 120 s limit and 256 KiB output cap per stream. Interactive tools (`repl`, `debug`, `gui`) open in their own console/window; `lsp` remains stdio-only. The same ops are reachable from the CLI via `spid3r control --op lang_exec --params '{"cmd":"check","file":"a.matrix"}'`.
+- **Overview**: live `spid3r.ini` reload and schema validation.
+- **Safety & Configuration**: manages all 45 schema keys across all 12 `spid3r.ini` sections with `live`/`startup` badges, per-key and bulk reset, and enforced capability switches (`security.deny_*`).
+- **Language**: drives the toolchain by launching the real `spid3r` binary found beside the panel (or on PATH) as a child process, with a 120 s limit and 256 KiB output cap per stream. Interactive tools (`repl`, `debug`, `gui`) open in their own console/window; `lsp` remains stdio-only. The same ops are reachable from the CLI via `spid3r control --op lang_exec --params '{"cmd":"check","file":"a.matrix"}'`.
 

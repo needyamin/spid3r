@@ -595,8 +595,8 @@ fn n_png_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
     let data = bytes_arg(&args[0], "png_decode")?;
     match png_decode(&data) {
-        Ok(img) => Ok(Value::Result(Ok(Box::new(image_value(img))))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(img) => Ok(Value::ok(image_value(img))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -645,11 +645,11 @@ fn n_wav_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 (MapKey::Str("bits".into()), Value::Int(w.bits as i64)),
                 (MapKey::Str("data".into()), Value::Bytes(new_ref(w.data))),
             ];
-            Ok(Value::Result(Ok(Box::new(Value::Map(new_ref(
+            Ok(Value::ok(Value::Map(new_ref(
                 crate::value::collections::seq::MapData::from_entries(entries),
-            ))))))
+            ))))
         }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -702,7 +702,7 @@ fn n_pdf_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         ));
     }
     let pages = match &args[0] {
-        Value::List(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) => l.lock().unwrap().clone_items(),
         Value::Str(s) => vec![Value::Str(s.clone())],
         other => {
             return Err(format!(

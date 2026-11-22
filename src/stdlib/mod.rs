@@ -19,11 +19,11 @@ pub mod multipart;
 pub mod mysql;
 pub mod net;
 pub mod postgres;
-pub mod redis;
 pub mod regex;
 pub mod serialize;
 pub mod shutdown;
 pub mod signal;
+pub(crate) mod swar;
 pub mod timer;
 pub mod tz;
 pub mod unicode;
@@ -32,7 +32,7 @@ mod unicode_tables;
 use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
 
-use crate::environment::{self, Env};
+use crate::environment::Env;
 use crate::pkg::{sha256_bytes, sha256_hex};
 use crate::sched::Scheduler;
 use crate::value::collections;
@@ -61,12 +61,21 @@ pub(crate) fn inline_len_impl() -> crate::vm::NativeImpl {
     n_len
 }
 
-/// The builtin natives only — no plugin functions.
-///
-/// Separate from [`native_defs`] so the plugin registry can check a plugin's
-/// function names against the builtins without recursing into itself.
-fn build_builtin_defs() -> Vec<NativeDef> {
-    let mut defs: Vec<NativeDef> = vec![
+/// Freestanding-only subset (`spid3r build --freestanding`).
+pub fn freestanding_defs() -> Vec<NativeDef> {
+    vec![
+        ("print", n_print),
+        ("println", n_println),
+        ("eprint", n_eprint),
+        ("string", n_string),
+        ("len", n_len),
+        ("type_of", n_type_of),
+    ]
+}
+
+/// Core language builtins always registered in slim AOT builds (`spid3r_reg_core`).
+pub fn core_defs() -> Vec<NativeDef> {
+    vec![
         ("print", n_print),
         ("println", n_println),
         ("assert", n_assert),
@@ -75,40 +84,14 @@ fn build_builtin_defs() -> Vec<NativeDef> {
         ("deref", n_deref),
         ("eprint", n_eprint),
         ("read_line", n_read_line),
-        ("read_file", n_read_file),
-        ("write_file", n_write_file),
-        ("write_file_atomic", n_write_file_atomic),
-        ("file_exists", n_file_exists),
-        ("file_delete", n_file_delete),
-        ("remove_file", n_file_delete),
-        ("rename", n_rename),
-        ("copy_file", n_copy_file),
-        ("list_dir", n_list_dir),
-        ("is_dir", n_is_dir),
-        ("is_file", n_is_file),
-        ("file_size", n_file_size),
-        ("file_mtime", n_file_mtime),
-        ("cwd", n_cwd),
-        ("chdir", n_chdir),
-        ("exe_path", n_exe_path),
         ("env_set", n_env_set),
-        ("path_join", n_path_join),
-        ("basename", n_basename),
-        ("dirname", n_dirname),
-        ("path_ext", n_path_ext),
         ("is_ok", n_is_ok),
         ("is_err", n_is_err),
-        ("dir_create", n_dir_create),
-        ("dir_remove", n_dir_remove),
         ("sleep_ms", n_sleep_ms),
         ("now", n_now),
         ("env", n_env),
         ("args", n_args),
         ("gui_args", n_args),
-        ("spawn_process", n_spawn_process),
-        ("run_payload", n_run_payload),
-        ("run_payload_strict", n_run_payload_strict),
-        ("exec_capture", n_exec_capture),
         ("yield", n_yield),
         ("task_count", n_task_count),
         ("len", n_len),
@@ -142,24 +125,8 @@ fn build_builtin_defs() -> Vec<NativeDef> {
         ("inf", n_inf),
         ("random_float", n_random_float),
         ("random_normal", n_random_normal),
-        ("sha256", n_sha256),
-        ("sha512", n_sha512),
-        ("ed25519_keypair", n_ed25519_keypair),
-        ("ed25519_sign", n_ed25519_sign),
-        ("ed25519_verify", n_ed25519_verify),
-        ("hmac_sha256", n_hmac_sha256),
-        ("pbkdf2_sha256", n_pbkdf2_sha256),
-        ("secure_compare", n_secure_compare),
         ("chr", n_chr),
         ("ord", n_ord),
-        ("base64_encode", n_base64_encode),
-        ("base64_decode", n_base64_decode),
-        ("base64_url_encode", n_base64_url_encode),
-        ("base64_url_decode", n_base64_url_decode),
-        ("hex_encode", n_hex_encode),
-        ("hex_decode", n_hex_decode),
-        ("base32_encode", n_base32_encode),
-        ("base32_decode", n_base32_decode),
         ("int", n_int),
         ("float", n_float),
         ("string", n_string),
@@ -170,20 +137,132 @@ fn build_builtin_defs() -> Vec<NativeDef> {
         ("shl", n_shl),
         ("shr", n_shr),
         ("random_int", n_random_int),
-        ("json_parse", n_json_parse),
-        ("json_write", n_json_write),
-        ("spid3rinfo", n_spid3rinfo),
-        ("config_get", n_config_get),
-        ("config_set", n_config_set),
-        ("config_reload", n_config_reload),
         ("type_of", n_type_of),
         ("is_failure", n_is_failure),
         ("gc_collect", n_gc_collect),
         ("gc_live_cells", n_gc_live_cells),
-        ("read_bytes", n_read_bytes),
         ("bytes_concat", n_bytes_concat),
+        ("unix_time", n_unix_time),
+        ("now_ms", n_now_ms),
+        ("elapsed_ms", n_now_ms),
+        ("unix_ms", n_unix_ms),
+    ]
+}
+
+pub fn json_defs() -> Vec<NativeDef> {
+    vec![("json_parse", n_json_parse), ("json_write", n_json_write)]
+}
+
+pub fn fs_defs() -> Vec<NativeDef> {
+    let mut defs = vec![
+        (
+            "read_file",
+            n_read_file as fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
+        ),
+        ("write_file", n_write_file),
+        ("write_file_atomic", n_write_file_atomic),
+        ("file_exists", n_file_exists),
+        ("file_delete", n_file_delete),
+        ("remove_file", n_file_delete),
+        ("rename", n_rename),
+        ("copy_file", n_copy_file),
+        ("list_dir", n_list_dir),
+        ("is_dir", n_is_dir),
+        ("is_file", n_is_file),
+        ("file_size", n_file_size),
+        ("file_mtime", n_file_mtime),
+        ("cwd", n_cwd),
+        ("chdir", n_chdir),
+        ("exe_path", n_exe_path),
+        ("path_join", n_path_join),
+        ("basename", n_basename),
+        ("dirname", n_dirname),
+        ("path_ext", n_path_ext),
+        ("dir_create", n_dir_create),
+        ("dir_remove", n_dir_remove),
+        ("read_bytes", n_read_bytes),
         ("write_bytes", n_write_bytes),
-        ("save_npy", n_save_npy),
+        ("spawn_process", n_spawn_process),
+        ("run_payload", n_run_payload),
+        ("run_payload_strict", n_run_payload_strict),
+        ("exec_capture", n_exec_capture),
+    ];
+    defs.extend(file::native_defs());
+    defs
+}
+
+pub fn net_defs() -> Vec<NativeDef> {
+    let mut defs = net::native_defs();
+    defs.extend(multipart::native_defs());
+    defs.extend(shutdown::native_defs());
+    defs.extend(timer::native_defs());
+    defs.extend(eventloop::native_defs());
+    defs
+}
+
+pub fn db_defs() -> Vec<NativeDef> {
+    let mut defs = db::native_defs();
+    defs.extend(postgres::native_defs());
+    defs.extend(mysql::native_defs());
+    defs
+}
+
+pub fn media_defs() -> Vec<NativeDef> {
+    media::native_defs()
+}
+
+pub fn tz_defs() -> Vec<NativeDef> {
+    let mut defs = vec![
+        (
+            "datetime_parts",
+            n_datetime_parts as fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
+        ),
+        ("datetime_from_parts", n_datetime_from_parts),
+        ("format_datetime", n_format_datetime),
+    ];
+    defs.extend(tz::native_defs());
+    defs
+}
+
+pub fn unicode_defs() -> Vec<NativeDef> {
+    unicode::native_defs()
+}
+
+pub fn crypto_defs() -> Vec<NativeDef> {
+    let mut defs = vec![
+        (
+            "sha256",
+            n_sha256 as fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
+        ),
+        ("sha512", n_sha512),
+        ("ed25519_keypair", n_ed25519_keypair),
+        ("ed25519_sign", n_ed25519_sign),
+        ("ed25519_verify", n_ed25519_verify),
+        ("hmac_sha256", n_hmac_sha256),
+        ("pbkdf2_sha256", n_pbkdf2_sha256),
+        ("secure_compare", n_secure_compare),
+        ("base64_encode", n_base64_encode),
+        ("base64_decode", n_base64_decode),
+        ("base64_url_encode", n_base64_url_encode),
+        ("base64_url_decode", n_base64_url_decode),
+        ("hex_encode", n_hex_encode),
+        ("hex_decode", n_hex_decode),
+        ("base32_encode", n_base32_encode),
+        ("base32_decode", n_base32_decode),
+    ];
+    defs.extend(kdf::native_defs());
+    defs.extend(argon2::native_defs());
+    defs.extend(bcrypt::native_defs());
+    defs.extend(entropy::native_defs());
+    defs
+}
+
+pub fn data_defs() -> Vec<NativeDef> {
+    let mut defs = vec![
+        (
+            "save_npy",
+            n_save_npy as fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
+        ),
         ("load_npy", n_load_npy),
         ("read_csv", n_read_csv),
         ("parse_csv", n_parse_csv),
@@ -192,34 +271,241 @@ fn build_builtin_defs() -> Vec<NativeDef> {
         ("regex_find", n_regex_find),
         ("regex_find_all", n_regex_find_all),
         ("regex_replace", n_regex_replace),
-        ("unix_time", n_unix_time),
-        ("now_ms", n_now_ms),
-        ("elapsed_ms", n_now_ms),
-        ("unix_ms", n_unix_ms),
-        ("datetime_parts", n_datetime_parts),
-        ("datetime_from_parts", n_datetime_from_parts),
-        ("format_datetime", n_format_datetime),
     ];
-    defs.extend(net::native_defs());
-    defs.extend(db::native_defs());
     defs.extend(compress::native_defs());
     defs.extend(signal::native_defs());
-    defs.extend(kdf::native_defs());
     defs.extend(serialize::native_defs());
-    defs.extend(argon2::native_defs());
-    defs.extend(bcrypt::native_defs());
-    defs.extend(media::native_defs());
-    defs.extend(multipart::native_defs());
-    defs.extend(shutdown::native_defs());
-    defs.extend(entropy::native_defs());
-    defs.extend(redis::native_defs());
-    defs.extend(postgres::native_defs());
-    defs.extend(mysql::native_defs());
-    defs.extend(unicode::native_defs());
-    defs.extend(tz::native_defs());
-    defs.extend(timer::native_defs());
-    defs.extend(eventloop::native_defs());
-    defs.extend(file::native_defs());
+    defs
+}
+
+pub fn info_defs() -> Vec<NativeDef> {
+    vec![
+        ("spid3rinfo", n_spid3rinfo),
+        ("config_get", n_config_get),
+        ("config_set", n_config_set),
+        ("config_reload", n_config_reload),
+    ]
+}
+
+/// Pure string mapping from an optional native name to its slim AOT group.
+/// Contains zero function pointers so linker dead-stripping drops unused groups.
+pub fn stdlib_group_for_name(name: &str) -> Option<&'static str> {
+    match name {
+        "json_parse" | "json_write" => Some("json"),
+        "read_file" | "write_file" | "write_file_atomic" | "file_exists" | "file_delete"
+        | "remove_file" | "rename" | "copy_file" | "list_dir" | "is_dir" | "is_file"
+        | "file_size" | "file_mtime" | "cwd" | "chdir" | "exe_path" | "path_join" | "basename"
+        | "dirname" | "path_ext" | "dir_create" | "dir_remove" | "read_bytes" | "write_bytes"
+        | "spawn_process" | "run_payload" | "run_payload_strict" | "exec_capture" | "file_open"
+        | "file_read" | "file_read_line" | "file_write" | "file_seek" | "file_tell"
+        | "file_flush" | "file_fsync" | "file_lock" | "file_unlock" | "file_close" => Some("fs"),
+        "tcp_listen"
+        | "tcp_accept"
+        | "tcp_accept_timeout"
+        | "tls_listen"
+        | "tls_accept"
+        | "uds_listen"
+        | "uds_connect"
+        | "tcp_connect"
+        | "tcp_read"
+        | "tcp_write"
+        | "tcp_close"
+        | "tcp_local_addr"
+        | "tcp_peer_addr"
+        | "tcp_set_timeout"
+        | "tcp_poll"
+        | "tcp_read_exact"
+        | "tcp_write_bytes"
+        | "tcp_recv_to_file"
+        | "tcp_send_file"
+        | "ws_connect"
+        | "ws_accept"
+        | "ws_send"
+        | "ws_send_bytes"
+        | "ws_recv"
+        | "ws_close"
+        | "udp_bind"
+        | "udp_join_multicast"
+        | "udp_leave_multicast"
+        | "udp_set_multicast_ttl"
+        | "udp_set_broadcast"
+        | "udp_local_addr"
+        | "udp_send_to"
+        | "udp_recv_from"
+        | "udp_close"
+        | "http_read_request"
+        | "http_write_response"
+        | "http_write_response_chunk"
+        | "http_fetch"
+        | "__http_fetch"
+        | "url_decode"
+        | "url_encode"
+        | "multipart_parse"
+        | "__multipart_parse"
+        | "multipart_build"
+        | "__multipart_build"
+        | "shutdown_requested"
+        | "request_shutdown"
+        | "reset_shutdown"
+        | "signal_requested"
+        | "after_ms"
+        | "every_ms"
+        | "timer_cancel"
+        | "timer_pending"
+        | "timer_check"
+        | "event_loop_run"
+        | "event_loop_stop"
+        | "on_readable"
+        | "on_writable"
+        | "on_timer"
+        | "event_loop_unwatch" => Some("net"),
+        "db_open" | "pg_connect" | "pg_query" | "pg_exec" | "pg_close" | "mysql_connect"
+        | "mysql_query" | "mysql_exec" | "mysql_close" => Some("db"),
+        "png_decode" | "png_encode" | "wav_decode" | "wav_encode" | "pdf_write" | "pdf_escape" => {
+            Some("media")
+        }
+        "datetime_parts"
+        | "datetime_from_parts"
+        | "format_datetime"
+        | "tz_names"
+        | "tz_info"
+        | "tz_parts"
+        | "tz_from_parts"
+        | "tz_format"
+        | "tz_version" => Some("tz"),
+        "unicode_normalize"
+        | "unicode_is_normalized"
+        | "unicode_casefold"
+        | "unicode_strip_marks"
+        | "unicode_combining_class"
+        | "unicode_version" => Some("unicode"),
+        "sha256" | "sha512" | "ed25519_keypair" | "ed25519_sign" | "ed25519_verify"
+        | "hmac_sha256" | "pbkdf2_sha256" | "secure_compare" | "base64_encode"
+        | "base64_decode" | "base64_url_encode" | "base64_url_decode" | "hex_encode"
+        | "hex_decode" | "base32_encode" | "base32_decode" | "scrypt" | "argon2"
+        | "bcrypt_hash" | "bcrypt_verify" | "random_bytes" => Some("crypto"),
+        "save_npy" | "load_npy" | "read_csv" | "parse_csv" | "write_csv" | "regex_match"
+        | "regex_find" | "regex_find_all" | "regex_replace" | "crc32" | "adler32" | "deflate"
+        | "inflate" | "gzip_compress" | "gunzip" | "zlib_compress" | "unzlib" | "zip_create"
+        | "zip_read" | "zip_list" | "fft" | "ifft" | "msgpack_encode" | "msgpack_decode"
+        | "cbor_encode" | "cbor_decode" | "pb_encode" | "pb_decode" => Some("data"),
+        "spid3rinfo" | "config_get" | "config_set" | "config_reload" => Some("info"),
+        _ => None,
+    }
+}
+
+/// Pure string check for whether `name` is a built-in native.
+/// Contains zero function pointers so `config::schema::normalize_lists`
+/// does not anchor the entire stdlib into slim AOT binaries.
+pub fn is_known_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "print"
+            | "println"
+            | "assert"
+            | "assert_eq"
+            | "weak"
+            | "deref"
+            | "eprint"
+            | "read_line"
+            | "env_set"
+            | "is_ok"
+            | "is_err"
+            | "sleep_ms"
+            | "now"
+            | "env"
+            | "args"
+            | "gui_args"
+            | "yield"
+            | "task_count"
+            | "len"
+            | "abs"
+            | "sqrt"
+            | "pow"
+            | "min"
+            | "max"
+            | "clamp"
+            | "floor"
+            | "ceil"
+            | "round"
+            | "trunc"
+            | "sign"
+            | "exp"
+            | "ln"
+            | "log10"
+            | "log2"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "is_nan"
+            | "is_inf"
+            | "atan2"
+            | "hypot"
+            | "float_or"
+            | "nan"
+            | "inf"
+            | "random_float"
+            | "random_normal"
+            | "chr"
+            | "ord"
+            | "int"
+            | "float"
+            | "string"
+            | "bool"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "shl"
+            | "shr"
+            | "random_int"
+            | "type_of"
+            | "is_failure"
+            | "gc_collect"
+            | "gc_live_cells"
+            | "bytes_concat"
+            | "unix_time"
+            | "now_ms"
+            | "elapsed_ms"
+            | "unix_ms"
+    ) || stdlib_group_for_name(name).is_some()
+}
+
+/// The builtin natives only — no plugin functions.
+///
+/// Separate from [`native_defs`] so the plugin registry can check a plugin's
+/// function names against the builtins without recursing into itself.
+fn build_builtin_defs() -> Vec<NativeDef> {
+    let mut defs = core_defs();
+    defs.extend(json_defs());
+    defs.extend(fs_defs());
+    defs.extend(net_defs());
+    defs.extend(db_defs());
+    defs.extend(media_defs());
+    defs.extend(tz_defs());
+    defs.extend(unicode_defs());
+    defs.extend(crypto_defs());
+    defs.extend(data_defs());
+    defs.extend(info_defs());
+    defs
+}
+
+/// Apply the active process security policy and `--sandbox` stubs to a subset of defs
+/// without pulling in unrelated filesystem guard tables.
+pub fn policy_checked_defs(mut defs: Vec<NativeDef>) -> Vec<NativeDef> {
+    apply_policy_to_defs(&mut defs, sandbox_armed(), None);
+    defs
+}
+
+/// Apply the active process security policy and `--sandbox` stubs using a group-scoped
+/// basedir guard lookup function.
+pub fn policy_checked_defs_with_guard(
+    mut defs: Vec<NativeDef>,
+    guard_lookup: fn(&str) -> Option<crate::vm::NativeImpl>,
+) -> Vec<NativeDef> {
+    apply_policy_to_defs(&mut defs, sandbox_armed(), Some(guard_lookup));
     defs
 }
 
@@ -240,7 +526,11 @@ pub fn builtin_defs() -> Vec<NativeDef> {
 /// Apply the per-process Phase-3 security policy (`security.basedir`,
 /// `security.disable_natives`, pin refusal) and `--sandbox` stubs in one
 /// shared funnel.
-fn apply_policy_to_defs(defs: &mut [NativeDef], sandboxed: bool) {
+fn apply_policy_to_defs(
+    defs: &mut [NativeDef],
+    sandboxed: bool,
+    guard_lookup: Option<fn(&str) -> Option<crate::vm::NativeImpl>>,
+) {
     // Phase-3 security policy, baked once per process from the resolved
     // config: `security.basedir` wraps every path-taking native with the
     // allowlist guard, and `security.disable_natives` replaces named natives
@@ -251,10 +541,12 @@ fn apply_policy_to_defs(defs: &mut [NativeDef], sandboxed: bool) {
             *func = fs_policy::pin_failure_stub;
         }
     }
-    if fs_policy::basedir_active(pol) {
-        for (name, func) in defs.iter_mut() {
-            if let Some(guarded) = fs_policy::guarded(name) {
-                *func = guarded;
+    if let Some(lookup) = guard_lookup {
+        if fs_policy::basedir_active(pol) {
+            for (name, func) in defs.iter_mut() {
+                if let Some(guarded) = lookup(name) {
+                    *func = guarded;
+                }
             }
         }
     }
@@ -280,7 +572,7 @@ fn apply_policy_to_defs(defs: &mut [NativeDef], sandboxed: bool) {
 
 fn build_native_map(sandboxed: bool) -> std::collections::HashMap<&'static str, Arc<NativeFn>> {
     let mut defs = builtin_defs();
-    apply_policy_to_defs(&mut defs, sandboxed);
+    apply_policy_to_defs(&mut defs, sandboxed, Some(fs_policy::guarded));
     let mut map = std::collections::HashMap::with_capacity(defs.len());
     for (name, func) in defs {
         map.insert(name, Arc::new(NativeFn { name, func }));
@@ -310,66 +602,16 @@ pub fn builtin_table_initialized() -> bool {
     NORMAL_NATIVE_MAP.get().is_some() || SANDBOX_NATIVE_MAP.get().is_some()
 }
 
-/// Every native a script can call: the builtins, plus whatever a host plugin
-/// registered at startup.
-///
-/// This is the **single leverage point** for the plugin API: the tree
-/// interpreter, the bytecode VM and the AOT backend all install from this list,
-/// so a plugin function needs no per-engine code at all.
+/// Every builtin native a script can call, with the active security policy applied.
 pub fn native_defs() -> Vec<NativeDef> {
     let mut defs = builtin_defs();
-    defs.extend(crate::plugin::registered());
-    apply_policy_to_defs(&mut defs, sandbox_armed());
+    apply_policy_to_defs(&mut defs, sandbox_armed(), Some(fs_policy::guarded));
     defs
 }
 
-/// Host-plugin native definitions (empty when no host plugins are registered),
-/// wrapped with the same security policy funnel as builtin natives.
-pub(crate) fn plugin_native_defs() -> Vec<NativeDef> {
-    let mut defs = crate::plugin::registered();
-    if !defs.is_empty() {
-        apply_policy_to_defs(&mut defs, sandbox_armed());
-    }
-    defs
-}
-
-/// Install host-plugin and capability-override natives into a tree-engine
-/// environment. Builtin natives resolve lazily on demand via
-/// [`resolve_builtin_native`] so plain runs do not eagerly allocate ~230
-/// environment slots.
-pub fn install(globals: &Env, sched: Arc<Scheduler>) {
-    for (name, func) in plugin_native_defs() {
-        let native = NativeFn { name, func };
-        environment::define(globals, name, Value::Native(Arc::new(native)));
-    }
-    // WASM plugin functions are closures, not `fn` pointers: a guest instance is
-    // captured state. The interpreter already knows how to call
-    // `Value::NativeClosure`, so this needs no evaluator change.
-    for (name, func) in crate::plugin::registered_closures() {
-        let data = crate::value::NativeClosureData {
-            name: name.clone(),
-            func,
-        };
-        environment::define(globals, &name, Value::NativeClosure(Arc::new(data)));
-    }
-    // Host-plugin `fn` pointers cannot carry the call-time capability guard
-    // (they cannot capture state), so a plugin registered AFTER `Engine::deny`
-    // would slip past the build-time stubs. Overwrite every denied host-plugin
-    // function with a stub that always errors (S-2).
-    for name in crate::plugin::denied_host_functions() {
-        let label = name.clone();
-        let data = crate::value::NativeClosureData {
-            name: name.clone(),
-            func: Arc::new(move |_ctx: &NativeCtx, _args: Vec<Value>| {
-                Err(format!(
-                    "capability denied: '{label}' is not available to this script"
-                ))
-            }),
-        };
-        environment::define(globals, &name, Value::NativeClosure(Arc::new(data)));
-    }
-    let _ = sched;
-}
+/// Builtin natives resolve lazily on demand via [`resolve_builtin_native`] so
+/// plain runs do not eagerly allocate environment slots.
+pub fn install(_globals: &Env, _sched: Arc<Scheduler>) {}
 
 fn one(name: &str, args: &[Value]) -> Result<Value, String> {
     if args.len() == 1 {
@@ -748,7 +990,7 @@ fn n_list_dir(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     collections::construct(
         "ok",
         vec![Value::List(crate::value::new_ref(
-            crate::value::collections::seq::VecData { items },
+            crate::value::collections::seq::VecData::from_items(items),
         ))],
     )
 }
@@ -1179,8 +1421,9 @@ fn argv_list(v: &Value, who: &str) -> Result<Vec<String>, String> {
     match v {
         Value::List(d) | Value::VecDyn(d) => {
             let d = d.lock().unwrap();
-            let mut out = Vec::with_capacity(d.items.len());
-            for item in &d.items {
+            let items = d.as_slice();
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
                 out.push(want_str(item, who)?);
             }
             Ok(out)
@@ -2881,7 +3124,8 @@ fn n_float(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// through to the identical `i.to_string()` / `display_value` spelling, so
 /// error text, display formatting and Float formatting are byte-identical.
 const SMALL_INT_STRINGS_LEN: usize = 1024;
-static SMALL_INT_STRINGS: OnceLock<[Arc<str>; SMALL_INT_STRINGS_LEN]> = OnceLock::new();
+static SMALL_INT_STRINGS: OnceLock<[crate::value::ThinArcStr; SMALL_INT_STRINGS_LEN]> =
+    OnceLock::new();
 
 /// Decimal spelling of an `i64`, allocation-free for 0..=1023.
 ///
@@ -2889,15 +3133,16 @@ static SMALL_INT_STRINGS: OnceLock<[Arc<str>; SMALL_INT_STRINGS_LEN]> = OnceLock
 /// inlined `Call string` fast path (`src/vm/mod.rs`), which otherwise bypasses
 /// `n_string` and would silently miss the cache. No engine gets a different
 /// spelling, and no function pointer / sandbox / capability state is cached.
-pub(crate) fn int_to_string_value(i: i64) -> Arc<str> {
+pub(crate) fn int_to_string_value(i: i64) -> crate::value::ThinArcStr {
     if let Ok(idx) = usize::try_from(i) {
         if idx < SMALL_INT_STRINGS_LEN {
-            let table =
-                SMALL_INT_STRINGS.get_or_init(|| std::array::from_fn(|n| Arc::from(n.to_string())));
+            let table = SMALL_INT_STRINGS.get_or_init(|| {
+                std::array::from_fn(|n| crate::value::ThinArcStr::from(n.to_string()))
+            });
             return table[idx].clone();
         }
     }
-    Arc::from(i.to_string())
+    crate::value::ThinArcStr::from(i.to_string())
 }
 
 fn n_string(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -3110,7 +3355,7 @@ fn n_random_int(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 #[inline]
 fn json_write_capacity(v: &Value) -> usize {
     let n = match v {
-        Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().items.len(),
+        Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().len(),
         Value::Map(d) => d.lock().unwrap().entries.len(),
         _ => 0,
     };
@@ -3136,8 +3381,8 @@ fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 /// Serialize `v` directly into a reusable thread-local `Vec<u8>` buffer and
-/// allocate the returned `Arc<str>` once without an intermediate `String`.
-pub fn json_write_arc(v: &Value) -> Result<Arc<str>, String> {
+/// allocate the returned `ThinArcStr` once without an intermediate `String`.
+pub fn json_write_arc(v: &Value) -> Result<crate::value::ThinArcStr, String> {
     JSON_WRITE_BUF.with(|cell| {
         if let Ok(mut buf) = cell.try_borrow_mut() {
             buf.clear();
@@ -3146,13 +3391,13 @@ pub fn json_write_arc(v: &Value) -> Result<Arc<str>, String> {
             write_json(v, &mut buf, 0)?;
             let s = std::str::from_utf8(&buf)
                 .map_err(|_| "json_write: invalid UTF-8 output".to_string())?;
-            Ok(Arc::<str>::from(s))
+            Ok(crate::value::ThinArcStr::from(s))
         } else {
             let mut out = Vec::with_capacity(json_write_capacity(v));
             write_json(v, &mut out, 0)?;
             let s = String::from_utf8(out)
                 .map_err(|_| "json_write: invalid UTF-8 output".to_string())?;
-            Ok(Arc::<str>::from(s))
+            Ok(crate::value::ThinArcStr::from(s))
         }
     })
 }
@@ -3194,7 +3439,7 @@ pub fn json_parse_text(s: &str) -> Result<Value, String> {
 const JSON_STR_CACHE_LEN: usize = 2048;
 
 thread_local! {
-    static JSON_STR_CACHE: std::cell::RefCell<Vec<(u64, Option<Arc<str>>)>> =
+    static JSON_STR_CACHE: std::cell::RefCell<Vec<(u64, Option<crate::value::ThinArcStr>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -3207,12 +3452,12 @@ struct JsonParser<'a, 'c> {
     b: &'a [u8],
     pos: usize,
     depth: usize,
-    /// Fixed stack cache for repeated object keys `(raw, interned_arc, hash_tag)`
-    /// (Track 3 RT-4). Avoids heap-allocating `Vec` and re-hashing small-map keys.
-    key_intern: [(&'a str, Option<Arc<str>>, u8); 16],
+    /// Fixed stack cache for repeated object keys `(raw, interned_key, hash_tag)`
+    /// (Track 3 RT-4 / Phase 4). Avoids heap-allocating `Vec` and re-hashing small-map keys.
+    key_intern: [(&'a str, Option<crate::value::collections::KeyStr>, u8); 16],
     key_intern_len: usize,
     /// Cross-parse 2-way set-associative cache for short strings (`<= 15` bytes).
-    str_cache: &'c mut [(u64, Option<Arc<str>>)],
+    str_cache: &'c mut [(u64, Option<crate::value::ThinArcStr>)],
 }
 
 /// One shared entry point behind the `json_parse` builtin and the host-side
@@ -3221,7 +3466,7 @@ fn json_parse_str(s: &str) -> Result<Value, String> {
     JSON_STR_CACHE.with(|cache_cell| {
         let mut fallback = Vec::new();
         let mut guard = cache_cell.try_borrow_mut();
-        let cache_slice: &mut [(u64, Option<Arc<str>>)] = match &mut guard {
+        let cache_slice: &mut [(u64, Option<crate::value::ThinArcStr>)] = match &mut guard {
             Ok(vec) => {
                 if vec.is_empty() {
                     vec.resize_with(JSON_STR_CACHE_LEN, || (0, None));
@@ -3250,7 +3495,7 @@ fn json_parse_str(s: &str) -> Result<Value, String> {
 
 impl JsonParser<'_, '_> {
     #[inline]
-    fn intern_short(&mut self, raw: &str, h: u64) -> Arc<str> {
+    fn intern_short(&mut self, raw: &str, h: u64) -> crate::value::ThinArcStr {
         if self.str_cache.len() == JSON_STR_CACHE_LEN {
             let mask = JSON_STR_CACHE_LEN - 1;
             let idx = (h as usize) & mask;
@@ -3269,25 +3514,30 @@ impl JsonParser<'_, '_> {
                     }
                 }
             }
-            let arc: Arc<str> = Arc::from(raw);
+            let arc = crate::value::ThinArcStr::from(raw);
             let prev = std::mem::replace(&mut self.str_cache[idx], (h, Some(arc.clone())));
             if prev.1.is_some() {
                 self.str_cache[idx2] = prev;
             }
             return arc;
         }
-        Arc::from(raw)
+        crate::value::ThinArcStr::from(raw)
     }
     fn peek(&self) -> Option<u8> {
         self.b.get(self.pos).copied()
     }
+    #[inline(always)]
     fn skip_ws(&mut self) {
-        while matches!(
-            self.peek(),
-            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
-        ) {
-            self.pos += 1;
+        let b = self.b;
+        let len = b.len();
+        let mut p = self.pos;
+        if p < len && b[p] > b' ' {
+            return;
         }
+        while p < len && matches!(b[p], b' ' | b'\t' | b'\n' | b'\r') {
+            p += 1;
+        }
+        self.pos = p;
     }
     /// The "unexpected …" diagnostic tail: names the decoded char at `pos`
     /// (never Rust's `Option` Debug text — the F-8 wording is preserved).
@@ -3319,7 +3569,7 @@ impl JsonParser<'_, '_> {
         match self.peek() {
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
-            Some(b'"') => Ok(Value::Str(self.parse_string_arc(false)?.0)),
+            Some(b'"') => Ok(Value::Str(self.parse_string_value()?)),
             Some(b't') => self.expect_word("true", Value::Bool(true)),
             Some(b'f') => self.expect_word("false", Value::Bool(false)),
             Some(b'n') => self.expect_word("null", Value::Null),
@@ -3371,6 +3621,37 @@ impl JsonParser<'_, '_> {
     }
 
     fn parse_number(&mut self) -> Result<Value, String> {
+        // Single-pass fast path for signed 1..=18-digit JSON integers.
+        let mut cur = self.pos;
+        let b = self.b;
+        let len = b.len();
+        let neg = if cur < len && b[cur] == b'-' {
+            cur += 1;
+            true
+        } else {
+            false
+        };
+        let d_start = cur;
+        let mut acc: u64 = 0;
+        let limit = len.min(d_start + 18);
+        while cur < limit {
+            let d = b[cur].wrapping_sub(b'0');
+            if d > 9 {
+                break;
+            }
+            acc = acc * 10 + d as u64;
+            cur += 1;
+        }
+        if cur > d_start {
+            let stop_is_simple = cur == len
+                || (!b[cur].is_ascii_digit() && b[cur] != b'.' && b[cur] != b'e' && b[cur] != b'E');
+            if stop_is_simple {
+                self.pos = cur;
+                let signed = if neg { -(acc as i64) } else { acc as i64 };
+                return Ok(Value::Int(signed));
+            }
+        }
+
         let start = self.pos;
         if self.peek() == Some(b'-') {
             self.pos += 1;
@@ -3435,62 +3716,71 @@ impl JsonParser<'_, '_> {
             }
         }
     }
-    fn parse_string_arc(&mut self, intern_key: bool) -> Result<(Arc<str>, u8), String> {
+    #[inline]
+    fn scan_unescaped_or_escape_start(&mut self) -> Result<(usize, usize, bool), String> {
+        if self.pos >= self.b.len() {
+            return Err("json_parse: unterminated string".to_string());
+        }
         self.pos += 1; // opening quote
         let start = self.pos;
-        while self.pos < self.b.len() {
-            let c = self.b[self.pos];
-            if c == b'"' {
-                let end = self.pos;
-                self.pos += 1;
-                // `self.s` is valid UTF-8 and `"` is single-byte ASCII, so
-                // `start..end` is always on char boundaries.
-                let raw = &self.s[start..end];
-                if intern_key {
-                    for slot in &self.key_intern[..self.key_intern_len] {
-                        if slot.0 == raw {
-                            if let Some(arc) = &slot.1 {
-                                return Ok((arc.clone(), slot.2));
-                            }
-                        }
-                    }
-                    let h = crate::value::collections::fx_hash_str(raw);
-                    let tag = (h >> 56) as u8;
-                    let arc = if raw.len() <= 15 {
-                        self.intern_short(raw, h)
-                    } else {
-                        Arc::from(raw)
-                    };
-                    if self.key_intern_len < 16 {
-                        self.key_intern[self.key_intern_len] = (raw, Some(arc.clone()), tag);
-                        self.key_intern_len += 1;
-                    }
-                    return Ok((arc, tag));
-                }
-                if raw.len() <= 15 {
-                    let h = crate::value::collections::fx_hash_str(raw);
-                    return Ok((self.intern_short(raw, h), 0));
-                }
-                return Ok((Arc::from(raw), 0));
-            }
-            if c == b'\\' {
-                let mut out: Vec<u8> = Vec::with_capacity((self.pos - start) + 16);
-                out.extend_from_slice(&self.b[start..self.pos]);
-                let s = self.parse_string_escaped(out)?;
-                let tag = if intern_key {
-                    (crate::value::collections::fx_hash_str(&s) >> 56) as u8
-                } else {
-                    0
-                };
-                return Ok((Arc::from(s), tag));
-            }
-            self.pos += 1;
-        }
-        Err("json_parse: unterminated string".to_string())
+        let Some(rel) = swar::find_json_string_end(&self.b[start..]) else {
+            return Err("json_parse: unterminated string".to_string());
+        };
+        let hit = start + rel;
+        let is_close = self.b[hit] == b'"';
+        Ok((start, hit, is_close))
     }
+
+    fn parse_string_value(&mut self) -> Result<crate::value::ThinArcStr, String> {
+        let (start, hit, is_close) = self.scan_unescaped_or_escape_start()?;
+        if is_close {
+            self.pos = hit + 1;
+            let raw = &self.s[start..hit];
+            if raw.len() <= 15 {
+                let h = crate::value::collections::fx_hash_str(raw);
+                return Ok(self.intern_short(raw, h));
+            }
+            return Ok(crate::value::ThinArcStr::from(raw));
+        }
+        self.pos = hit;
+        let mut out: Vec<u8> = Vec::with_capacity((hit - start) + 16);
+        out.extend_from_slice(&self.b[start..hit]);
+        let s = self.parse_string_escaped(out)?;
+        Ok(crate::value::ThinArcStr::from(s))
+    }
+
     #[inline]
-    fn parse_object_key(&mut self) -> Result<(Arc<str>, u8), String> {
-        self.parse_string_arc(true)
+    fn parse_object_key(&mut self) -> Result<(crate::value::collections::KeyStr, u8), String> {
+        let (start, hit, is_close) = self.scan_unescaped_or_escape_start()?;
+        if is_close {
+            self.pos = hit + 1;
+            // `self.s` is valid UTF-8 and `"` is single-byte ASCII, so
+            // `start..hit` is always on char boundaries.
+            let raw = &self.s[start..hit];
+            for slot in &self.key_intern[..self.key_intern_len] {
+                if slot.0 == raw {
+                    if let Some(key) = &slot.1 {
+                        return Ok((key.clone(), slot.2));
+                    }
+                }
+            }
+            let h = crate::value::collections::fx_hash_str(raw);
+            let tag = (h >> 56) as u8;
+            let key = crate::value::collections::intern_key_with_hash(raw, h);
+            if self.key_intern_len < 16 {
+                self.key_intern[self.key_intern_len] = (raw, Some(key.clone()), tag);
+                self.key_intern_len += 1;
+            }
+            return Ok((key, tag));
+        }
+        self.pos = hit;
+        let mut out: Vec<u8> = Vec::with_capacity((hit - start) + 16);
+        out.extend_from_slice(&self.b[start..hit]);
+        let s = self.parse_string_escaped(out)?;
+        let h = crate::value::collections::fx_hash_str(&s);
+        let tag = (h >> 56) as u8;
+        let key = crate::value::collections::intern_key_with_hash(&s, h);
+        Ok((key, tag))
     }
     fn parse_string_escaped(&mut self, mut out: Vec<u8>) -> Result<String, String> {
         loop {
@@ -3574,11 +3864,10 @@ impl JsonParser<'_, '_> {
                     // never split — its continuation bytes are >= 0x80 and can
                     // never equal an ASCII structural byte.
                     let start = self.pos;
-                    while let Some(c) = self.peek() {
-                        if c == b'"' || c == b'\\' {
-                            break;
-                        }
-                        self.pos += 1;
+                    if let Some(rel) = swar::find_json_string_end(&self.b[start..]) {
+                        self.pos = start + rel;
+                    } else {
+                        self.pos = self.b.len();
                     }
                     out.extend_from_slice(&self.b[start..self.pos]);
                 }
@@ -3601,12 +3890,29 @@ impl JsonParser<'_, '_> {
 
     fn parse_array(&mut self) -> Result<Value, String> {
         self.pos += 1;
-        let mut items = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Ok(collections::make_list(items));
+            let (arc, mut items) = crate::value::collections::seq::checkout_pooled_list();
+            items.clear();
+            return Ok(crate::value::collections::seq::commit_pooled_list(
+                arc, items,
+            ));
         }
+        let (arc, mut items) = crate::value::collections::seq::checkout_pooled_list();
+        items.clear();
+        match self.parse_array_items(&mut items) {
+            Ok(()) => Ok(crate::value::collections::seq::commit_pooled_list(
+                arc, items,
+            )),
+            Err(e) => {
+                crate::value::collections::seq::return_pooled_list(arc, items);
+                Err(e)
+            }
+        }
+    }
+
+    fn parse_array_items(&mut self, items: &mut Vec<Value>) -> Result<(), String> {
         loop {
             items.push(self.parse_value()?);
             self.skip_ws();
@@ -3614,23 +3920,43 @@ impl JsonParser<'_, '_> {
                 Some(b',') => self.pos += 1,
                 Some(b']') => {
                     self.pos += 1;
-                    return Ok(collections::make_list(items));
+                    return Ok(());
                 }
                 _ => return Err(format!("json_parse: {} in array", self.unexpected_at())),
             }
         }
     }
+
     fn parse_object(&mut self) -> Result<Value, String> {
         self.pos += 1;
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Ok(Value::Map(crate::value::new_ref(
-                crate::value::collections::seq::MapData::from_entries(Vec::new()),
-            )));
+            let (arc, mut entries) = crate::value::collections::seq::checkout_pooled_map();
+            entries.clear();
+            return Ok(crate::value::collections::seq::commit_pooled_map(
+                arc, entries, [0u8; 16],
+            ));
         }
-        let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::with_capacity(4);
+        let (arc, mut entries) = crate::value::collections::seq::checkout_pooled_map();
+        entries.clear();
         let mut small_tags = [0u8; 16];
+        match self.parse_object_entries(&mut entries, &mut small_tags) {
+            Ok(()) => Ok(crate::value::collections::seq::commit_pooled_map(
+                arc, entries, small_tags,
+            )),
+            Err(e) => {
+                crate::value::collections::seq::return_pooled_map(arc, entries);
+                Err(e)
+            }
+        }
+    }
+
+    fn parse_object_entries(
+        &mut self,
+        entries: &mut Vec<(crate::value::MapKey, Value)>,
+        small_tags: &mut [u8; 16],
+    ) -> Result<(), String> {
         loop {
             self.skip_ws();
             let (key, tag) = self.parse_object_key()?;
@@ -3645,7 +3971,7 @@ impl JsonParser<'_, '_> {
                 for (i, (ek, _)) in entries.iter().enumerate() {
                     if small_tags[i] == tag {
                         if let crate::value::MapKey::Str(existing) = ek {
-                            if existing.as_ref() == key.as_ref() {
+                            if existing == &key {
                                 dup = Some(i);
                                 break;
                             }
@@ -3669,14 +3995,7 @@ impl JsonParser<'_, '_> {
                 Some(b',') => self.pos += 1,
                 Some(b'}') => {
                     self.pos += 1;
-                    let map_data = if entries.len() <= 16 {
-                        crate::value::collections::seq::MapData::from_entries_with_tags(
-                            entries, small_tags,
-                        )
-                    } else {
-                        crate::value::collections::seq::MapData::from_entries(entries)
-                    };
-                    return Ok(Value::Map(crate::value::new_ref(map_data)));
+                    return Ok(());
                 }
                 _ => return Err(format!("json_parse: {} in object", self.unexpected_at())),
             }
@@ -4180,6 +4499,120 @@ mod json_byte_parity_tests {
         parity("tru");
         parity("1.");
     }
+
+    #[test]
+    fn json_parsed_cycle_is_lazily_tracked_and_collected() {
+        use std::sync::Arc;
+        let (wm, wn, wi, wa) = {
+            let m = json_parse_str("{}").expect("empty object");
+            crate::value::collections::index_set(
+                &m,
+                &crate::value::Value::Str("self".into()),
+                m.clone(),
+            )
+            .unwrap();
+            let nested = json_parse_str("{\"inner\":{}}").expect("nested object");
+            let inner = crate::value::collections::index_get(
+                &nested,
+                &crate::value::Value::Str("inner".into()),
+            )
+            .unwrap();
+            crate::value::collections::index_set(
+                &inner,
+                &crate::value::Value::Str("back".into()),
+                nested.clone(),
+            )
+            .unwrap();
+            let arr = json_parse_str("[0]").expect("one-item array");
+            crate::value::collections::index_set(&arr, &crate::value::Value::Int(0), arr.clone())
+                .unwrap();
+
+            let wm = match &m {
+                crate::value::Value::Map(r) => Arc::downgrade(r),
+                _ => unreachable!(),
+            };
+            let wn = match &nested {
+                crate::value::Value::Map(r) => Arc::downgrade(r),
+                _ => unreachable!(),
+            };
+            let wi = match &inner {
+                crate::value::Value::Map(r) => Arc::downgrade(r),
+                _ => unreachable!(),
+            };
+            let wa = match &arr {
+                crate::value::Value::List(r) => Arc::downgrade(r),
+                _ => unreachable!(),
+            };
+            assert!(wm.strong_count() >= 2);
+            assert!(wn.strong_count() >= 2);
+            assert!(wi.strong_count() >= 2);
+            assert!(wa.strong_count() >= 2);
+            (wm, wn, wi, wa)
+        };
+        crate::value::gc::collect();
+        assert_eq!(wm.strong_count(), 0);
+        assert_eq!(wn.strong_count(), 0);
+        assert_eq!(wi.strong_count(), 0);
+        assert_eq!(wa.strong_count(), 0);
+    }
+
+    #[test]
+    fn slim_stdlib_groups_partition_all_builtins_exclusively() {
+        use crate::stdlib::{
+            builtin_defs, core_defs, crypto_defs, data_defs, db_defs, fs_defs, info_defs,
+            is_known_builtin_name, json_defs, media_defs, net_defs, stdlib_group_for_name, tz_defs,
+            unicode_defs, NativeDef,
+        };
+        use std::collections::HashSet;
+        let groups: [(&str, Vec<NativeDef>); 10] = [
+            ("json", json_defs()),
+            ("fs", fs_defs()),
+            ("net", net_defs()),
+            ("db", db_defs()),
+            ("media", media_defs()),
+            ("tz", tz_defs()),
+            ("unicode", unicode_defs()),
+            ("crypto", crypto_defs()),
+            ("data", data_defs()),
+            ("info", info_defs()),
+        ];
+        let mut seen = HashSet::new();
+        for (name, _) in core_defs() {
+            assert_eq!(
+                stdlib_group_for_name(name),
+                None,
+                "core native '{}' must not require an optional group",
+                name
+            );
+            assert!(seen.insert(name), "duplicate core native '{}'", name);
+        }
+        for (gname, defs) in &groups {
+            for &(name, _) in defs {
+                assert_eq!(
+                    stdlib_group_for_name(name),
+                    Some(*gname),
+                    "optional native '{}' misclassified",
+                    name
+                );
+                assert!(
+                    seen.insert(name),
+                    "duplicate native '{}' across groups",
+                    name
+                );
+            }
+        }
+        let all = builtin_defs();
+        assert_eq!(all.len(), 254);
+        assert_eq!(seen.len(), all.len());
+        for &(name, _) in &all {
+            assert!(
+                is_known_builtin_name(name),
+                "is_known_builtin_name must recognize '{}'",
+                name
+            );
+        }
+        assert!(!is_known_builtin_name("not_a_real_builtin"));
+    }
 }
 
 /// Maximum nesting depth accepted by `json_parse` and `json_write`; deeper
@@ -4225,30 +4658,42 @@ fn push_i64_decimal(n: i64, out: &mut Vec<u8>) {
 /// Uses a byte-slice scan with bulk `extend_from_slice` copies into `Vec<u8>` (Track 3 RT-4).
 fn write_json_str(s: &str, out: &mut Vec<u8>) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    out.push(b'"');
     let bytes = s.as_bytes();
-    let mut start = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b < 0x20 || b == b'"' || b == b'\\' {
-            if start < i {
-                out.extend_from_slice(&bytes[start..i]);
-            }
-            match b {
-                b'"' => out.extend_from_slice(b"\\\""),
-                b'\\' => out.extend_from_slice(b"\\\\"),
-                b'\n' => out.extend_from_slice(b"\\n"),
-                b'\t' => out.extend_from_slice(b"\\t"),
-                b'\r' => out.extend_from_slice(b"\\r"),
-                _ => out.extend_from_slice(&[
-                    b'\\',
-                    b'u',
-                    b'0',
-                    b'0',
-                    HEX[(b >> 4) as usize],
-                    HEX[(b & 0x0f) as usize],
-                ]),
-            }
-            start = i + 1;
+    let Some(first_esc) = swar::find_json_escape_needed(bytes) else {
+        out.reserve(bytes.len() + 2);
+        out.push(b'"');
+        out.extend_from_slice(bytes);
+        out.push(b'"');
+        return;
+    };
+    out.push(b'"');
+    let mut start = 0usize;
+    let mut pos = first_esc;
+    loop {
+        if start < pos {
+            out.extend_from_slice(&bytes[start..pos]);
+        }
+        let b = bytes[pos];
+        match b {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            _ => out.extend_from_slice(&[
+                b'\\',
+                b'u',
+                b'0',
+                b'0',
+                HEX[(b >> 4) as usize],
+                HEX[(b & 0x0f) as usize],
+            ]),
+        }
+        start = pos + 1;
+        if let Some(rel) = swar::find_json_escape_needed(&bytes[start..]) {
+            pos = start + rel;
+        } else {
+            break;
         }
     }
     if start < bytes.len() {
@@ -4332,7 +4777,7 @@ fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> 
                     Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
                 };
                 out.push(b'[');
-                for (i, item) in guard.items.iter().enumerate() {
+                for (i, item) in guard.as_slice().iter().enumerate() {
                     if i > 0 {
                         out.push(b',');
                     }
@@ -4342,9 +4787,10 @@ fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> 
                 return Ok(());
             }
             let guard = crate::value::lock_ref(d);
-            if guard.items.iter().all(json_is_scalar) {
+            let slice = guard.as_slice();
+            if slice.iter().all(json_is_scalar) {
                 out.push(b'[');
-                for (i, item) in guard.items.iter().enumerate() {
+                for (i, item) in slice.iter().enumerate() {
                     if i > 0 {
                         out.push(b',');
                     }
@@ -4352,7 +4798,7 @@ fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> 
                 }
                 out.push(b']');
             } else {
-                let items = guard.items.clone();
+                let items = guard.clone_items();
                 drop(guard);
                 out.push(b'[');
                 for (i, item) in items.iter().enumerate() {
@@ -4455,7 +4901,7 @@ fn n_file_delete(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_bytes_concat(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let v = one("bytes_concat", &args)?;
     let items = match &v {
-        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
         other => vec![other.clone()],
     };
     let mut out: Vec<u8> = Vec::new();
@@ -4513,10 +4959,10 @@ fn n_dir_remove(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_read_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("read_bytes", &args)?, "read_bytes")?;
     match std::fs::read(&path) {
-        Ok(data) => Ok(Value::Result(Ok(Box::new(Value::Bytes(new_ref(data)))))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+        Ok(data) => Ok(Value::ok(Value::Bytes(new_ref(data)))),
+        Err(e) => Ok(Value::err(Value::Str(
             format!("cannot read '{}': {}", path, e).into(),
-        ))))),
+        ))),
     }
 }
 
@@ -4532,10 +4978,10 @@ fn n_write_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Value::Bytes(b) => {
             let data = b.lock().unwrap().clone();
             match std::fs::write(&path, data) {
-                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
-                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+                Ok(()) => Ok(Value::ok(Value::Null)),
+                Err(e) => Ok(Value::err(Value::Str(
                     format!("cannot write to '{}': {}", path, e).into(),
-                ))))),
+                ))),
             }
         }
         other => Err(format!(
@@ -4557,15 +5003,15 @@ fn n_save_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Value::Vector(v) => {
             let v = v.lock().unwrap();
             match collections::misc::save_npy_file(&path, &[v.data.len()], &v.data) {
-                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
-                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+                Ok(()) => Ok(Value::ok(Value::Null)),
+                Err(e) => Ok(Value::err(Value::Str(e.into()))),
             }
         }
         Value::Matrix(m) => {
             let m = m.lock().unwrap();
             match collections::misc::save_npy_file(&path, &[m.rows, m.cols], &m.data) {
-                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
-                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+                Ok(()) => Ok(Value::ok(Value::Null)),
+                Err(e) => Ok(Value::err(Value::Str(e.into()))),
             }
         }
         other => Err(format!(
@@ -4578,15 +5024,13 @@ fn n_save_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_load_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("load_npy", &args)?, "load_npy")?;
     match collections::misc::load_npy_data(&path) {
-        Ok(collections::misc::NpyLoaded::Vector(data)) => Ok(Value::Result(Ok(Box::new(
-            Value::Vector(new_ref(collections::misc::VectorData { data })),
+        Ok(collections::misc::NpyLoaded::Vector(data)) => Ok(Value::ok(Value::Vector(new_ref(
+            collections::misc::VectorData { data },
         )))),
-        Ok(collections::misc::NpyLoaded::Matrix { rows, cols, data }) => {
-            Ok(Value::Result(Ok(Box::new(Value::Matrix(new_ref(
-                collections::misc::MatrixData { rows, cols, data },
-            ))))))
-        }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(collections::misc::NpyLoaded::Matrix { rows, cols, data }) => Ok(Value::ok(
+            Value::Matrix(new_ref(collections::misc::MatrixData { rows, cols, data })),
+        )),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -4629,7 +5073,7 @@ fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
     match csv::parse_csv_text(&text, delimiter, has_header) {
         Ok(v) => Ok(v),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -4644,9 +5088,9 @@ fn n_read_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let text = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            return Ok(Value::Result(Err(Box::new(Value::Str(
+            return Ok(Value::err(Value::Str(
                 format!("cannot read '{}': {}", path, e).into(),
-            )))));
+            )));
         }
     };
     let mut parse_args = vec![Value::Str(text.into())];
@@ -4665,7 +5109,7 @@ fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
     let path = want_str(&args[0], "write_csv")?;
     let headers = match &args[1] {
-        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
         Value::Tuple(t) => t.lock().unwrap().clone(),
         other => {
             return Err(format!(
@@ -4675,7 +5119,7 @@ fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
     };
     let rows = match &args[2] {
-        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
         Value::Tuple(t) => t.lock().unwrap().clone(),
         other => {
             return Err(format!(
@@ -5234,24 +5678,6 @@ fn sandbox_env_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String
     Err("sandboxed: environment access denied".to_string())
 }
 
-/// Propagate any `[security] deny_*` switches baked from `spid3r.ini` to the
-/// plugin capability table so plugins cannot bypass `spid3r.ini` denials.
-pub fn apply_config_plugin_capabilities() {
-    let pol = fs_policy::policy();
-    if pol.deny_filesystem {
-        crate::plugin::deny_capability(crate::embed::Capability::FileSystem);
-    }
-    if pol.deny_network {
-        crate::plugin::deny_capability(crate::embed::Capability::Network);
-    }
-    if pol.deny_process {
-        crate::plugin::deny_capability(crate::embed::Capability::Process);
-    }
-    if pol.deny_environment {
-        crate::plugin::deny_capability(crate::embed::Capability::Environment);
-    }
-}
-
 /// The stub that answers for a sandboxed or `security.deny_*`-blocked native,
 /// or `None` when the name is permitted. The deny groups reuse the embedding
 /// API's capability lists, plus the database natives (TCP connections and a
@@ -5273,9 +5699,6 @@ fn capability_stub(
         "pg_query",
         "pg_exec",
         "pg_close",
-        "redis_connect",
-        "redis_command",
-        "redis_close",
     ];
     if deny_fs && (Capability::FileSystem.natives().contains(&name) || name == "db_open") {
         return Some(sandbox_fs_stub);

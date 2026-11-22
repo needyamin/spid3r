@@ -1,6 +1,6 @@
 //! Language-toolchain control ops: the panel's (and `spid3r control --op`'s)
 //! way to drive the `spid3r` compiler/VM itself — run, check, compile, build,
-//! test, fmt, plugins, project management — plus a small source editor.
+//! test, fmt, and project/package management — plus a small source editor.
 //!
 //! Every toolchain action runs the real `spid3r` binary as a child process
 //! (never in-process), so the panel gets exactly the CLI's behaviour, exit
@@ -14,11 +14,8 @@ use std::time::{Duration, Instant};
 
 use super::ops::{field, jstr};
 
-/// Subcommands the panel may run. Interactive/long-lived ones (`repl`,
-/// `debug`, `lsp`, `agent`, `admin`) are deliberately absent: they need a
-/// terminal or have their own panel tabs.
 /// One-shot toolchain commands the panel may run through `lang_exec`. This is
-/// the FULL CLI surface minus four documented exclusions:
+/// the FULL CLI surface minus documented exclusions:
 ///
 ///   - `repl`, `debug`, `gui`  → interactive; run through `op_lang_terminal`
 ///     (own console / window) instead of the captured-output exec path.
@@ -26,54 +23,19 @@ use super::ops::{field, jstr};
 ///     the exec path until the wall-clock timeout with nothing to show.
 ///
 /// `control` and `config` are not here because the panel drives their exact
-/// operations directly through `ops::dispatch` (status / config_* / agent_* /
-/// devices_* / audit_tail) — the same ops the `spid3r control` CLI uses, so
+/// operations directly through `ops::dispatch` (status / safety_overview /
+/// config_* / logs_tail) — the same ops the `spid3r control` CLI uses, so
 /// both surfaces stay provably identical. `tests/control_tests.rs` enforces
 /// this whitelist against `spid3r --help` so a new CLI command cannot ship
 /// without a panel decision.
 const ALLOWED: &[&str] = &[
-    "run",
-    "check",
-    "compile",
-    "build",
-    "test",
-    "fmt",
-    "doc",
-    "disasm",
-    "exec",
-    "modules",
-    "init",
-    "install",
-    "pack",
-    "unpack",
-    "dist",
-    "bench",
-    "plugin",
-    "info",
-    "version",
-    "magic",
-    "bundle",
+    "run", "check", "compile", "build", "test", "fmt", "doc", "disasm", "exec", "modules", "init",
+    "install", "pack", "unpack", "dist", "bench", "info", "version", "magic", "bundle",
     // Package / registry one-shots and module tooling (parity with the CLI).
-    "add",
-    "publish",
-    "remove",
-    "search",
-    "verify",
-    "tree",
-    // Device-pairing and remote administration one-shots.
-    "admin",
-    "agent",
-    "help",
+    "add", "publish", "remove", "search", "verify", "tree", "help",
     // Stage-0 oracle dumps (SH-5): deterministic captured-output one-shots,
     // same shape as `disasm`.
-    "tokens",
-    "parse",
-    // Container engine and bare-metal kernel builder.
-    "container",
-    "kernel",
-    // Container engine and bare-metal kernel builder.
-    "container",
-    "kernel",
+    "tokens", "parse",
 ];
 
 /// Commands that run interactively in their own console / window instead of
@@ -170,6 +132,7 @@ pub fn split_args(s: &str) -> Vec<String> {
 }
 
 fn drain<R: std::io::Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
+    crate::value::mark_multithreaded();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -344,22 +307,23 @@ pub fn op_lang_terminal(params: &str) -> Result<String, String> {
 /// `lang_info` — toolchain location and version string.
 pub fn op_lang_info() -> Result<String, String> {
     let exe = toolchain_exe();
-    let ver = std::process::Command::new(&exe)
-        .arg("version")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            let raw = String::from_utf8_lossy(&o.stdout);
-            if let Some(v_line) = raw.lines().find(|l| l.trim_start().starts_with("Version")) {
-                let v = v_line.split_whitespace().nth(1).unwrap_or("");
-                if !v.is_empty() {
-                    return format!("spid3r {} (language {})", v, crate::LANGUAGE_VERSION);
-                }
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("version").stdin(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let ver = cmd.output().ok().filter(|o| o.status.success()).map(|o| {
+        let raw = String::from_utf8_lossy(&o.stdout);
+        if let Some(v_line) = raw.lines().find(|l| l.trim_start().starts_with("Version")) {
+            let v = v_line.split_whitespace().nth(1).unwrap_or("");
+            if !v.is_empty() {
+                return format!("spid3r {} (language {})", v, crate::LANGUAGE_VERSION);
             }
-            raw.lines().next().unwrap_or("").trim().to_string()
-        });
+        }
+        raw.lines().next().unwrap_or("").trim().to_string()
+    });
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -439,9 +403,22 @@ fn editable(path: &str) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// `lang_read` — read a source file (max 2 MiB).
+fn resolve_editor_path(raw: &str, cwd: &str) -> Result<PathBuf, String> {
+    let p = editable(raw)?;
+    if p.is_relative() {
+        if let Some(dir) = valid_dir(cwd)? {
+            return Ok(dir.join(p));
+        }
+    }
+    Ok(p)
+}
+
+/// `lang_read` — read a source file (max 2 MiB), resolving relative paths
+/// against `cwd` when supplied.
 pub fn op_lang_read(params: &str) -> Result<String, String> {
-    let path = editable(&field(params, "path").unwrap_or_default())?;
+    let raw_path = field(params, "path").unwrap_or_default();
+    let cwd = field(params, "cwd").unwrap_or_default();
+    let path = resolve_editor_path(&raw_path, &cwd)?;
     let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
     let mut buf = Vec::new();
     f.by_ref()
@@ -462,7 +439,9 @@ pub fn op_lang_read(params: &str) -> Result<String, String> {
 /// `lang_write` — save a source file (creating parent dirs is NOT done: the
 /// directory must exist, so a typo cannot scatter folders around the disk).
 pub fn op_lang_write(params: &str) -> Result<String, String> {
-    let path = editable(&field(params, "path").unwrap_or_default())?;
+    let raw_path = field(params, "path").unwrap_or_default();
+    let cwd = field(params, "cwd").unwrap_or_default();
+    let path = resolve_editor_path(&raw_path, &cwd)?;
     let text = field(params, "text").unwrap_or_default();
     if text.len() > 2 * 1024 * 1024 {
         return Err("refusing to write more than 2 MiB".into());
@@ -503,5 +482,28 @@ mod tests {
         assert!(editable("a.matrix").is_ok());
         assert!(editable("a.exe").is_err());
         assert!(editable("noext").is_err());
+    }
+
+    #[test]
+    fn lang_read_write_resolve_relative_path_against_cwd() {
+        let dir =
+            std::env::temp_dir().join(format!("spid3r-control-lang-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let params_w = format!(
+            "{{\"path\":\"src/main.matrix\",\"cwd\":{},\"text\":\"fn main() {{ return 0; }}\"}}",
+            jstr(&dir.display().to_string())
+        );
+        assert!(op_lang_write(&params_w).is_ok());
+        let params_r = format!(
+            "{{\"path\":\"src/main.matrix\",\"cwd\":{}}}",
+            jstr(&dir.display().to_string())
+        );
+        let read = op_lang_read(&params_r).unwrap();
+        assert_eq!(
+            field(&read, "text").as_deref(),
+            Some("fn main() { return 0; }")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

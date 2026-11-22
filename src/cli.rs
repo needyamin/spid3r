@@ -85,12 +85,9 @@ COMMANDS:
                                            dist/<name>-<version>.tar
     unpack <archive> [dir]                 Extract a packed project
     init [dir]                             Create spider.toml + src/main.matrix
-    plugin abi                             Print the plugin ABI this toolchain implements
-    plugin list                            Show what the plugin search path would load
-    plugin check <dir>                     Validate one plugin directory against the ABI
     modules <file.matrix> [--tree]         List every module this file imports,
                                            with the origin of each: disk, vendor,
-                                           embedded or plugin. --tree prints the
+                                           or embedded. --tree prints the
                                            dependency graph instead
     install [--update]                     Vendor path/git dependencies into
                                            vendor/, write spider.lock (commit
@@ -128,13 +125,8 @@ COMMANDS:
     info [--json|--html] [--no-redact]     Runtime information (spid3rinfo)
     config [get KEY | set KEY VALUE | list | path | validate | reload | init]
                                            Read and write spid3r.ini
-    agent start|pair|status|ops             Local management agent
-    control [status|ini|agent|devices|audit]
-                                            Runtime control surface (this machine)
-    admin --host NAME <op> [flags]          Remote administration client
-    container <pull|images|run|ps|stop|rm|logs>
-                                           OCI container engine (Linux)
-    kernel build                           Build the bare-metal no_std kernel crate
+    control [status|safety|ini|config|logs]
+                                           Runtime control surface (this machine)
     version                                Print version information
     help                                   Print this help
 
@@ -157,14 +149,33 @@ EXIT CODES:
                                            bytecode / artifact
 ";
 
+// pub fn version_text() -> String {
+//     format!(
+//         "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗\n\
+//          \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗\n\
+//          \x20 ███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝\n\
+//          \x20 ╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗\n\
+//          \x20 ███████║██║     ██║██████╔╝██████╔╝██║  ██║\n\
+//          \x20 ╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝\n\n\
+//          \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
+//          \x20 Version       {}\n\
+//          \x20 Language      {}\n\
+//          \x20 Compiler      Self-hosted (LLVM 23 AOT)\n\
+//          \x20 Host          Rust (Stage 0)\n\
+//          \x20 Runtime       No external dependencies\n\n\
+//          \x20 Developed by ANSNEW TECH",
+//         VERSION, LANGUAGE_VERSION
+//     )
+// }
+
 pub fn version_text() -> String {
     format!(
-        "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗\n\
-         \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗\n\
-         \x20 ███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝\n\
-         \x20 ╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗\n\
-         \x20 ███████║██║     ██║██████╔╝██████╔╝██║  ██║\n\
-         \x20 ╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝\n\n\
+        "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗         ╱     ╲\n\
+         \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗    ╱╲  ╲ ▄█▄ ╱  ╱╲\n\
+         \x20 ███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝   ╱  ╲──╲▀█▀╱──╱  ╲\n\
+         \x20 ╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗  ╱  ╱──╱▄███▄╲──╲  ╲\n\
+         \x20 ███████║██║     ██║██████╔╝██████╔╝██║  ██║    ╱  ╱ █████ ╲  ╲\n\
+         \x20 ╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝    ╲  ╲ ▀███▀ ╱  ╱\n\n\
          \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
          \x20 Version       {}\n\
          \x20 Language      {}\n\
@@ -177,10 +188,6 @@ pub fn version_text() -> String {
 }
 
 pub fn run(args: Vec<String>) -> i32 {
-    // Default `args()` to empty for every subcommand; `run` replaces this with
-    // the real script arguments. Without this, programs executed via `exec`,
-    // `test`, or `dist` would see the interpreter's own argv.
-    crate::stdlib::set_script_args(Vec::new());
     let mut it = args.into_iter().skip(1);
     let cmd = match it.next() {
         Some(c) => c,
@@ -203,6 +210,11 @@ pub fn run(args: Vec<String>) -> i32 {
             _ => {}
         }
     }
+    crate::config::schema::install_tz_validator(crate::stdlib::tz::check_timezone_setting);
+    // Default `args()` to empty for every subcommand; `run` replaces this with
+    // the real script arguments. Without this, programs executed via `exec`,
+    // `test`, or `dist` would see the interpreter's own argv.
+    crate::stdlib::set_script_args(Vec::new());
     // An explicit but broken SPID3R_INI must never silently run code under
     // compiled defaults. Keep diagnostics and repair commands available.
     if matches!(
@@ -231,32 +243,11 @@ pub fn run(args: Vec<String>) -> i32 {
             | "publish"
             | "add"
             | "remove"
-            | "container"
-            | "kernel"
     ) {
         if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
             eprintln!("error[config]: {}", message);
             return EXIT_USER_ERROR;
         }
-    }
-    // Plugins are discovered from disk once per process, before any engine
-    // installs its natives. Only for commands that can run or check a program:
-    // `spidr version` must not read a plugin directory.
-    if matches!(
-        cmd.as_str(),
-        "run"
-            | "check"
-            | "compile"
-            | "exec"
-            | "test"
-            | "bench"
-            | "debug"
-            | "gui"
-            | "repl"
-            | "magic"
-    ) {
-        load_plugins();
-        crate::stdlib::apply_config_plugin_capabilities();
     }
     // `--json` makes the error printer emit one JSON object instead of the
     // human form. It is a *diagnostic* flag, so it is consumed here rather than
@@ -297,23 +288,6 @@ pub fn run(args: Vec<String>) -> i32 {
             outcome_code(outcome, json, &log_cmd)
         }
     }
-}
-
-/// Discover and register plugins from the search path.
-///
-/// Runs once per process. A plugin that fails to load is a **warning**, not a
-/// fatal error: one broken plugin in a shared directory must not stop the
-/// toolchain from running a program. `SPID3R_PLUGINS` is the way to pin an
-/// exact set when that is not what you want.
-fn load_plugins() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // Discovery is unconditional: a Spid3r-source plugin needs no wasmi, so
-        // a `--no-default-features` build can still use one.
-        for e in crate::plugin::load_all() {
-            eprintln!("warning: plugin: {}", e);
-        }
-    });
 }
 
 /// Whether an unknown subcommand may be handed to `spidr-<name>`.
@@ -428,11 +402,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "info" => cmd_info(&rest),
         "config" => cmd_config(&rest),
         #[cfg(not(target_arch = "wasm32"))]
-        "agent" => Ok(crate::agent::cmd_agent(&rest)),
-        #[cfg(not(target_arch = "wasm32"))]
         "control" => Ok(crate::control::cmd_control(&rest)),
-        #[cfg(not(target_arch = "wasm32"))]
-        "admin" => Ok(crate::agent::cmd_admin(&rest)),
         "version" | "--version" | "-V" => {
             println!("{}", version_text());
             return Ok(EXIT_OK);
@@ -463,7 +433,6 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "lsp" => Ok(crate::lsp::cmd_lsp()),
         "init" => cmd_init(&rest),
         "modules" => cmd_modules(&rest),
-        "plugin" => cmd_plugin(&rest),
         "verify" => cmd_verify(&rest),
         "tree" => cmd_tree(&rest),
         "add" => cmd_add(&rest),
@@ -474,8 +443,6 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "dist" => cmd_project_build(&rest),
         "pack" => cmd_pack(&rest),
         "unpack" => cmd_unpack(&rest),
-        "container" => cmd_container(&rest),
-        "kernel" => cmd_kernel(&rest),
         "debug" => cmd_debug(&rest),
         other => {
             // `spidr-<name>` extension tools. Checked before the usage error so
@@ -691,27 +658,18 @@ ARGS:
 spid3r control - Runtime control surface for this machine
 
 USAGE:
-    spid3r control [status]              Dashboard: version, spid3r.ini, agent,
-                                         devices, audit log
+    spid3r control [status]              Dashboard: version, spid3r.ini, safety
     spid3r control safety                Capability switches (filesystem /
-                                         process / network / environment access,
-                                         remote management, plugins)
+                                         process / network / environment access)
     spid3r control ini [--init] [--force]
                                          Show the spid3r.ini search order, or
                                          write the commented default file
-    spid3r control agent start|stop|status
-                                         Detached agent lifecycle (start spawns
-                                         a background process and records its
-                                         PID; stop only ever signals a PID the
-                                         tool started and verified as spid3r)
-    spid3r control devices [list] | revoke <id>
-                                         Paired-device management
-    spid3r control audit [N]             Tail the audit log (default 20 lines)
+    spid3r control config ...            Read, set, reset, reload, validate spid3r.ini
+    spid3r control logs [N]              Tail the diagnostic log (default 50 lines)
 
 NOTES:
     The desktop panel (spid3r-control.exe, Windows installer) drives the same
-    operations and writes the same audit log. Managing OTHER hosts is the job
-    of `spid3r agent pair` + `spid3r admin`, not this command.
+    operations.
     -h, --help             Print help information
 "),
         "bundle" => Some("\
@@ -826,18 +784,6 @@ USAGE:
 OPTIONS:
     -h, --help             Print help information
 "),
-        "plugin" => Some("\
-spid3r plugin - Inspect the plugin contract
-
-USAGE:
-    spidr plugin abi              Print the plugin ABI string this build implements
-    spidr plugin list             Show what the plugin search path would load
-    spidr plugin check <dir>      Validate one plugin directory against the ABI
-
-`check` runs the same validation the loader does, without registering anything,
-so it is safe to run over a directory of candidates. Exit codes: 0 valid,
-1 invalid, 2 usage.
-"),
         "modules" => Some("\
 spid3r modules - List the modules a program imports
 
@@ -850,7 +796,7 @@ OPTIONS:
 
 Each line is `<origin><TAB><path>`. The origin is where the resolver found the
 module: `disk` (beside the importer or on the search path), `vendor` (from
-vendor/), `embedded` (the stdlib table compiled into the binary) or `plugin`.
+vendor/), or `embedded` (the stdlib table compiled into the binary).
 A module imported by two others is listed once and marked `(*)` in the tree.
 "),
         "install" => Some("\
@@ -1344,15 +1290,6 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     // permission at call time.
     if sandbox {
         crate::stdlib::arm_sandbox();
-        use crate::embed::Capability;
-        for cap in [
-            Capability::FileSystem,
-            Capability::Network,
-            Capability::Process,
-            Capability::Environment,
-        ] {
-            crate::plugin::deny_capability(cap);
-        }
     }
     // Run-time limits from spid3r.ini / SPID3R_* env (`runtime.
     // wall_clock_limit_ms`, `runtime.memory_limit_mb`): resolved once at run
@@ -2124,15 +2061,6 @@ fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
     };
     if sandbox {
         crate::stdlib::arm_sandbox();
-        use crate::embed::Capability;
-        for cap in [
-            Capability::FileSystem,
-            Capability::Network,
-            Capability::Process,
-            Capability::Environment,
-        ] {
-            crate::plugin::deny_capability(cap);
-        }
     }
     let cfg = crate::config::snapshot();
     let run_limits = crate::budget::run_limits(&cfg);
@@ -3111,92 +3039,6 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
     }
 }
 
-/// `spidr plugin abi | list | check <dir>` — inspect the plugin contract.
-///
-/// The ABI is a versioned contract, so it needs a way to be *read* and
-/// *validated* without loading anything. `check` runs the same code path the
-/// loader does, so a passing check and a failing load cannot disagree.
-fn cmd_plugin(args: &[String]) -> Result<i32, Diagnostic> {
-    let sub = args.first().map(String::as_str).unwrap_or("");
-    let rest = if args.is_empty() {
-        &args[0..]
-    } else {
-        &args[1..]
-    };
-    match sub {
-        "" | "--help" | "-h" => {
-            println!("{}", subcommand_help("plugin").unwrap_or(HELP));
-            Ok(EXIT_OK)
-        }
-        "abi" => {
-            println!("{}", crate::plugin::ABI_V1);
-            Ok(EXIT_OK)
-        }
-        "list" => {
-            let report = crate::plugin::search_report();
-            let mut total = 0usize;
-            for (root, found) in &report {
-                if found.is_empty() {
-                    continue;
-                }
-                println!("{}", root.display());
-                for dir in found {
-                    total += 1;
-                    // A manifest that does not parse is still worth listing:
-                    // the point of `list` is what the loader *would* see.
-                    match crate::plugin::PluginManifest::load(dir) {
-                        Ok(m) => println!(
-                            "  {} ({}) — {} function(s){}",
-                            m.name,
-                            m.kind.as_str(),
-                            m.functions.len(),
-                            if m.abi_matches() {
-                                ""
-                            } else {
-                                "  [ABI MISMATCH]"
-                            }
-                        ),
-                        Err(e) => println!("  ? {} — {}", dir.display(), e),
-                    }
-                }
-            }
-            if total == 0 {
-                println!("no plugins found on the search path");
-                for (root, _) in &report {
-                    println!("  looked in {}", root.display());
-                }
-            }
-            Ok(EXIT_OK)
-        }
-        "check" => {
-            let dir = rest
-                .first()
-                .ok_or_else(|| usage("plugin check needs a directory: spidr plugin check <dir>"))?;
-            let path = PathBuf::from(dir);
-            if !path.is_dir() {
-                return Err(usage(&format!("'{}' is not a directory", dir)));
-            }
-            match crate::plugin::check_dir(&path) {
-                Ok(notes) => {
-                    println!("ok: {} conforms to {}", dir, crate::plugin::ABI_V1);
-                    for n in notes {
-                        println!("  {}", n);
-                    }
-                    Ok(EXIT_OK)
-                }
-                Err(e) => {
-                    eprintln!("error[plugin]: {}: {}", dir, e);
-                    Ok(EXIT_USER_ERROR)
-                }
-            }
-        }
-        other => Err(usage(&format!(
-            "unknown plugin subcommand '{}' (abi, list, check)",
-            other
-        ))),
-    }
-}
-
 /// `spidr modules <file> [--tree]`: make the resolver's decisions inspectable.
 ///
 /// Prints every module reachable from `file` with the origin the resolver
@@ -3827,337 +3669,6 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         }
         println!("perf gate passed");
     }
-    Ok(EXIT_OK)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn container_err(msg: String) -> Diagnostic {
-    Diagnostic::new(Phase::Runtime, msg)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn cmd_container(_args: &[String]) -> Result<i32, Diagnostic> {
-    Err(Diagnostic::new(
-        Phase::Usage,
-        "container subcommands are not available on wasm32",
-    ))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cmd_container(args: &[String]) -> Result<i32, Diagnostic> {
-    let Some(sub) = args.first().map(|s| s.as_str()) else {
-        eprintln!(
-            "usage: spid3r container <pull|create|start|run|stop|kill|rm|ps|inspect|logs|gc> ..."
-        );
-        return Ok(EXIT_USAGE);
-    };
-    let oci_dir = crate::oci::default_oci_store();
-    let c_dir = crate::container::default_container_dir();
-    match sub {
-        "pull" => {
-            let mut image_spec = None;
-            let mut pubkey = None;
-            let mut require_sig = false;
-            let mut i = 1;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--require-sig" => require_sig = true,
-                    "--pubkey" => {
-                        i += 1;
-                        pubkey = args.get(i).cloned();
-                    }
-                    other if !other.starts_with('-') && image_spec.is_none() => {
-                        image_spec = Some(other.to_string());
-                    }
-                    other => {
-                        return Err(Diagnostic::new(
-                            Phase::Usage,
-                            format!("container pull: unexpected argument '{other}'"),
-                        ));
-                    }
-                }
-                i += 1;
-            }
-            let Some(spec) = image_spec else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container pull <image> [--require-sig --pubkey <hex>]",
-                ));
-            };
-            let policy = if require_sig {
-                crate::oci::manifest::SignaturePolicy::RequireSigned
-            } else {
-                crate::oci::manifest::SignaturePolicy::AllowUnsigned
-            };
-            let pulled = crate::oci::client::pull_image(&spec, &oci_dir, policy, pubkey.as_deref())
-                .map_err(container_err)?;
-            println!(
-                "pulled {} ({}, {} layer(s))",
-                pulled.reference,
-                pulled.manifest_digest,
-                pulled.layer_dirs.len()
-            );
-            Ok(EXIT_OK)
-        }
-        "create" => {
-            let mut id = None;
-            let mut image_spec = None;
-            let mut cmd_override = Vec::new();
-            let mut i = 1;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--name" => {
-                        i += 1;
-                        id = args.get(i).cloned();
-                    }
-                    other if image_spec.is_none() && !other.starts_with('-') => {
-                        image_spec = Some(other.to_string());
-                    }
-                    other => {
-                        cmd_override = args[i..].to_vec();
-                        let _ = other;
-                        break;
-                    }
-                }
-                i += 1;
-            }
-            let Some(spec) = image_spec else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container create [--name <id>] <image> [cmd...]",
-                ));
-            };
-            let pulled = crate::oci::client::pull_image(
-                &spec,
-                &oci_dir,
-                crate::oci::manifest::SignaturePolicy::AllowUnsigned,
-                None,
-            )
-            .map_err(container_err)?;
-            let cid = id.unwrap_or_else(|| format!("ctr-{}", std::process::id()));
-            let ov = if cmd_override.is_empty() {
-                None
-            } else {
-                Some(cmd_override)
-            };
-            let rec = crate::container::runtime::create_container(&c_dir, &cid, &pulled, ov)
-                .map_err(container_err)?;
-            println!("{}", rec.id);
-            Ok(EXIT_OK)
-        }
-        "start" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container start <id>",
-                ));
-            };
-            let code = crate::container::runtime::start_container(
-                &c_dir,
-                id,
-                &crate::container::runtime::ResourceLimits::default(),
-            )
-            .map_err(container_err)?;
-            Ok(code)
-        }
-        "run" => {
-            let mut id = None;
-            let mut image_spec = None;
-            let mut cmd_override = Vec::new();
-            let mut i = 1;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--name" => {
-                        i += 1;
-                        id = args.get(i).cloned();
-                    }
-                    other if image_spec.is_none() && !other.starts_with('-') => {
-                        image_spec = Some(other.to_string());
-                    }
-                    _ => {
-                        cmd_override = args[i..].to_vec();
-                        break;
-                    }
-                }
-                i += 1;
-            }
-            let Some(spec) = image_spec else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container run [--name <id>] <image> [cmd...]",
-                ));
-            };
-            let pulled = crate::oci::client::pull_image(
-                &spec,
-                &oci_dir,
-                crate::oci::manifest::SignaturePolicy::AllowUnsigned,
-                None,
-            )
-            .map_err(container_err)?;
-            let cid = id.unwrap_or_else(|| format!("ctr-{}", std::process::id()));
-            let ov = if cmd_override.is_empty() {
-                None
-            } else {
-                Some(cmd_override)
-            };
-            let _ = crate::container::runtime::create_container(&c_dir, &cid, &pulled, ov)
-                .map_err(container_err)?;
-            let code = crate::container::runtime::start_container(
-                &c_dir,
-                &cid,
-                &crate::container::runtime::ResourceLimits::default(),
-            )
-            .map_err(container_err)?;
-            Ok(code)
-        }
-        "stop" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container stop <id>",
-                ));
-            };
-            crate::container::runtime::stop_or_kill_container(&c_dir, id, 15)
-                .map_err(container_err)?;
-            Ok(EXIT_OK)
-        }
-        "kill" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container kill <id>",
-                ));
-            };
-            crate::container::runtime::stop_or_kill_container(&c_dir, id, 9)
-                .map_err(container_err)?;
-            Ok(EXIT_OK)
-        }
-        "rm" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container rm <id>",
-                ));
-            };
-            crate::container::runtime::remove_container(&c_dir, id).map_err(container_err)?;
-            let _ = crate::container::net::release_ip(&c_dir, id);
-            Ok(EXIT_OK)
-        }
-        "ps" => {
-            let rows = crate::container::runtime::list_containers(&c_dir).map_err(container_err)?;
-            for r in rows {
-                println!("{}\t{}\t{}", r.id, r.status.as_str(), r.image);
-            }
-            Ok(EXIT_OK)
-        }
-        "inspect" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container inspect <id>",
-                ));
-            };
-            let txt = crate::container::daemon::inspect_text(&c_dir, id).map_err(container_err)?;
-            println!("{txt}");
-            Ok(EXIT_OK)
-        }
-        "logs" => {
-            let Some(id) = args.get(1) else {
-                return Err(Diagnostic::new(
-                    Phase::Usage,
-                    "usage: spid3r container logs <id>",
-                ));
-            };
-            let log_p = c_dir.join(id).join("container.log");
-            let txt = std::fs::read_to_string(&log_p)
-                .map_err(|e| Diagnostic::new(Phase::Runtime, format!("cannot read log: {e}")))?;
-            print!("{txt}");
-            Ok(EXIT_OK)
-        }
-        "gc" => {
-            let n = crate::container::snapshot::gc_unreferenced_layers(&oci_dir, &c_dir)
-                .map_err(container_err)?;
-            println!("removed {n} unreferenced layer(s)");
-            Ok(EXIT_OK)
-        }
-        other => Err(Diagnostic::new(
-            Phase::Usage,
-            format!("container: unknown subcommand '{other}'"),
-        )),
-    }
-}
-
-fn cmd_kernel(args: &[String]) -> Result<i32, Diagnostic> {
-    let Some(sub) = args.first().map(|s| s.as_str()) else {
-        eprintln!("usage: spid3r kernel build [--out <path>]");
-        return Ok(EXIT_USAGE);
-    };
-    if sub != "build" {
-        return Err(Diagnostic::new(
-            Phase::Usage,
-            format!("kernel: unknown subcommand '{sub}' (expected 'build')"),
-        ));
-    }
-    let mut out_path = std::path::PathBuf::from("kernel/build/kernel.bin");
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--out" {
-            i += 1;
-            let Some(p) = args.get(i) else {
-                return Err(Diagnostic::new(Phase::Usage, "--out needs a file path"));
-            };
-            out_path = std::path::PathBuf::from(p);
-        } else {
-            return Err(Diagnostic::new(
-                Phase::Usage,
-                format!("kernel build: unexpected argument '{}'", args[i]),
-            ));
-        }
-        i += 1;
-    }
-    let manifest = std::path::Path::new("kernel/Cargo.toml");
-    if !manifest.is_file() {
-        return Err(Diagnostic::new(
-            Phase::Usage,
-            "kernel/Cargo.toml not found in current working directory",
-        ));
-    }
-    let st = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "--manifest-path",
-            "kernel/Cargo.toml",
-            "--target",
-            "x86_64-unknown-none",
-            "--release",
-        ])
-        .status()
-        .map_err(|e| Diagnostic::new(Phase::Usage, format!("failed to run cargo: {e}")))?;
-    if !st.success() {
-        return Err(Diagnostic::new(
-            Phase::Runtime,
-            "kernel build failed (ensure `rustup target add x86_64-unknown-none` is installed)",
-        ));
-    }
-    let built = std::path::Path::new("kernel/target/x86_64-unknown-none/release/spid3r_kernel");
-    if let Some(p) = out_path.parent() {
-        std::fs::create_dir_all(p)
-            .map_err(|e| Diagnostic::new(Phase::Runtime, format!("mkdir {}: {e}", p.display())))?;
-    }
-    let bytes = std::fs::read(built)
-        .map_err(|e| Diagnostic::new(Phase::Runtime, format!("read {}: {e}", built.display())))?;
-    std::fs::write(&out_path, &bytes).map_err(|e| {
-        Diagnostic::new(Phase::Runtime, format!("write {}: {e}", out_path.display()))
-    })?;
-    let sha = crate::pkg::sha256_hex(&bytes);
-    let sidecar = std::path::PathBuf::from(format!("{}.sha256", out_path.display()));
-    let fname = out_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("kernel.bin");
-    std::fs::write(&sidecar, format!("{sha}  {fname}\n"))
-        .map_err(|e| Diagnostic::new(Phase::Runtime, format!("write sha256: {e}")))?;
-    println!("built {} (sha256={sha})", out_path.display());
     Ok(EXIT_OK)
 }
 

@@ -92,7 +92,7 @@ pub(super) enum RExpr {
     Bool(bool),
     Null,
     NoneVal,
-    Str(Arc<str>),
+    Str(crate::value::ThinArcStr),
     Local(u16),
     Global(Arc<str>, Span),
     List(Vec<RExpr>, Span),
@@ -454,7 +454,7 @@ impl Resolver {
             Expr::Float(f, _) => Some(RExpr::Float(*f)),
             Expr::Bool(b, _) => Some(RExpr::Bool(*b)),
             Expr::Null(_) => Some(RExpr::Null),
-            Expr::Str(s, _) => Some(RExpr::Str(Arc::from(s.as_str()))),
+            Expr::Str(s, _) => Some(RExpr::Str(crate::value::ThinArcStr::from(s.as_str()))),
             Expr::Ident(name, span) => {
                 if name == "none" {
                     Some(RExpr::NoneVal)
@@ -1356,10 +1356,11 @@ impl Interp {
                     }
                     (Value::List(d) | Value::VecDyn(d), Value::Int(n)) => {
                         let guard = crate::value::lock_ref(d);
-                        let len = guard.items.len();
+                        let items = guard.as_slice();
+                        let len = items.len();
                         let resolved = if *n < 0 { len as i64 + *n } else { *n };
                         if resolved >= 0 && (resolved as usize) < len {
-                            Ok(guard.items[resolved as usize].clone())
+                            Ok(items[resolved as usize].clone())
                         } else {
                             Err(self.rt(
                                 span,

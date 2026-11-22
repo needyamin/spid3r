@@ -539,7 +539,6 @@ fn apply_process_env(
         ("SPID3R_LOG", "logging.enabled"),
         ("SPID3R_LOG_FILE", "logging.file"),
         ("SPID3R_ENV", "spid3r.env"),
-        ("SPID3R_PLUGINS", "modules.plugins"),
         ("SPID3R_PATH", "modules.path"),
         // Package-manager aliases: the historical spellings predate the
         // [packages] section; SPID3R_PACKAGES_REGISTRY (the generic
@@ -776,32 +775,32 @@ mod tests {
     #[test]
     fn parses_sections_quotes_and_comments() {
         let (doc, probs) = parse_ini(
-            "; comment\n[spid3r]\nenv = \"prod\" ; trailing\nname = spid3r # hash\n[agent]\nport = 9527\n",
+            "; comment\n[spid3r]\nenv = \"prod\" ; trailing\nname = spid3r # hash\n[net]\ntimeout_ms = 5000\n",
         );
         assert!(probs.is_empty());
         assert_eq!(doc.get("spid3r", "env"), Some("prod"));
         assert_eq!(doc.get("spid3r", "name"), Some("spid3r"));
-        assert_eq!(doc.get("agent", "port"), Some("9527"));
+        assert_eq!(doc.get("net", "timeout_ms"), Some("5000"));
     }
 
     #[test]
     fn roundtrip_ini() {
         let mut doc = IniDoc::default();
-        doc.set("agent", "bind", "127.0.0.1");
-        doc.set("agent", "port", "9527");
+        doc.set("spid3r", "engine", "vm");
+        doc.set("net", "timeout_ms", "5000");
         let text = write_ini(&doc);
         let (back, _) = parse_ini(&text);
-        assert_eq!(back.get("agent", "bind"), Some("127.0.0.1"));
-        assert_eq!(back.get("agent", "port"), Some("9527"));
+        assert_eq!(back.get("spid3r", "engine"), Some("vm"));
+        assert_eq!(back.get("net", "timeout_ms"), Some("5000"));
     }
 
     #[test]
     fn utf8_bom_is_ignored() {
         // Notepad writes a BOM; without stripping it the first section
-        // header ("\u{feff}[agent]") was skipped and its keys lost.
-        let (doc, probs) = parse_ini("\u{feff}[agent]\nport = 7001\n");
+        // header ("\u{feff}[net]") was skipped and its keys lost.
+        let (doc, probs) = parse_ini("\u{feff}[net]\ntimeout_ms = 7001\n");
         assert!(probs.is_empty());
-        assert_eq!(doc.get("agent", "port"), Some("7001"));
+        assert_eq!(doc.get("net", "timeout_ms"), Some("7001"));
     }
 
     #[test]
@@ -809,11 +808,12 @@ mod tests {
         // The [env.<name>] layer must coerce like the file and env-var
         // layers: an out-of-range value falls back to the default (with a
         // note) instead of going live unvalidated.
-        let (doc, _) = parse_ini("[env.prod]\nagent.port = 99999\nagent.enabled = banana\n");
+        let (doc, _) =
+            parse_ini("[env.prod]\nspid3r.max_workers = 99999\ndebug.enabled = banana\n");
         let cfg = build_from_doc(doc, None, None, Vec::new(), "prod");
-        assert_eq!(cfg.get("agent.port"), Some("9527"));
-        assert!(cfg.notes.iter().any(|n| n.contains("agent.port")));
-        assert!(cfg.notes.iter().any(|n| n.contains("agent.enabled")));
+        assert_eq!(cfg.get("spid3r.max_workers"), Some("256"));
+        assert!(cfg.notes.iter().any(|n| n.contains("spid3r.max_workers")));
+        assert!(cfg.notes.iter().any(|n| n.contains("debug.enabled")));
     }
 
     #[test]
@@ -825,11 +825,11 @@ mod tests {
             mtime: None,
             pin_status: PinStatus::Unpinned,
         };
-        cfg.values.insert("agent.enabled".into(), "true".into());
-        cfg.values.insert("agent.port".into(), "9527".into());
-        assert!(cfg.bool_of("agent.enabled"));
-        assert_eq!(cfg.int_of("agent.port"), Some(9527));
-        assert_eq!(cfg.int_of("agent.nope"), None);
+        cfg.values.insert("debug.enabled".into(), "true".into());
+        cfg.values.insert("net.timeout_ms".into(), "9527".into());
+        assert!(cfg.bool_of("debug.enabled"));
+        assert_eq!(cfg.int_of("net.timeout_ms"), Some(9527));
+        assert_eq!(cfg.int_of("net.nope"), None);
     }
 
     #[test]

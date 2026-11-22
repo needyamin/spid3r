@@ -172,7 +172,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/rt-native | Out-Null
           Copy-Item -Force target/release/spid3r_lang.lib target/rt-native/spid3r_lang.lib
           # Build full-featured Stage-0 CLI & GUI control host binaries.
-          cargo build --release --locked --bins --no-default-features --features gui,native,plugins-wasm,tls
+          cargo build --release --locked --bins --no-default-features --features gui,native,tls
 
       - name: Build self-hosted release compiler & NSIS installer (spid3r-self)
         shell: bash
@@ -239,6 +239,7 @@ jobs:
             aarch64-apple-darwin; do
             test -s "spid3r-${t}.tar.gz" || { echo "MISSING: spid3r-${t}.tar.gz"; exit 1; }
             tar tzf "spid3r-${t}.tar.gz" | grep -q '^spid3r-self$' || { echo "MISSING spid3r-self in spid3r-${t}.tar.gz"; exit 1; }
+            tar tzf "spid3r-${t}.tar.gz" | grep -q '^spid3r-formatter\.vsix$' || { echo "MISSING spid3r-formatter.vsix in spid3r-${t}.tar.gz"; exit 1; }
           done
           ls Spid3r-Setup-*.exe || { echo "MISSING: Spid3r-Setup-*.exe"; exit 1; }
           ls -l

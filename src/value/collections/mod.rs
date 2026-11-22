@@ -3,11 +3,13 @@
 //! (except instances, which it dispatches itself).
 
 pub mod fxhash;
+pub mod intern;
 pub mod misc;
 pub mod nodes;
 pub mod seq;
 
-pub use fxhash::{fx_hash_map_key, fx_hash_str, FxHashMap, FxHashSet, FxHasher};
+pub use fxhash::{fx_hash_bytes, fx_hash_map_key, fx_hash_str, FxHashMap, FxHashSet, FxHasher};
+pub use intern::{intern_key, intern_key_with_hash, KeyStr};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -27,6 +29,19 @@ pub use misc::{
 };
 pub use nodes::{BinTreeData, BstData, ListData};
 pub use seq::{DequeData, MapData, QueueData, SetData, StackData, VecData};
+
+type DatabaseMethodFn = fn(
+    &std::sync::Arc<std::sync::Mutex<crate::stdlib::db::DbData>>,
+    &str,
+    &[Value],
+) -> Result<Value, String>;
+
+static DATABASE_METHOD_HOOK: std::sync::OnceLock<DatabaseMethodFn> = std::sync::OnceLock::new();
+
+/// Register the database method dispatcher when `db` natives are enabled.
+pub fn install_database_method_hook(f: DatabaseMethodFn) {
+    let _ = DATABASE_METHOD_HOOK.set(f);
+}
 
 // -------------------------------------------------------- iterative teardown
 //
@@ -68,15 +83,46 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
         }};
     }
     match v {
-        Value::List(a) | Value::VecDyn(a) => flat!(a, items),
+        Value::List(mut a) => {
+            let mut pooled = false;
+            if let Some(fm) = Arc::get_mut(&mut a) {
+                let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+                if d.clear_for_pool(out) {
+                    fm.reset_owner_tid();
+                    pooled = true;
+                }
+            }
+            if pooled {
+                seq::push_pooled_list(a);
+            } else if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(d.take_items());
+            }
+        }
+        Value::VecDyn(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(d.take_items());
+            }
+        }
         Value::Stack(a) => flat!(a, items),
         Value::Queue(a) => flat!(a, items),
         Value::Deque(a) => flat!(a, items),
         Value::Set(a) => flat!(a, items),
         Value::Heap(a) => flat!(a, items),
         Value::Ring(a) => flat!(a, items),
-        Value::Map(a) => {
-            if let Ok(data) = Arc::try_unwrap(a) {
+        Value::Map(mut a) => {
+            let mut pooled = false;
+            if let Some(fm) = Arc::get_mut(&mut a) {
+                let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+                if d.clear_for_pool(out) {
+                    fm.reset_owner_tid();
+                    pooled = true;
+                }
+            }
+            if pooled {
+                seq::push_pooled_map(a);
+            } else if let Ok(data) = Arc::try_unwrap(a) {
                 let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
                 out.extend(std::mem::take(&mut d.entries).into_iter().map(|(_, v)| v));
             }
@@ -121,8 +167,8 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
                 out.push(*inner);
             }
         }
-        Value::Result(r) => match r {
-            Ok(inner) | Err(inner) => out.push(*inner),
+        Value::Result(r) => match *r {
+            Ok(inner) | Err(inner) => out.push(inner),
         },
         other => drop(other),
     }
@@ -133,6 +179,21 @@ pub(crate) fn drop_iteratively(items: Vec<Value>) {
     let mut work = items;
     while let Some(v) = work.pop() {
         take_children(v, &mut work);
+    }
+}
+
+/// Drop `v`, recycling any uniquely-owned untracked `List` or `Map` nodes back into
+/// the thread-local pools and walking deep nested containers iteratively.
+pub fn recycle_or_drop(v: Value) {
+    match v {
+        Value::List(_) | Value::Map(_) => {
+            let mut work = Vec::new();
+            take_children(v, &mut work);
+            if !work.is_empty() {
+                drop_iteratively(work);
+            }
+        }
+        other => drop(other),
     }
 }
 
@@ -180,7 +241,7 @@ pub fn is_constructor(name: &str) -> bool {
 pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match name {
         "list" | "vec" => {
-            let d = new_ref(seq::VecData { items: args });
+            let d = new_ref(seq::VecData::from_items(args));
             Ok(if name == "list" {
                 Value::List(d)
             } else {
@@ -311,7 +372,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             } else if args.len() == 1 {
                 match &args[0] {
                     Value::List(l) | Value::VecDyn(l) => {
-                        let items = l.lock().unwrap().items.clone();
+                        let items = l.lock().unwrap().clone_items();
                         if items.len() > misc::MAX_VECTOR_ELEMENTS {
                             return Err(format!(
                                 "vector of {} elements is too large (max {})",
@@ -406,7 +467,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                         Ok(Value::Bytes(new_ref(vec![0u8; nu])))
                     }
                     Value::List(l) | Value::VecDyn(l) => {
-                        let items = l.lock().unwrap().items.clone();
+                        let items = l.lock().unwrap().clone_items();
                         let mut data = Vec::with_capacity(items.len());
                         for it in items {
                             let b = want_int(&it, "bytes")?;
@@ -535,8 +596,8 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
             Ok(Value::Option(None))
         }
-        "ok" => Ok(Value::Result(Ok(Box::new(one(name, &args)?)))),
-        "err" => Ok(Value::Result(Err(Box::new(one(name, &args)?)))),
+        "ok" => Ok(Value::ok(one(name, &args)?)),
+        "err" => Ok(Value::err(one(name, &args)?)),
         _ => Err(format!("unknown constructor '{}'", name)),
     }
 }
@@ -681,7 +742,7 @@ pub fn call_method_host(
             if is_callback_method(name) {
                 // Snapshot the items so the callback cannot mutate the list
                 // while it is being iterated (both engines share this rule).
-                let items = d.lock().unwrap().items.clone();
+                let items = d.lock().unwrap().clone_items();
                 // `obj` is passed through for the in-place variants; it is
                 // never locked until every callback has returned.
                 return list_callback_method(host, Some(obj), &items, name, &args);
@@ -689,8 +750,19 @@ pub fn call_method_host(
             if name == "append" && args.len() == 1 {
                 if let Value::List(o) | Value::VecDyn(o) = &args[0] {
                     if std::sync::Arc::ptr_eq(d, o) {
-                        let extra = d.lock().unwrap().items.clone();
-                        d.lock().unwrap().items.extend(extra);
+                        let extra = d.lock().unwrap().clone_items();
+                        let need_track = {
+                            let mut g = d.lock().unwrap();
+                            let nt = !g.gc_tracked;
+                            if nt {
+                                g.gc_tracked = true;
+                            }
+                            g.extend_items(extra);
+                            nt
+                        };
+                        if need_track {
+                            crate::value::gc::track(d.clone());
+                        }
                         return Ok(Value::Null);
                     }
                 }
@@ -704,11 +776,32 @@ pub fn call_method_host(
                 // F-6 added `join` for the same reason: auto-stringify calls
                 // `display_value`, which locks any container it stringifies.
                 return with_snapshot_retry(|| {
-                    let items = d.lock().unwrap().items.clone();
+                    let items = d.lock().unwrap().clone_items();
                     seq::vec_detached(d, &items, name, &args)
                 });
             }
-            d.lock().unwrap().method(name, &args)
+            let track_args = matches!(name, "push" | "set" | "insert" | "append");
+            if track_args {
+                for a in &args {
+                    seq::track_if_untracked(a);
+                }
+            }
+            let has_non_scalar =
+                track_args && args.iter().any(|a| !seq::is_non_recursive_scalar(a));
+            let mut need_track_self = false;
+            let res = {
+                let mut g = d.lock().unwrap();
+                let r = g.method(name, &args);
+                if r.is_ok() && has_non_scalar && !g.gc_tracked {
+                    g.gc_tracked = true;
+                    need_track_self = true;
+                }
+                r
+            };
+            if need_track_self {
+                crate::value::gc::track(d.clone());
+            }
+            res
         }
         Value::Stack(d) => {
             if matches!(name, "contains" | "to_list") {
@@ -752,7 +845,25 @@ pub fn call_method_host(
                 return Ok(seq::map_values_out(&entries));
             }
             if seq::is_builtin_map_method(name) {
-                d.lock().unwrap().method(name, &args)
+                let val_non_scalar =
+                    name == "set" && args.len() == 2 && !seq::is_non_recursive_scalar(&args[1]);
+                if val_non_scalar {
+                    seq::track_if_untracked(&args[1]);
+                }
+                let mut need_track_self = false;
+                let res = {
+                    let mut g = d.lock().unwrap();
+                    let r = g.method(name, &args);
+                    if r.is_ok() && val_non_scalar && !g.gc_tracked {
+                        g.gc_tracked = true;
+                        need_track_self = true;
+                    }
+                    r
+                };
+                if need_track_self {
+                    crate::value::gc::track(d.clone());
+                }
+                res
             } else {
                 let key = crate::value::MapKey::Str(name.into());
                 let callable = {
@@ -928,9 +1039,9 @@ pub fn call_method_host(
         Value::Tuple(t) => misc::tuple_method(&t.lock().unwrap(), name, &args),
         Value::Option(o) => option_method(host, o.as_deref(), name, &args),
         Value::Result(r) => {
-            let rr: Result<&Value, &Value> = match r {
-                Ok(v) => Ok(v.as_ref()),
-                Err(e) => Err(e.as_ref()),
+            let rr: Result<&Value, &Value> = match r.as_ref() {
+                Ok(v) => Ok(v),
+                Err(e) => Err(e),
             };
             result_method(host, rr, name, &args)
         }
@@ -938,7 +1049,10 @@ pub fn call_method_host(
         Value::Channel(c) => channel_method(c, name, args),
         Value::MutexVal(m) => mutex_method(m, name, &args),
         Value::AtomicInt(a) => atomic_int_method(a, name, &args),
-        Value::Database(d) => crate::stdlib::db::database_method(d, name, &args),
+        Value::Database(d) => match DATABASE_METHOD_HOOK.get() {
+            Some(f) => f(d, name, &args),
+            None => Err("database support not registered".to_string()),
+        },
         other => Err(format!(
             "{} values have no methods",
             crate::value::type_name(other)
@@ -1049,7 +1163,7 @@ pub fn list_callback_method(
             // so it cannot deadlock against the list the comparator mutated.
             match receiver {
                 Some(Value::List(d)) | Some(Value::VecDyn(d)) => {
-                    d.lock().unwrap().items = sorted;
+                    d.lock().unwrap().set_items(sorted);
                     Ok(Value::Null)
                 }
                 _ => Err("sort_by needs a list receiver".to_string()),
@@ -1109,7 +1223,7 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                         a, b, len
                     ));
                 }
-                return Ok(Value::Str(Arc::from(&s[a..b])));
+                return Ok(Value::Str((&s[a..b]).into()));
             }
             let b_opt = if args.len() == 2 {
                 Some(want_index(&args[1], "string.slice")?)
@@ -1139,7 +1253,7 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             }
             let sa = byte_a.unwrap_or(s.len());
             let sb = byte_b.unwrap_or(s.len());
-            Ok(Value::Str(Arc::from(&s[sa..sb])))
+            Ok(Value::Str((&s[sa..sb]).into()))
         }
         "upper" | "lower" => {
             want(name, args, 0)?;
@@ -1163,6 +1277,17 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                 s.chars()
                     .map(|c| Value::Str(c.to_string().into()))
                     .collect()
+            } else if sep.len() == 1 {
+                let delim = sep.as_bytes()[0];
+                let bytes = s.as_bytes();
+                let mut out = Vec::new();
+                let mut pos = 0usize;
+                while let Some(rel) = crate::stdlib::swar::find_byte(&bytes[pos..], delim) {
+                    out.push(Value::Str(s[pos..pos + rel].into()));
+                    pos += rel + 1;
+                }
+                out.push(Value::Str(s[pos..].into()));
+                out
             } else {
                 s.split(&sep).map(|p| Value::Str(p.into())).collect()
             };
@@ -1433,8 +1558,8 @@ fn option_method(
         "ok_or" => {
             want(name, args, 1)?;
             match o {
-                Some(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
-                None => Ok(Value::Result(Err(Box::new(args[0].clone())))),
+                Some(v) => Ok(Value::ok(v.clone())),
+                None => Ok(Value::err(args[0].clone())),
             }
         }
         "unwrap_or_else" => {
@@ -1487,26 +1612,22 @@ fn result_method(
         "map" => {
             let f = want_fn(name, args, 1)?.clone();
             match r {
-                Ok(v) => Ok(Value::Result(Ok(Box::new(
-                    host.call_callback(&f, vec![v.clone()])?,
-                )))),
-                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+                Ok(v) => Ok(Value::ok(host.call_callback(&f, vec![v.clone()])?)),
+                Err(e) => Ok(Value::err(e.clone())),
             }
         }
         "map_err" => {
             let f = want_fn(name, args, 1)?.clone();
             match r {
-                Ok(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
-                Err(e) => Ok(Value::Result(Err(Box::new(
-                    host.call_callback(&f, vec![e.clone()])?,
-                )))),
+                Ok(v) => Ok(Value::ok(v.clone())),
+                Err(e) => Ok(Value::err(host.call_callback(&f, vec![e.clone()])?)),
             }
         }
         "and_then" => {
             let f = want_fn(name, args, 1)?.clone();
             match r {
                 Ok(v) => host.call_callback(&f, vec![v.clone()]),
-                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+                Err(e) => Ok(Value::err(e.clone())),
             }
         }
         "unwrap_or_else" => {
@@ -1520,8 +1641,8 @@ fn result_method(
             want(name, args, 0)?;
             match r {
                 Ok(Value::Result(inner)) => Ok(Value::Result(inner.clone())),
-                Ok(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
-                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+                Ok(v) => Ok(Value::ok(v.clone())),
+                Err(e) => Ok(Value::err(e.clone())),
             }
         }
         "is_ok" => {
@@ -1695,8 +1816,8 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
     match obj {
         Value::List(d) | Value::VecDyn(d) => {
             let d = d.lock().unwrap();
-            let i = seq::resolve_index(idx, d.items.len(), "index")?;
-            Ok(d.items[i].clone())
+            let i = seq::resolve_index(idx, d.len(), "index")?;
+            Ok(d.as_slice()[i].clone())
         }
         Value::Tuple(t) => {
             let t = t.lock().unwrap();
@@ -1763,9 +1884,23 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
 pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
     match obj {
         Value::List(d) | Value::VecDyn(d) => {
-            let mut d = d.lock().unwrap();
-            let i = seq::resolve_index(idx, d.items.len(), "index")?;
-            d.items[i] = v;
+            let non_scalar = !seq::is_non_recursive_scalar(&v);
+            if non_scalar {
+                seq::track_if_untracked(&v);
+            }
+            let mut need_track = false;
+            {
+                let mut guard = d.lock().unwrap();
+                let i = seq::resolve_index(idx, guard.len(), "index")?;
+                if non_scalar && !guard.gc_tracked {
+                    guard.gc_tracked = true;
+                    need_track = true;
+                }
+                guard.set_item(i, v);
+            }
+            if need_track {
+                crate::value::gc::track(d.clone());
+            }
             Ok(())
         }
         Value::Matrix(m) => {
@@ -1813,7 +1948,22 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
             // `m[k] = v` is documented (docs/DATA_STRUCTURES.md) as an alias
             // for `m.set(k, v)`; MapData::set keeps insertion order and
             // validates the key type itself.
-            d.lock().unwrap().method("set", &[idx.clone(), v])?;
+            let non_scalar = !seq::is_non_recursive_scalar(&v);
+            if non_scalar {
+                seq::track_if_untracked(&v);
+            }
+            let mut need_track = false;
+            {
+                let mut guard = d.lock().unwrap();
+                guard.method("set", &[idx.clone(), v])?;
+                if non_scalar && !guard.gc_tracked {
+                    guard.gc_tracked = true;
+                    need_track = true;
+                }
+            }
+            if need_track {
+                crate::value::gc::track(d.clone());
+            }
             Ok(())
         }
         Value::Tuple(_) => Err("tuple is immutable: index assignment fails".to_string()),
@@ -1836,7 +1986,7 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
 pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
     match v {
         Value::List(d) | Value::VecDyn(d) => {
-            let items = d.lock().unwrap().items.clone();
+            let items = d.lock().unwrap().clone_items();
             Ok(items.iter().map(deep_clone).collect())
         }
         Value::Stack(d) => {
@@ -1939,7 +2089,7 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
 /// Length for the global `len()` function.
 pub fn len_of(v: &Value) -> Result<usize, String> {
     match v {
-        Value::List(d) | Value::VecDyn(d) => Ok(d.lock().unwrap().items.len()),
+        Value::List(d) | Value::VecDyn(d) => Ok(d.lock().unwrap().len()),
         Value::Stack(d) => Ok(d.lock().unwrap().items.len()),
         Value::Queue(d) => Ok(d.lock().unwrap().items.len()),
         Value::Deque(d) => Ok(d.lock().unwrap().items.len()),

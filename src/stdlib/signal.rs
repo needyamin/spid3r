@@ -78,8 +78,9 @@ fn numbers(v: &Value, who: &str) -> Result<Vec<f64>, String> {
         Value::Vector(d) => Ok(d.lock().unwrap().data.clone()),
         Value::List(items) => {
             let items = items.lock().unwrap();
-            let mut out = Vec::with_capacity(items.items.len());
-            for it in items.items.iter() {
+            let slice = items.as_slice();
+            let mut out = Vec::with_capacity(slice.len());
+            for it in slice.iter() {
                 match it {
                     Value::Int(i) => out.push(*i as f64),
                     Value::Float(f) => out.push(*f),

@@ -2,11 +2,17 @@
 //! cross task boundaries; assignment aliases, `clone()` deep-copies.
 
 use std::any::Any;
+#[cfg(not(target_arch = "wasm32"))]
+use std::cell::Cell;
+use std::cell::UnsafeCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_void;
-use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError, TryLockError, TryLockResult};
 
 use crate::ast::{FnProto, Vis};
 use crate::environment::Env;
@@ -15,12 +21,505 @@ pub mod collections;
 pub mod gc;
 use crate::value::gc::GcTrace;
 
-pub type Ref<T> = Arc<Mutex<T>>;
+#[repr(C)]
+struct ThinStrHeader {
+    strong: std::sync::atomic::AtomicUsize,
+    len: usize,
+}
+
+static EMPTY_THIN_STR: ThinStrHeader = ThinStrHeader {
+    strong: std::sync::atomic::AtomicUsize::new(usize::MAX / 2),
+    len: 0,
+};
+
+/// Compact 8-byte atomically reference-counted immutable UTF-8 string.
+/// Stores refcount + length + UTF-8 bytes in one heap allocation (empty string
+/// uses a zero-allocation static sentinel).
+pub struct ThinArcStr {
+    ptr: std::ptr::NonNull<ThinStrHeader>,
+}
+
+// SAFETY: `ThinStrHeader.strong` is mutated only via atomic operations, and
+// the byte slice after the header is immutable for the allocation's lifetime
+// (`EMPTY_THIN_STR` is `'static`).
+unsafe impl Send for ThinArcStr {}
+// SAFETY: Same synchronization and immutability invariant as `Send`.
+unsafe impl Sync for ThinArcStr {}
+
+impl ThinArcStr {
+    #[inline]
+    pub fn empty() -> Self {
+        Self {
+            ptr: std::ptr::NonNull::from(&EMPTY_THIN_STR),
+        }
+    }
+
+    #[inline(always)]
+    fn is_empty_static(&self) -> bool {
+        std::ptr::eq(self.ptr.as_ptr(), &EMPTY_THIN_STR)
+    }
+
+    #[inline]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_str(&self) -> &str {
+        if self.is_empty_static() {
+            return "";
+        }
+        // SAFETY: Non-empty `self.ptr` points to an initialized `ThinStrHeader`
+        // with `strong >= 1` followed by `hdr.len` valid UTF-8 bytes.
+        unsafe {
+            let hdr = self.ptr.as_ref();
+            let data = (self.ptr.as_ptr() as *const u8).add(std::mem::size_of::<ThinStrHeader>());
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, hdr.len))
+        }
+    }
+}
+
+impl Default for ThinArcStr {
+    #[inline]
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl Clone for ThinArcStr {
+    #[inline]
+    fn clone(&self) -> Self {
+        if self.is_empty_static() {
+            return Self { ptr: self.ptr };
+        }
+        // SAFETY: `self.ptr` points to a live allocation whose `strong` refcount >= 1.
+        let prev = unsafe { self.ptr.as_ref().strong.fetch_add(1, Ordering::Relaxed) };
+        if prev >= isize::MAX as usize {
+            std::process::abort();
+        }
+        Self { ptr: self.ptr }
+    }
+}
+
+impl Drop for ThinArcStr {
+    #[inline]
+    fn drop(&mut self) {
+        if self.is_empty_static() {
+            return;
+        }
+        // SAFETY: `self.ptr` was allocated via `std::alloc::alloc` in `From<&str>`
+        // with `strong >= 1`. Acquire fence synchronizes with prior `Release` drops.
+        unsafe {
+            if self.ptr.as_ref().strong.fetch_sub(1, Ordering::Release) != 1 {
+                return;
+            }
+            std::sync::atomic::fence(Ordering::Acquire);
+            let total = std::mem::size_of::<ThinStrHeader>() + self.ptr.as_ref().len;
+            let layout = std::alloc::Layout::from_size_align_unchecked(
+                total,
+                std::mem::align_of::<ThinStrHeader>(),
+            );
+            std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
+        }
+    }
+}
+
+impl std::ops::Deref for ThinArcStr {
+    type Target = str;
+
+    #[inline(always)]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for ThinArcStr {
+    #[inline(always)]
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for ThinArcStr {
+    #[inline(always)]
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for ThinArcStr {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr || self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for ThinArcStr {}
+
+impl PartialEq<str> for ThinArcStr {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for ThinArcStr {
+    #[inline]
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for ThinArcStr {
+    #[inline]
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialOrd for ThinArcStr {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ThinArcStr {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::hash::Hash for ThinArcStr {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl std::fmt::Display for ThinArcStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Debug for ThinArcStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl From<&str> for ThinArcStr {
+    #[inline]
+    fn from(s: &str) -> Self {
+        let len = s.len();
+        if len == 0 {
+            return Self::empty();
+        }
+        let hdr_size = std::mem::size_of::<ThinStrHeader>();
+        let total = hdr_size
+            .checked_add(len)
+            .unwrap_or_else(|| std::process::abort());
+        let layout =
+            std::alloc::Layout::from_size_align(total, std::mem::align_of::<ThinStrHeader>())
+                .unwrap_or_else(|_| std::process::abort());
+        // SAFETY: `total > 0` and alignment is a power of two (`align_of::<ThinStrHeader>()`).
+        let raw = unsafe { std::alloc::alloc(layout) };
+        if raw.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        let hdr = raw as *mut ThinStrHeader;
+        // SAFETY: `raw` is non-null, properly aligned for `ThinStrHeader`, and sized
+        // for `ThinStrHeader` + `len` bytes.
+        unsafe {
+            hdr.write(ThinStrHeader {
+                strong: std::sync::atomic::AtomicUsize::new(1),
+                len,
+            });
+            std::ptr::copy_nonoverlapping(s.as_ptr(), raw.add(hdr_size), len);
+            Self {
+                ptr: std::ptr::NonNull::new_unchecked(hdr),
+            }
+        }
+    }
+}
+
+impl From<String> for ThinArcStr {
+    #[inline]
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<&String> for ThinArcStr {
+    #[inline]
+    fn from(s: &String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<Arc<str>> for ThinArcStr {
+    #[inline]
+    fn from(s: Arc<str>) -> Self {
+        Self::from(s.as_ref())
+    }
+}
+
+impl From<&Arc<str>> for ThinArcStr {
+    #[inline]
+    fn from(s: &Arc<str>) -> Self {
+        Self::from(s.as_ref())
+    }
+}
+
+impl From<Box<str>> for ThinArcStr {
+    #[inline]
+    fn from(s: Box<str>) -> Self {
+        Self::from(s.as_ref())
+    }
+}
+
+impl From<std::borrow::Cow<'_, str>> for ThinArcStr {
+    #[inline]
+    fn from(s: std::borrow::Cow<'_, str>) -> Self {
+        Self::from(s.as_ref())
+    }
+}
+
+impl From<ThinArcStr> for Arc<str> {
+    #[inline]
+    fn from(s: ThinArcStr) -> Self {
+        Arc::from(s.as_str())
+    }
+}
+
+/// Process-unique monotonic thread tag for single-threaded `FastMutex` ownership.
+/// Saturates at `u32::MAX` (never wraps), forcing any thread past `u32::MAX` onto `mt_lock`.
+#[cfg(not(target_arch = "wasm32"))]
+static NEXT_TID: AtomicU32 = AtomicU32::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static CUR_TID: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn current_tid() -> u32 {
+    let tid = CUR_TID.get();
+    if tid != 0 {
+        return tid;
+    }
+    let mut cur = NEXT_TID.load(Ordering::Relaxed);
+    let assigned = loop {
+        if cur == u32::MAX {
+            break u32::MAX;
+        }
+        match NEXT_TID.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break cur,
+            Err(next) => cur = next,
+        }
+    };
+    CUR_TID.set(assigned);
+    assigned
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+const fn current_tid() -> u32 {
+    1
+}
+
+/// Container lock that avoids OS/atomic read-modify-write synchronization while
+/// `!is_multithreaded()` and accessed from the owning thread, falling back cleanly
+/// to `std::sync::Mutex` across `spawn` / cross-thread access.
+pub struct FastMutex<T> {
+    mt_lock: Mutex<()>,
+    owner_tid: u32,
+    st_locked: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+// SAFETY: Access to `data` is exclusively serialized either by the creating
+// thread while `!is_multithreaded()` (guarded against reentrancy by `st_locked`),
+// or by `mt_lock` after calling `mark_multithreaded()` and draining any active ST guard.
+unsafe impl<T: Send> Send for FastMutex<T> {}
+// SAFETY: Same synchronization invariant as `Send`.
+unsafe impl<T: Send> Sync for FastMutex<T> {}
+
+pub struct FastMutexGuard<'a, T> {
+    cell: &'a FastMutex<T>,
+    mt_guard: Option<MutexGuard<'a, ()>>,
+}
+
+impl<T> FastMutex<T> {
+    #[inline]
+    pub fn new(value: T) -> Self {
+        Self {
+            mt_lock: Mutex::new(()),
+            owner_tid: current_tid(),
+            st_locked: AtomicBool::new(false),
+            data: UnsafeCell::new(value),
+        }
+    }
+
+    #[inline(always)]
+    pub fn lock(&self) -> LockResult<FastMutexGuard<'_, T>> {
+        if !is_multithreaded()
+            && self.owner_tid == current_tid()
+            && self.owner_tid != u32::MAX
+            && !self.st_locked.load(Ordering::Relaxed)
+        {
+            self.st_locked.store(true, Ordering::Relaxed);
+            return Ok(FastMutexGuard {
+                cell: self,
+                mt_guard: None,
+            });
+        }
+        self.lock_slow()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn lock_slow(&self) -> LockResult<FastMutexGuard<'_, T>> {
+        if !is_multithreaded() && self.owner_tid != current_tid() {
+            mark_multithreaded();
+        }
+        match self.mt_lock.lock() {
+            Ok(g) => {
+                while self.st_locked.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+                Ok(FastMutexGuard {
+                    cell: self,
+                    mt_guard: Some(g),
+                })
+            }
+            Err(poisoned) => {
+                let g = poisoned.into_inner();
+                while self.st_locked.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+                Err(PoisonError::new(FastMutexGuard {
+                    cell: self,
+                    mt_guard: Some(g),
+                }))
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn try_lock(&self) -> TryLockResult<FastMutexGuard<'_, T>> {
+        if !is_multithreaded() && self.owner_tid == current_tid() && self.owner_tid != u32::MAX {
+            if self.st_locked.load(Ordering::Relaxed) {
+                return Err(TryLockError::WouldBlock);
+            }
+            self.st_locked.store(true, Ordering::Relaxed);
+            return Ok(FastMutexGuard {
+                cell: self,
+                mt_guard: None,
+            });
+        }
+        self.try_lock_slow()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn try_lock_slow(&self) -> TryLockResult<FastMutexGuard<'_, T>> {
+        if !is_multithreaded() && self.owner_tid != current_tid() {
+            mark_multithreaded();
+        }
+        match self.mt_lock.try_lock() {
+            Ok(g) => {
+                if self.st_locked.load(Ordering::Acquire) {
+                    drop(g);
+                    return Err(TryLockError::WouldBlock);
+                }
+                Ok(FastMutexGuard {
+                    cell: self,
+                    mt_guard: Some(g),
+                })
+            }
+            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let g = poisoned.into_inner();
+                if self.st_locked.load(Ordering::Acquire) {
+                    drop(g);
+                    return Err(TryLockError::WouldBlock);
+                }
+                Err(TryLockError::Poisoned(PoisonError::new(FastMutexGuard {
+                    cell: self,
+                    mt_guard: Some(g),
+                })))
+            }
+        }
+    }
+
+    pub fn into_inner(self) -> std::sync::LockResult<T> {
+        Ok(self.data.into_inner())
+    }
+
+    pub fn get_mut(&mut self) -> std::sync::LockResult<&mut T> {
+        Ok(self.data.get_mut())
+    }
+
+    #[inline]
+    pub fn reset_owner_tid(&mut self) {
+        self.owner_tid = current_tid();
+        *self.st_locked.get_mut() = false;
+    }
+}
+
+impl<T: Default> Default for FastMutex<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for FastMutex<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.try_lock() {
+            Ok(g) => f.debug_struct("FastMutex").field("data", &*g).finish(),
+            Err(_) => f
+                .debug_struct("FastMutex")
+                .field("data", &"<locked>")
+                .finish(),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for FastMutexGuard<'_, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        // SAFETY: Guard uniquely holds either ST lock or MT mutex after draining ST.
+        unsafe { &*self.cell.data.get() }
+    }
+}
+
+impl<T> std::ops::DerefMut for FastMutexGuard<'_, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: Guard uniquely holds either ST lock or MT mutex after draining ST.
+        unsafe { &mut *self.cell.data.get() }
+    }
+}
+
+impl<T> Drop for FastMutexGuard<'_, T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if self.mt_guard.is_none() {
+            self.cell.st_locked.store(false, Ordering::Release);
+        }
+    }
+}
+
+pub type Ref<T> = Arc<FastMutex<T>>;
 
 /// Flipped permanently to `true` when the first background task is spawned
 /// (`Scheduler::spawn_job` / `spid3r_spawn`). While `false`, the process is
-/// single-threaded and `lock_ref` uses `try_lock()` first to stay on the
-/// uncontended fast path (Track 3 RT-1).
+/// single-threaded and `FastMutex` uses its lock-free thread-local fast path.
 #[cfg(not(target_arch = "wasm32"))]
 static MULTITHREADED_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -40,9 +539,9 @@ pub fn mark_multithreaded() {}
 
 /// Returns `true` once any background task has been spawned.
 #[cfg(not(target_arch = "wasm32"))]
-#[inline]
+#[inline(always)]
 pub fn is_multithreaded() -> bool {
-    MULTITHREADED_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+    MULTITHREADED_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Returns `false` unconditionally on single-threaded `wasm32-unknown-unknown`
@@ -53,41 +552,23 @@ pub const fn is_multithreaded() -> bool {
     false
 }
 
-/// Lock a `Ref<T>` (`Arc<Mutex<T>>`), preferring the uncontended `try_lock()`
-/// fast path while the process is single-threaded.
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
-    if !is_multithreaded() {
-        if let Ok(g) = r.try_lock() {
-            return g;
-        }
-    }
-    r.lock().unwrap()
-}
-
-/// Lock a `Ref<T>` on single-threaded `wasm32-unknown-unknown`: bypasses the
-/// `MULTITHREADED_ACTIVE` atomic load and redundant `try_lock()` check since
-/// `std::sync::Mutex` on `wasm32` uses Rust's lock-free `no_threads` cell
-/// (Track 6 WASM-1).
-#[cfg(target_arch = "wasm32")]
-#[inline]
-pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
-    r.lock().unwrap()
+/// Lock a `Ref<T>` (`Arc<FastMutex<T>>`), using the lock-free fast path while single-threaded.
+#[inline(always)]
+pub fn lock_ref<T>(r: &Ref<T>) -> FastMutexGuard<'_, T> {
+    r.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn new_ref<T: gc::GcTrace + Send + 'static>(v: T) -> Ref<T> {
-    gc::track(Arc::new(Mutex::new(v)))
+    gc::track(Arc::new(FastMutex::new(v)))
 }
 
 pub fn new_untracked_ref<T>(v: T) -> Ref<T> {
-    Arc::new(Mutex::new(v))
+    Arc::new(FastMutex::new(v))
 }
 
 /// A captured variable for the bytecode VM: a heap cell shared by an open
-/// closure and its defining frame. Because it is `Arc<Mutex<_>>` it is `Send`
-/// and survives after the defining frame returns (and across spawned tasks).
-pub type UpvalueCell = Arc<Mutex<Value>>;
+/// closure and its defining frame.
+pub type UpvalueCell = Arc<FastMutex<Value>>;
 
 impl GcTrace for Value {
     /// A capture cell (`new_ref::<Value>`) holds exactly one value: emit it so
@@ -129,7 +610,7 @@ pub struct VmFunc {
     /// export the same function name without one shadowing the other.
     /// `None` on prototypes built before the VM fills it in (the compiler's
     /// and the bytecode reader's paths); the VM then uses its current map.
-    pub globals: Option<Arc<Mutex<HashMap<String, Value>>>>,
+    pub globals: Option<Ref<HashMap<String, Value>>>,
     /// Local names and live ranges, for the debugger. Empty for a function
     /// that came from a `.matrixc` artifact (the format carries no source).
     pub debug_locals: Vec<crate::vm::bytecode::DebugLocal>,
@@ -267,7 +748,7 @@ pub enum MapKey {
     Null,
     Bool(bool),
     Int(i64),
-    Str(Arc<str>),
+    Str(crate::value::collections::intern::KeyStr),
 }
 
 impl MapKey {
@@ -276,7 +757,7 @@ impl MapKey {
             MapKey::Null => "null".to_string(),
             MapKey::Bool(b) => b.to_string(),
             MapKey::Int(i) => i.to_string(),
-            MapKey::Str(s) => s.to_string(),
+            MapKey::Str(s) => s.as_str().to_string(),
         }
     }
 }
@@ -287,7 +768,9 @@ pub fn as_map_key(v: &Value) -> Result<MapKey, String> {
         Value::Null => Ok(MapKey::Null),
         Value::Bool(b) => Ok(MapKey::Bool(*b)),
         Value::Int(i) => Ok(MapKey::Int(*i)),
-        Value::Str(s) => Ok(MapKey::Str(s.clone())),
+        Value::Str(s) => Ok(MapKey::Str(
+            crate::value::collections::intern::KeyStr::Thin(s.clone()),
+        )),
         other => Err(format!(
             "{} is not a valid key; keys must be null, bool, int, or string",
             type_name(other)
@@ -301,7 +784,7 @@ pub fn key_to_value(k: &MapKey) -> Value {
         MapKey::Null => Value::Null,
         MapKey::Bool(b) => Value::Bool(*b),
         MapKey::Int(i) => Value::Int(*i),
-        MapKey::Str(s) => Value::Str(s.clone()),
+        MapKey::Str(s) => Value::Str(s.to_thin_arc_str()),
     }
 }
 
@@ -440,6 +923,8 @@ impl ValueV2 {
     pub const TAG_FLOAT: u64 = 3;
     pub const TAG_HEAP: u64 = 4;
     pub const TAG_ROPE: u64 = 5;
+    /// Phase 2: rope known to contain strictly ASCII bytes (`char_len == byte_len`).
+    pub const TAG_ROPE_ASCII: u64 = 6;
     /// Low byte `16..=31` in `tag` encodes an inline UTF-8 Small String Optimization
     /// (SSO) slice of `0..=15` bytes packed into bytes `1..16` of `(tag, payload)`.
     pub const TAG_SSO_BASE: u64 = 16;
@@ -490,8 +975,16 @@ impl ValueV2 {
     }
 
     #[inline]
+    pub const fn from_rope_ascii(epoch: u32, byte_len: u32) -> Self {
+        Self {
+            tag: Self::TAG_ROPE_ASCII,
+            payload: ((epoch as u64) << 32) | (byte_len as u64),
+        }
+    }
+
+    #[inline]
     pub const fn is_rope(self) -> bool {
-        self.tag == Self::TAG_ROPE
+        self.tag == Self::TAG_ROPE || self.tag == Self::TAG_ROPE_ASCII
     }
 
     #[inline]
@@ -680,10 +1173,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// Strings are `Arc<str>`: cloning a `Value::Str` (which happens on every
-    /// variable read, name lookup, and collection get) is a refcount bump
-    /// instead of a heap allocation + copy.
-    Str(std::sync::Arc<str>),
+    /// Strings are `ThinArcStr` (8-byte refcounted pointer): cloning a
+    /// `Value::Str` is an atomic refcount bump and keeps `Value` 16 bytes wide.
+    Str(ThinArcStr),
     Null,
 
     List(Ref<crate::value::collections::VecData>),
@@ -711,7 +1203,7 @@ pub enum Value {
     Bag(Ref<crate::value::collections::BagData>),
     RefBox(Ref<crate::value::collections::RefBoxData>),
     Option(Option<Box<Value>>),
-    Result(std::result::Result<Box<Value>, Box<Value>>),
+    Result(Box<std::result::Result<Value, Value>>),
 
     Function(Arc<FunctionData>),
     Native(Arc<NativeFn>),
@@ -740,13 +1232,25 @@ pub enum Value {
     /// A type-erased weak reference (`weak(x)` / `deref(w)`): the manual
     /// escape hatch for reference cycles, which would otherwise leak (the
     /// value model is reference-counted; see ROADMAP "Known limitations").
-    Weak(Arc<Mutex<WeakCell>>),
+    Weak(Ref<WeakCell>),
     /// A function compiled to native machine code (LLVM backend).
     Cfn(Arc<CompiledFn>),
     /// A class compiled to native machine code (LLVM backend).
     CClass(Arc<CompiledClass>),
     /// An instance of a natively compiled class.
     CInstance(Ref<CompiledInstanceData>),
+}
+
+impl Value {
+    #[inline]
+    pub fn ok(v: Value) -> Self {
+        Value::Result(Box::new(Ok(v)))
+    }
+
+    #[inline]
+    pub fn err(v: Value) -> Self {
+        Value::Result(Box::new(Err(v)))
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -771,7 +1275,7 @@ pub fn is_callable(v: &Value) -> bool {
 }
 
 /// Stable pointer identity for reference types (used by `==`).
-pub fn ptr_id<T>(rc: &Arc<Mutex<T>>) -> u64 {
+pub fn ptr_id<T>(rc: &Arc<FastMutex<T>>) -> u64 {
     Arc::as_ptr(rc) as usize as u64
 }
 
@@ -823,7 +1327,7 @@ pub struct WeakCell {
 }
 
 /// Erase a reference-counted container into a `dyn Any` trait object.
-fn erase<T: Any + Send>(r: &Arc<Mutex<T>>) -> Arc<dyn Any + Send + Sync> {
+fn erase<T: Any + Send>(r: &Arc<FastMutex<T>>) -> Arc<dyn Any + Send + Sync> {
     r.clone()
 }
 
@@ -961,7 +1465,7 @@ pub fn weak_alive(v: &Value) -> Result<bool, String> {
 
 fn downcast_cell<T: Any + Send + Sync>(
     any: &Arc<dyn Any + Send + Sync>,
-) -> Result<Arc<Mutex<T>>, String> {
+) -> Result<Arc<FastMutex<T>>, String> {
     match Arc::downcast(any.clone()) {
         Ok(arc) => Ok(arc),
         Err(_) => Err("weak reference target has an unexpected type (internal error)".to_string()),
@@ -1204,7 +1708,7 @@ fn values_equal_inner(
             (None, None) => true,
             _ => false,
         },
-        (Result(x), Result(y)) => match (x, y) {
+        (Result(x), Result(y)) => match (x.as_ref(), y.as_ref()) {
             (Ok(x), Ok(y)) => values_equal_inner(x, y, seen),
             (Err(x), Err(y)) => values_equal_inner(x, y, seen),
             _ => false,
@@ -1213,8 +1717,8 @@ fn values_equal_inner(
         | (VecDyn(x), VecDyn(y))
         | (List(x), VecDyn(y))
         | (VecDyn(x), List(y)) => {
-            let xi = x.lock().unwrap().items.clone();
-            let yi = y.lock().unwrap().items.clone();
+            let xi = x.lock().unwrap().clone_items();
+            let yi = y.lock().unwrap().clone_items();
             xi.len() == yi.len()
                 && xi
                     .iter()
@@ -1553,7 +2057,7 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         Value::Null => "null".to_string(),
         Value::Weak(_) => "weak".to_string(),
         Value::List(d) | Value::VecDyn(d) => {
-            let items = d.lock().unwrap().items.clone();
+            let items = d.lock().unwrap().clone_items();
             format!(
                 "[{}]",
                 items
@@ -1781,7 +2285,7 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
             Some(v) => format!("some({})", display_value_inner(v, seen)),
             None => "none".to_string(),
         },
-        Value::Result(r) => match r {
+        Value::Result(r) => match r.as_ref() {
             Ok(v) => format!("ok({})", display_value_inner(v, seen)),
             Err(v) => format!("err({})", display_value_inner(v, seen)),
         },
@@ -1908,19 +2412,19 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Null => v.clone(),
         Value::Weak(_) => v.clone(),
         Value::List(d) => {
-            let items = d.lock().unwrap().items.clone();
+            let items = d.lock().unwrap().clone_items();
             let nd = new_ref(c::VecData::default());
             register!(Value::List(nd.clone()));
             let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
-            nd.lock().unwrap().items = items;
+            nd.lock().unwrap().set_items(items);
             Value::List(nd)
         }
         Value::VecDyn(d) => {
-            let items = d.lock().unwrap().items.clone();
+            let items = d.lock().unwrap().clone_items();
             let nd = new_ref(c::VecData::default());
             register!(Value::VecDyn(nd.clone()));
             let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
-            nd.lock().unwrap().items = items;
+            nd.lock().unwrap().set_items(items);
             Value::VecDyn(nd)
         }
         Value::Stack(d) => {
@@ -1987,7 +2491,11 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         Value::Map(d) => {
             let (entries, namespace, frozen) = {
                 let guard = d.lock().unwrap();
-                (guard.entries.clone(), guard.namespace, guard.frozen.clone())
+                (
+                    guard.entries.clone(),
+                    guard.namespace,
+                    guard.frozen.as_deref().cloned().unwrap_or_default(),
+                )
             };
             let nd = new_ref(c::MapData::default());
             register!(Value::Map(nd.clone()));
@@ -2250,9 +2758,78 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         | Value::AtomicInt(_)
         | Value::Database(_) => v.clone(),
         Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, memo)))),
-        Value::Result(r) => Value::Result(match r {
-            Ok(v) => Ok(Box::new(deep_clone_inner(v, memo))),
-            Err(v) => Err(Box::new(deep_clone_inner(v, memo))),
-        }),
+        Value::Result(r) => Value::Result(Box::new(match r.as_ref() {
+            Ok(v) => Ok(deep_clone_inner(v, memo)),
+            Err(v) => Err(deep_clone_inner(v, memo)),
+        })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_layout_is_16_bytes() {
+        assert_eq!(std::mem::size_of::<ThinArcStr>(), 8);
+        assert_eq!(std::mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn thin_arc_str_semantics_and_concurrency() {
+        let e1 = ThinArcStr::from("");
+        let e2 = ThinArcStr::empty();
+        assert!(e1.is_empty());
+        assert_eq!(e1.as_str(), "");
+        assert!(e1.ptr_eq(&e2));
+        assert_eq!(e1.clone(), e2);
+
+        let u = ThinArcStr::from("hello 🌍 café");
+        assert_eq!(u.as_str(), "hello 🌍 café");
+        let u2 = u.clone();
+        assert!(u.ptr_eq(&u2));
+        assert_eq!(u, u2);
+        assert_ne!(u, e1);
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let c = u.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..200 {
+                    let c2 = c.clone();
+                    assert_eq!(c2.as_str(), "hello 🌍 café");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn fast_mutex_single_threaded_reentrancy_and_multithreaded_stress() {
+        let cell = Arc::new(FastMutex::new(10i64));
+        {
+            let mut g = cell.lock().unwrap();
+            *g += 5;
+            assert!(matches!(cell.try_lock(), Err(TryLockError::WouldBlock)));
+        }
+        assert_eq!(*cell.lock().unwrap(), 15);
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = cell.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..500 {
+                    let mut g = c.lock().unwrap();
+                    *g += 1;
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(is_multithreaded());
+        assert_eq!(*cell.lock().unwrap(), 15 + 8 * 500);
     }
 }

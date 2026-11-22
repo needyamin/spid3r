@@ -1,0 +1,2675 @@
+{
+  "schema_version": 2,
+  "generated_utc": "2026-11-21T19:51:52+00:00",
+  "status": "ok",
+  "config": {
+    "enabled": true,
+    "repeats": 7,
+    "include_windows": true,
+    "include_native": true,
+    "include_references": true,
+    "write_sources": true,
+    "timeout_s": 300,
+    "build_timeout_s": 900,
+    "workloads": [
+      "prime",
+      "json",
+      "map",
+      "text",
+      "matmul"
+    ]
+  },
+  "config_meta": {
+    "constants_pinned": true,
+    "prime_n": 50000,
+    "json_rows": 200,
+    "json_rounds": 600,
+    "map_keys": 64,
+    "map_rounds": 100000,
+    "text_rows": 50000,
+    "matmul_n": 128,
+    "repeats": 7,
+    "runtime_environment": "windows",
+    "runtime_environment_label": "Host (installed runtimes, client-only)",
+    "include_windows": true
+  },
+  "environment": {
+    "runtime_environment": "Host (installed runtimes, client-only)",
+    "comparison_sources": "installed host toolchains",
+    "detected_modules": [
+      "matrix",
+      "python",
+      "node",
+      "php",
+      "rust"
+    ],
+    "platform": "win32",
+    "os": "Windows (11)",
+    "os_build": "Windows-11-10.0.26300-SP0",
+    "cpu_model": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "cpu_count": 20,
+    "python_runner": "3.15.0",
+    "proc_metrics": "measured per variant (proc_metrics_method field)",
+    "spid3r": "1.1.1",
+    "spid3r_executable": "c:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.EXE",
+    "php": "8.3.33",
+    "php_executable": "C:\\Users\\needyamin\\AppData\\Local\\Microsoft\\WinGet\\Packages\\PHP.PHP.8.3_Microsoft.Winget.Source_8wekyb3d8bbwe\\php.EXE",
+    "python": "3.15.0",
+    "python_executable": "C:\\Users\\needyamin\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+    "node": "v26.11.1",
+    "node_executable": "C:\\Program Files\\nodejs\\node.EXE",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "rustc_executable": "C:\\Users\\needyamin\\.cargo\\bin\\rustc.EXE",
+    "java": "not available",
+    "javac": "not available",
+    "kotlinc": "not available",
+    "gcc": "not available",
+    "gpp": "not available",
+    "clang": "not available",
+    "clangpp": "not available",
+    "dotnet": "not available",
+    "go": "not available",
+    "ruby": "not available",
+    "swiftc": "not available",
+    "tsc": "not available"
+  },
+  "workloads": {
+    "prime": {
+      "id": "A",
+      "title": "Prime counting (CPU / integer loops)",
+      "constants": "N = 50,000 integers",
+      "description": "Trial-division prime counter with a summed checksum. Pure interpreter loop with no native helpers.",
+      "expected_checksum": "RESULT 5133 121013308",
+      "verified": true,
+      "variants": 9,
+      "rows": [
+        {
+          "key": "spid3r_native",
+          "runtime": "Spid3r 1.1.1 native --release",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 1.0,
+          "compute_min_ms": 1.0,
+          "compute_max_ms": 1.0,
+          "wall_ms": 8.73,
+          "compute_runs_ms": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 1.0,
+            "mean_ms": 1.0,
+            "stdev_ms": 0.0,
+            "cv_pct": 0.0,
+            "q1_ms": 1.0,
+            "q3_ms": 1.0,
+            "iqr_ms": 0.0,
+            "min_ms": 1.0,
+            "max_ms": 1.0,
+            "mean_ci95": [
+              1.0,
+              1.0
+            ],
+            "median_ci95": [
+              1.0,
+              1.0
+            ],
+            "flags": [
+              "timer floor (median 1.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 6864896,
+          "peak_rss_min_bytes": 6840320,
+          "peak_rss_max_bytes": 6889472,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "rust",
+          "runtime": "Rust 1.99.1 -O native",
+          "group": "reference",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 1.361,
+          "compute_min_ms": 1.355,
+          "compute_max_ms": 1.511,
+          "wall_ms": 5.31,
+          "compute_runs_ms": [
+            1.363,
+            1.511,
+            1.361,
+            1.359,
+            1.355,
+            1.363,
+            1.36
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 1.361,
+            "mean_ms": 1.382,
+            "stdev_ms": 0.057,
+            "cv_pct": 4.13,
+            "q1_ms": 1.36,
+            "q3_ms": 1.363,
+            "iqr_ms": 0.003,
+            "min_ms": 1.355,
+            "max_ms": 1.511,
+            "mean_ci95": [
+              1.329,
+              1.435
+            ],
+            "median_ci95": [
+              1.359,
+              1.363
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 4526080,
+          "peak_rss_min_bytes": 4526080,
+          "peak_rss_max_bytes": 5033984,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "node",
+          "runtime": "Node 26",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 1.835,
+          "compute_min_ms": 1.802,
+          "compute_max_ms": 1.933,
+          "wall_ms": 44.7,
+          "compute_runs_ms": [
+            1.933,
+            1.802,
+            1.81,
+            1.835,
+            1.845,
+            1.851,
+            1.811
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 1.835,
+            "mean_ms": 1.841,
+            "stdev_ms": 0.045,
+            "cv_pct": 2.43,
+            "q1_ms": 1.81,
+            "q3_ms": 1.848,
+            "iqr_ms": 0.037,
+            "min_ms": 1.802,
+            "max_ms": 1.933,
+            "mean_ci95": [
+              1.8,
+              1.882
+            ],
+            "median_ci95": [
+              1.81,
+              1.851
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 40538112,
+          "peak_rss_min_bytes": 40411136,
+          "peak_rss_max_bytes": 40726528,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_tw",
+          "runtime": "Spid3r 1.1.1 tree-walk",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 8.0,
+          "compute_min_ms": 8.0,
+          "compute_max_ms": 9.0,
+          "wall_ms": 23.3,
+          "compute_runs_ms": [
+            8.0,
+            8.0,
+            9.0,
+            9.0,
+            9.0,
+            8.0,
+            8.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 8.0,
+            "mean_ms": 8.429,
+            "stdev_ms": 0.535,
+            "cv_pct": 6.34,
+            "q1_ms": 8.0,
+            "q3_ms": 9.0,
+            "iqr_ms": 1.0,
+            "min_ms": 8.0,
+            "max_ms": 9.0,
+            "mean_ci95": [
+              7.934,
+              8.923
+            ],
+            "median_ci95": [
+              8.0,
+              9.0
+            ],
+            "flags": [
+              "timer floor (median 8.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11792384,
+          "peak_rss_min_bytes": 11755520,
+          "peak_rss_max_bytes": 11845632,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm",
+          "runtime": "Spid3r 1.1.1 VM",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 8.0,
+          "compute_min_ms": 8.0,
+          "compute_max_ms": 9.0,
+          "wall_ms": 23.39,
+          "compute_runs_ms": [
+            9.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 8.0,
+            "mean_ms": 8.143,
+            "stdev_ms": 0.378,
+            "cv_pct": 4.64,
+            "q1_ms": 8.0,
+            "q3_ms": 8.0,
+            "iqr_ms": 0.0,
+            "min_ms": 8.0,
+            "max_ms": 9.0,
+            "mean_ci95": [
+              7.793,
+              8.492
+            ],
+            "median_ci95": [
+              8.0,
+              8.0
+            ],
+            "flags": [
+              "timer floor (median 8.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11800576,
+          "peak_rss_min_bytes": 11792384,
+          "peak_rss_max_bytes": 11816960,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_bytecode",
+          "runtime": "Spid3r 1.1.1 bytecode exec",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 8.0,
+          "compute_min_ms": 8.0,
+          "compute_max_ms": 9.0,
+          "wall_ms": 21.11,
+          "compute_runs_ms": [
+            8.0,
+            8.0,
+            9.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 8.0,
+            "mean_ms": 8.143,
+            "stdev_ms": 0.378,
+            "cv_pct": 4.64,
+            "q1_ms": 8.0,
+            "q3_ms": 8.0,
+            "iqr_ms": 0.0,
+            "min_ms": 8.0,
+            "max_ms": 9.0,
+            "mean_ci95": [
+              7.793,
+              8.492
+            ],
+            "median_ci95": [
+              8.0,
+              8.0
+            ],
+            "flags": [
+              "timer floor (median 8.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11132928,
+          "peak_rss_min_bytes": 11112448,
+          "peak_rss_max_bytes": 11161600,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "php",
+          "runtime": "PHP 8.3",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 16.943,
+          "compute_min_ms": 16.78,
+          "compute_max_ms": 17.619,
+          "wall_ms": 43.88,
+          "compute_runs_ms": [
+            17.539,
+            17.619,
+            16.78,
+            16.943,
+            16.835,
+            16.988,
+            16.871
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 16.943,
+            "mean_ms": 17.082,
+            "stdev_ms": 0.347,
+            "cv_pct": 2.03,
+            "q1_ms": 16.853,
+            "q3_ms": 17.264,
+            "iqr_ms": 0.41,
+            "min_ms": 16.78,
+            "max_ms": 17.619,
+            "mean_ci95": [
+              16.761,
+              17.403
+            ],
+            "median_ci95": [
+              16.835,
+              17.539
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 15589376,
+          "peak_rss_min_bytes": 15585280,
+          "peak_rss_max_bytes": 15593472,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "python",
+          "runtime": "Python 3.15",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 23.914,
+          "compute_min_ms": 23.535,
+          "compute_max_ms": 24.802,
+          "wall_ms": 40.01,
+          "compute_runs_ms": [
+            23.993,
+            24.09,
+            23.535,
+            23.914,
+            23.556,
+            24.802,
+            23.609
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 23.914,
+            "mean_ms": 23.928,
+            "stdev_ms": 0.445,
+            "cv_pct": 1.86,
+            "q1_ms": 23.583,
+            "q3_ms": 24.041,
+            "iqr_ms": 0.459,
+            "min_ms": 23.535,
+            "max_ms": 24.802,
+            "mean_ci95": [
+              23.517,
+              24.34
+            ],
+            "median_ci95": [
+              23.556,
+              24.09
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11829248,
+          "peak_rss_min_bytes": 11829248,
+          "peak_rss_max_bytes": 11833344,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm_noopt",
+          "runtime": "Spid3r 1.1.1 VM --no-opt",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 5133 121013308",
+          "compute_ms": 125.0,
+          "compute_min_ms": 125.0,
+          "compute_max_ms": 126.0,
+          "wall_ms": 140.85,
+          "compute_runs_ms": [
+            125.0,
+            125.0,
+            125.0,
+            125.0,
+            126.0,
+            125.0,
+            126.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 125.0,
+            "mean_ms": 125.286,
+            "stdev_ms": 0.488,
+            "cv_pct": 0.39,
+            "q1_ms": 125.0,
+            "q3_ms": 125.5,
+            "iqr_ms": 0.5,
+            "min_ms": 125.0,
+            "max_ms": 126.0,
+            "mean_ci95": [
+              124.834,
+              125.737
+            ],
+            "median_ci95": [
+              125.0,
+              126.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11730944,
+          "peak_rss_min_bytes": 11689984,
+          "peak_rss_max_bytes": 11743232,
+          "cpu_user_s": 0.125,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        }
+      ]
+    },
+    "json": {
+      "id": "B",
+      "title": "JSON API round-trip (serialize / parse)",
+      "constants": "200 rows x 600 rounds",
+      "description": "Serialize a 200-record array, parse it back and sum the parsed fields. Spid3r uses json_write/json_parse, PHP json_encode/json_decode, Python json.dumps/json.loads. All produce byte-identical 9,163-character JSON.",
+      "expected_checksum": "RESULT 249868800 9163",
+      "verified": true,
+      "variants": 8,
+      "rows": [
+        {
+          "key": "node",
+          "runtime": "Node 26",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 18.118,
+          "compute_min_ms": 17.747,
+          "compute_max_ms": 18.73,
+          "wall_ms": 61.1,
+          "compute_runs_ms": [
+            17.881,
+            17.747,
+            18.122,
+            18.73,
+            17.88,
+            18.344,
+            18.118
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 18.118,
+            "mean_ms": 18.117,
+            "stdev_ms": 0.336,
+            "cv_pct": 1.85,
+            "q1_ms": 17.88,
+            "q3_ms": 18.233,
+            "iqr_ms": 0.353,
+            "min_ms": 17.747,
+            "max_ms": 18.73,
+            "mean_ci95": [
+              17.807,
+              18.428
+            ],
+            "median_ci95": [
+              17.88,
+              18.344
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 43237376,
+          "peak_rss_min_bytes": 43184128,
+          "peak_rss_max_bytes": 43278336,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "python",
+          "runtime": "Python 3.15",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 56.673,
+          "compute_min_ms": 55.842,
+          "compute_max_ms": 59.985,
+          "wall_ms": 79.57,
+          "compute_runs_ms": [
+            59.985,
+            56.673,
+            56.091,
+            57.223,
+            57.312,
+            56.593,
+            55.842
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 56.673,
+            "mean_ms": 57.103,
+            "stdev_ms": 1.38,
+            "cv_pct": 2.42,
+            "q1_ms": 56.342,
+            "q3_ms": 57.267,
+            "iqr_ms": 0.925,
+            "min_ms": 55.842,
+            "max_ms": 59.985,
+            "mean_ci95": [
+              55.827,
+              58.379
+            ],
+            "median_ci95": [
+              56.091,
+              57.312
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 13561856,
+          "peak_rss_min_bytes": 13557760,
+          "peak_rss_max_bytes": 13561856,
+          "cpu_user_s": 0.0625,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_native",
+          "runtime": "Spid3r 1.1.1 native --release",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 65.0,
+          "compute_min_ms": 64.0,
+          "compute_max_ms": 65.0,
+          "wall_ms": 73.53,
+          "compute_runs_ms": [
+            64.0,
+            65.0,
+            64.0,
+            65.0,
+            64.0,
+            65.0,
+            65.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 65.0,
+            "mean_ms": 64.571,
+            "stdev_ms": 0.535,
+            "cv_pct": 0.83,
+            "q1_ms": 64.0,
+            "q3_ms": 65.0,
+            "iqr_ms": 1.0,
+            "min_ms": 64.0,
+            "max_ms": 65.0,
+            "mean_ci95": [
+              64.077,
+              65.066
+            ],
+            "median_ci95": [
+              64.0,
+              65.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 10960896,
+          "peak_rss_min_bytes": 10936320,
+          "peak_rss_max_bytes": 11157504,
+          "cpu_user_s": 0.0625,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "php",
+          "runtime": "PHP 8.3",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 71.719,
+          "compute_min_ms": 70.693,
+          "compute_max_ms": 72.197,
+          "wall_ms": 97.77,
+          "compute_runs_ms": [
+            72.197,
+            70.693,
+            72.02,
+            71.719,
+            71.492,
+            71.022,
+            71.74
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 71.719,
+            "mean_ms": 71.555,
+            "stdev_ms": 0.536,
+            "cv_pct": 0.75,
+            "q1_ms": 71.257,
+            "q3_ms": 71.88,
+            "iqr_ms": 0.623,
+            "min_ms": 70.693,
+            "max_ms": 72.197,
+            "mean_ci95": [
+              71.059,
+              72.05
+            ],
+            "median_ci95": [
+              71.022,
+              72.02
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 15990784,
+          "peak_rss_min_bytes": 15986688,
+          "peak_rss_max_bytes": 15990784,
+          "cpu_user_s": 0.0625,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_tw",
+          "runtime": "Spid3r 1.1.1 tree-walk",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 93.0,
+          "compute_min_ms": 91.0,
+          "compute_max_ms": 95.0,
+          "wall_ms": 108.75,
+          "compute_runs_ms": [
+            93.0,
+            93.0,
+            93.0,
+            95.0,
+            94.0,
+            91.0,
+            94.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 93.0,
+            "mean_ms": 93.286,
+            "stdev_ms": 1.254,
+            "cv_pct": 1.34,
+            "q1_ms": 93.0,
+            "q3_ms": 94.0,
+            "iqr_ms": 1.0,
+            "min_ms": 91.0,
+            "max_ms": 95.0,
+            "mean_ci95": [
+              92.126,
+              94.445
+            ],
+            "median_ci95": [
+              93.0,
+              94.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12263424,
+          "peak_rss_min_bytes": 12197888,
+          "peak_rss_max_bytes": 12333056,
+          "cpu_user_s": 0.0781,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm",
+          "runtime": "Spid3r 1.1.1 VM",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 93.0,
+          "compute_min_ms": 92.0,
+          "compute_max_ms": 94.0,
+          "wall_ms": 109.4,
+          "compute_runs_ms": [
+            94.0,
+            94.0,
+            92.0,
+            93.0,
+            92.0,
+            94.0,
+            93.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 93.0,
+            "mean_ms": 93.143,
+            "stdev_ms": 0.9,
+            "cv_pct": 0.97,
+            "q1_ms": 92.5,
+            "q3_ms": 94.0,
+            "iqr_ms": 1.5,
+            "min_ms": 92.0,
+            "max_ms": 94.0,
+            "mean_ci95": [
+              92.311,
+              93.975
+            ],
+            "median_ci95": [
+              92.0,
+              94.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12226560,
+          "peak_rss_min_bytes": 12132352,
+          "peak_rss_max_bytes": 12251136,
+          "cpu_user_s": 0.0938,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_bytecode",
+          "runtime": "Spid3r 1.1.1 bytecode exec",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 93.0,
+          "compute_min_ms": 92.0,
+          "compute_max_ms": 99.0,
+          "wall_ms": 106.37,
+          "compute_runs_ms": [
+            92.0,
+            94.0,
+            93.0,
+            93.0,
+            93.0,
+            99.0,
+            93.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 93.0,
+            "mean_ms": 93.857,
+            "stdev_ms": 2.34,
+            "cv_pct": 2.49,
+            "q1_ms": 93.0,
+            "q3_ms": 93.5,
+            "iqr_ms": 0.5,
+            "min_ms": 92.0,
+            "max_ms": 99.0,
+            "mean_ci95": [
+              91.693,
+              96.021
+            ],
+            "median_ci95": [
+              93.0,
+              94.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11599872,
+          "peak_rss_min_bytes": 11472896,
+          "peak_rss_max_bytes": 11677696,
+          "cpu_user_s": 0.0781,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm_noopt",
+          "runtime": "Spid3r 1.1.1 VM --no-opt",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 249868800 9163",
+          "compute_ms": 95.0,
+          "compute_min_ms": 93.0,
+          "compute_max_ms": 96.0,
+          "wall_ms": 110.72,
+          "compute_runs_ms": [
+            95.0,
+            96.0,
+            94.0,
+            95.0,
+            96.0,
+            96.0,
+            93.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 95.0,
+            "mean_ms": 95.0,
+            "stdev_ms": 1.155,
+            "cv_pct": 1.22,
+            "q1_ms": 94.5,
+            "q3_ms": 96.0,
+            "iqr_ms": 1.5,
+            "min_ms": 93.0,
+            "max_ms": 96.0,
+            "mean_ci95": [
+              93.932,
+              96.068
+            ],
+            "median_ci95": [
+              94.0,
+              96.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12161024,
+          "peak_rss_min_bytes": 12120064,
+          "peak_rss_max_bytes": 12333056,
+          "cpu_user_s": 0.0625,
+          "cpu_kernel_s": 0.0469,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        }
+      ]
+    },
+    "map": {
+      "id": "C",
+      "title": "String-keyed map lookups (routing / session)",
+      "constants": "64 keys x 100,000 lookups",
+      "description": "Build a 64-entry string-keyed table, then do 100,000 lookups with a freshly constructed key each time. Mirrors route / config / session lookups.",
+      "expected_checksum": "RESULT 44432313 100000",
+      "verified": true,
+      "variants": 9,
+      "rows": [
+        {
+          "key": "node",
+          "runtime": "Node 26",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 1.637,
+          "compute_min_ms": 1.588,
+          "compute_max_ms": 1.747,
+          "wall_ms": 42.96,
+          "compute_runs_ms": [
+            1.747,
+            1.637,
+            1.588,
+            1.615,
+            1.655,
+            1.634,
+            1.644
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 1.637,
+            "mean_ms": 1.646,
+            "stdev_ms": 0.05,
+            "cv_pct": 3.02,
+            "q1_ms": 1.624,
+            "q3_ms": 1.649,
+            "iqr_ms": 0.025,
+            "min_ms": 1.588,
+            "max_ms": 1.747,
+            "mean_ci95": [
+              1.6,
+              1.692
+            ],
+            "median_ci95": [
+              1.615,
+              1.655
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 40583168,
+          "peak_rss_min_bytes": 40484864,
+          "peak_rss_max_bytes": 40660992,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_native",
+          "runtime": "Spid3r 1.1.1 native --release",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 3.0,
+          "compute_min_ms": 3.0,
+          "compute_max_ms": 3.0,
+          "wall_ms": 10.97,
+          "compute_runs_ms": [
+            3.0,
+            3.0,
+            3.0,
+            3.0,
+            3.0,
+            3.0,
+            3.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 3.0,
+            "mean_ms": 3.0,
+            "stdev_ms": 0.0,
+            "cv_pct": 0.0,
+            "q1_ms": 3.0,
+            "q3_ms": 3.0,
+            "iqr_ms": 0.0,
+            "min_ms": 3.0,
+            "max_ms": 3.0,
+            "mean_ci95": [
+              3.0,
+              3.0
+            ],
+            "median_ci95": [
+              3.0,
+              3.0
+            ],
+            "flags": [
+              "timer floor (median 3.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 6979584,
+          "peak_rss_min_bytes": 6955008,
+          "peak_rss_max_bytes": 7012352,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "php",
+          "runtime": "PHP 8.3",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 3.735,
+          "compute_min_ms": 3.64,
+          "compute_max_ms": 3.902,
+          "wall_ms": 29.77,
+          "compute_runs_ms": [
+            3.902,
+            3.796,
+            3.666,
+            3.863,
+            3.64,
+            3.735,
+            3.679
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 3.735,
+            "mean_ms": 3.754,
+            "stdev_ms": 0.102,
+            "cv_pct": 2.71,
+            "q1_ms": 3.672,
+            "q3_ms": 3.829,
+            "iqr_ms": 0.157,
+            "min_ms": 3.64,
+            "max_ms": 3.902,
+            "mean_ci95": [
+              3.66,
+              3.849
+            ],
+            "median_ci95": [
+              3.666,
+              3.863
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 15585280,
+          "peak_rss_min_bytes": 15585280,
+          "peak_rss_max_bytes": 15585280,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_tw",
+          "runtime": "Spid3r 1.1.1 tree-walk",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 7.0,
+          "compute_min_ms": 7.0,
+          "compute_max_ms": 8.0,
+          "wall_ms": 22.09,
+          "compute_runs_ms": [
+            7.0,
+            7.0,
+            8.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 7.0,
+            "mean_ms": 7.143,
+            "stdev_ms": 0.378,
+            "cv_pct": 5.29,
+            "q1_ms": 7.0,
+            "q3_ms": 7.0,
+            "iqr_ms": 0.0,
+            "min_ms": 7.0,
+            "max_ms": 8.0,
+            "mean_ci95": [
+              6.793,
+              7.492
+            ],
+            "median_ci95": [
+              7.0,
+              7.0
+            ],
+            "flags": [
+              "timer floor (median 7.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11837440,
+          "peak_rss_min_bytes": 11816960,
+          "peak_rss_max_bytes": 11857920,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm",
+          "runtime": "Spid3r 1.1.1 VM",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 7.0,
+          "compute_min_ms": 7.0,
+          "compute_max_ms": 7.0,
+          "wall_ms": 22.14,
+          "compute_runs_ms": [
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 7.0,
+            "mean_ms": 7.0,
+            "stdev_ms": 0.0,
+            "cv_pct": 0.0,
+            "q1_ms": 7.0,
+            "q3_ms": 7.0,
+            "iqr_ms": 0.0,
+            "min_ms": 7.0,
+            "max_ms": 7.0,
+            "mean_ci95": [
+              7.0,
+              7.0
+            ],
+            "median_ci95": [
+              7.0,
+              7.0
+            ],
+            "flags": [
+              "timer floor (median 7.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11866112,
+          "peak_rss_min_bytes": 11816960,
+          "peak_rss_max_bytes": 11898880,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_bytecode",
+          "runtime": "Spid3r 1.1.1 bytecode exec",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 7.0,
+          "compute_min_ms": 7.0,
+          "compute_max_ms": 8.0,
+          "wall_ms": 20.18,
+          "compute_runs_ms": [
+            7.0,
+            8.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            7.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 7.0,
+            "mean_ms": 7.143,
+            "stdev_ms": 0.378,
+            "cv_pct": 5.29,
+            "q1_ms": 7.0,
+            "q3_ms": 7.0,
+            "iqr_ms": 0.0,
+            "min_ms": 7.0,
+            "max_ms": 8.0,
+            "mean_ci95": [
+              6.793,
+              7.492
+            ],
+            "median_ci95": [
+              7.0,
+              7.0
+            ],
+            "flags": [
+              "timer floor (median 7.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 11190272,
+          "peak_rss_min_bytes": 11165696,
+          "peak_rss_max_bytes": 11259904,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "rust",
+          "runtime": "Rust 1.99.1 -O native",
+          "group": "reference",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 7.102,
+          "compute_min_ms": 7.034,
+          "compute_max_ms": 7.371,
+          "wall_ms": 11.2,
+          "compute_runs_ms": [
+            7.163,
+            7.371,
+            7.102,
+            7.064,
+            7.138,
+            7.054,
+            7.034
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 7.102,
+            "mean_ms": 7.132,
+            "stdev_ms": 0.115,
+            "cv_pct": 1.61,
+            "q1_ms": 7.059,
+            "q3_ms": 7.151,
+            "iqr_ms": 0.091,
+            "min_ms": 7.034,
+            "max_ms": 7.371,
+            "mean_ci95": [
+              7.026,
+              7.239
+            ],
+            "median_ci95": [
+              7.054,
+              7.163
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 4698112,
+          "peak_rss_min_bytes": 4698112,
+          "peak_rss_max_bytes": 5201920,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "python",
+          "runtime": "Python 3.15",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 10.857,
+          "compute_min_ms": 10.313,
+          "compute_max_ms": 11.8,
+          "wall_ms": 26.97,
+          "compute_runs_ms": [
+            10.5,
+            11.092,
+            10.857,
+            11.8,
+            10.434,
+            11.517,
+            10.313
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 10.857,
+            "mean_ms": 10.93,
+            "stdev_ms": 0.569,
+            "cv_pct": 5.21,
+            "q1_ms": 10.467,
+            "q3_ms": 11.305,
+            "iqr_ms": 0.838,
+            "min_ms": 10.313,
+            "max_ms": 11.8,
+            "mean_ci95": [
+              10.404,
+              11.457
+            ],
+            "median_ci95": [
+              10.434,
+              11.517
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11833344,
+          "peak_rss_min_bytes": 11829248,
+          "peak_rss_max_bytes": 11833344,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm_noopt",
+          "runtime": "Spid3r 1.1.1 VM --no-opt",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 44432313 100000",
+          "compute_ms": 27.0,
+          "compute_min_ms": 26.0,
+          "compute_max_ms": 27.0,
+          "wall_ms": 41.86,
+          "compute_runs_ms": [
+            27.0,
+            27.0,
+            26.0,
+            27.0,
+            26.0,
+            26.0,
+            27.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 27.0,
+            "mean_ms": 26.571,
+            "stdev_ms": 0.535,
+            "cv_pct": 2.01,
+            "q1_ms": 26.0,
+            "q3_ms": 27.0,
+            "iqr_ms": 1.0,
+            "min_ms": 26.0,
+            "max_ms": 27.0,
+            "mean_ci95": [
+              26.077,
+              27.066
+            ],
+            "median_ci95": [
+              26.0,
+              27.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11825152,
+          "peak_rss_min_bytes": 11812864,
+          "peak_rss_max_bytes": 11878400,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        }
+      ]
+    },
+    "text": {
+      "id": "D",
+      "title": "Text template building (string churn / allocation)",
+      "constants": "50,000 template rows",
+      "description": "Build a user-record template string per row (number formatting, concatenation, length measurement) with a rolling hash over string lengths. Exercises string allocation and GC pressure, like log/report generation.",
+      "expected_checksum": "RESULT 1295428 300465975",
+      "verified": true,
+      "variants": 9,
+      "rows": [
+        {
+          "key": "rust",
+          "runtime": "Rust 1.99.1 -O native",
+          "group": "reference",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 2.496,
+          "compute_min_ms": 2.489,
+          "compute_max_ms": 2.657,
+          "wall_ms": 6.24,
+          "compute_runs_ms": [
+            2.496,
+            2.496,
+            2.657,
+            2.497,
+            2.49,
+            2.489,
+            2.493
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 2.496,
+            "mean_ms": 2.517,
+            "stdev_ms": 0.062,
+            "cv_pct": 2.46,
+            "q1_ms": 2.492,
+            "q3_ms": 2.497,
+            "iqr_ms": 0.005,
+            "min_ms": 2.489,
+            "max_ms": 2.657,
+            "mean_ci95": [
+              2.46,
+              2.574
+            ],
+            "median_ci95": [
+              2.49,
+              2.497
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 4534272,
+          "peak_rss_min_bytes": 4530176,
+          "peak_rss_max_bytes": 5042176,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "node",
+          "runtime": "Node 26",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 3.877,
+          "compute_min_ms": 3.628,
+          "compute_max_ms": 4.968,
+          "wall_ms": 47.17,
+          "compute_runs_ms": [
+            4.968,
+            4.089,
+            3.877,
+            3.943,
+            3.787,
+            3.63,
+            3.628
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 3.877,
+            "mean_ms": 3.989,
+            "stdev_ms": 0.462,
+            "cv_pct": 11.59,
+            "q1_ms": 3.708,
+            "q3_ms": 4.016,
+            "iqr_ms": 0.308,
+            "min_ms": 3.628,
+            "max_ms": 4.968,
+            "mean_ci95": [
+              3.561,
+              4.417
+            ],
+            "median_ci95": [
+              3.63,
+              4.089
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 45203456,
+          "peak_rss_min_bytes": 44617728,
+          "peak_rss_max_bytes": 45432832,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "php",
+          "runtime": "PHP 8.3",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 6.136,
+          "compute_min_ms": 6.05,
+          "compute_max_ms": 6.299,
+          "wall_ms": 31.99,
+          "compute_runs_ms": [
+            6.136,
+            6.166,
+            6.299,
+            6.115,
+            6.236,
+            6.126,
+            6.05
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 6.136,
+            "mean_ms": 6.161,
+            "stdev_ms": 0.083,
+            "cv_pct": 1.34,
+            "q1_ms": 6.12,
+            "q3_ms": 6.201,
+            "iqr_ms": 0.081,
+            "min_ms": 6.05,
+            "max_ms": 6.299,
+            "mean_ci95": [
+              6.085,
+              6.238
+            ],
+            "median_ci95": [
+              6.115,
+              6.236
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 15523840,
+          "peak_rss_min_bytes": 15519744,
+          "peak_rss_max_bytes": 15523840,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_native",
+          "runtime": "Spid3r 1.1.1 native --release",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 8.0,
+          "compute_min_ms": 8.0,
+          "compute_max_ms": 9.0,
+          "wall_ms": 16.33,
+          "compute_runs_ms": [
+            8.0,
+            9.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0,
+            8.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 8.0,
+            "mean_ms": 8.143,
+            "stdev_ms": 0.378,
+            "cv_pct": 4.64,
+            "q1_ms": 8.0,
+            "q3_ms": 8.0,
+            "iqr_ms": 0.0,
+            "min_ms": 8.0,
+            "max_ms": 9.0,
+            "mean_ci95": [
+              7.793,
+              8.492
+            ],
+            "median_ci95": [
+              8.0,
+              8.0
+            ],
+            "flags": [
+              "timer floor (median 8.00 ms near the 1 ms now_ms resolution)"
+            ],
+            "stable": false
+          },
+          "peak_rss_bytes": 7118848,
+          "peak_rss_min_bytes": 7073792,
+          "peak_rss_max_bytes": 7131136,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "python",
+          "runtime": "Python 3.15",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 15.324,
+          "compute_min_ms": 15.11,
+          "compute_max_ms": 16.021,
+          "wall_ms": 31.69,
+          "compute_runs_ms": [
+            15.812,
+            15.324,
+            15.11,
+            15.308,
+            15.164,
+            16.021,
+            15.786
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 15.324,
+            "mean_ms": 15.504,
+            "stdev_ms": 0.361,
+            "cv_pct": 2.33,
+            "q1_ms": 15.236,
+            "q3_ms": 15.799,
+            "iqr_ms": 0.563,
+            "min_ms": 15.11,
+            "max_ms": 16.021,
+            "mean_ci95": [
+              15.169,
+              15.838
+            ],
+            "median_ci95": [
+              15.164,
+              15.812
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11788288,
+          "peak_rss_min_bytes": 11788288,
+          "peak_rss_max_bytes": 11792384,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_tw",
+          "runtime": "Spid3r 1.1.1 tree-walk",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 28.0,
+          "compute_min_ms": 27.0,
+          "compute_max_ms": 32.0,
+          "wall_ms": 42.66,
+          "compute_runs_ms": [
+            28.0,
+            32.0,
+            28.0,
+            27.0,
+            28.0,
+            27.0,
+            28.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 28.0,
+            "mean_ms": 28.286,
+            "stdev_ms": 1.704,
+            "cv_pct": 6.03,
+            "q1_ms": 27.5,
+            "q3_ms": 28.0,
+            "iqr_ms": 0.5,
+            "min_ms": 27.0,
+            "max_ms": 32.0,
+            "mean_ci95": [
+              26.709,
+              29.862
+            ],
+            "median_ci95": [
+              27.0,
+              28.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11825152,
+          "peak_rss_min_bytes": 11767808,
+          "peak_rss_max_bytes": 11837440,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm",
+          "runtime": "Spid3r 1.1.1 VM",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 28.0,
+          "compute_min_ms": 27.0,
+          "compute_max_ms": 28.0,
+          "wall_ms": 42.55,
+          "compute_runs_ms": [
+            28.0,
+            28.0,
+            28.0,
+            28.0,
+            27.0,
+            28.0,
+            28.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 28.0,
+            "mean_ms": 27.857,
+            "stdev_ms": 0.378,
+            "cv_pct": 1.36,
+            "q1_ms": 28.0,
+            "q3_ms": 28.0,
+            "iqr_ms": 0.0,
+            "min_ms": 27.0,
+            "max_ms": 28.0,
+            "mean_ci95": [
+              27.508,
+              28.207
+            ],
+            "median_ci95": [
+              28.0,
+              28.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11812864,
+          "peak_rss_min_bytes": 11751424,
+          "peak_rss_max_bytes": 11845632,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_bytecode",
+          "runtime": "Spid3r 1.1.1 bytecode exec",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 28.0,
+          "compute_min_ms": 27.0,
+          "compute_max_ms": 28.0,
+          "wall_ms": 41.06,
+          "compute_runs_ms": [
+            28.0,
+            28.0,
+            28.0,
+            28.0,
+            28.0,
+            27.0,
+            27.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 28.0,
+            "mean_ms": 27.714,
+            "stdev_ms": 0.488,
+            "cv_pct": 1.76,
+            "q1_ms": 27.5,
+            "q3_ms": 28.0,
+            "iqr_ms": 0.5,
+            "min_ms": 27.0,
+            "max_ms": 28.0,
+            "mean_ci95": [
+              27.263,
+              28.166
+            ],
+            "median_ci95": [
+              27.0,
+              28.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11214848,
+          "peak_rss_min_bytes": 11198464,
+          "peak_rss_max_bytes": 11218944,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm_noopt",
+          "runtime": "Spid3r 1.1.1 VM --no-opt",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT 1295428 300465975",
+          "compute_ms": 37.0,
+          "compute_min_ms": 37.0,
+          "compute_max_ms": 38.0,
+          "wall_ms": 52.21,
+          "compute_runs_ms": [
+            38.0,
+            37.0,
+            37.0,
+            38.0,
+            37.0,
+            37.0,
+            37.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 37.0,
+            "mean_ms": 37.286,
+            "stdev_ms": 0.488,
+            "cv_pct": 1.31,
+            "q1_ms": 37.0,
+            "q3_ms": 37.5,
+            "iqr_ms": 0.5,
+            "min_ms": 37.0,
+            "max_ms": 38.0,
+            "mean_ci95": [
+              36.834,
+              37.737
+            ],
+            "median_ci95": [
+              37.0,
+              38.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11730944,
+          "peak_rss_min_bytes": 11702272,
+          "peak_rss_max_bytes": 11776000,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        }
+      ]
+    },
+    "matmul": {
+      "id": "E",
+      "title": "Integer matrix multiply (numeric loops / indexing)",
+      "constants": "128 x 128 integer matrices",
+      "description": "Classic i-k-j matmul with a transposed B (built untimed) so every language multiplies row-by-row. Integer-only arithmetic keeps checksums exact across languages. Exercises nested indexing and tight numeric loops.",
+      "expected_checksum": "RESULT -1985 -40",
+      "verified": true,
+      "variants": 9,
+      "rows": [
+        {
+          "key": "rust",
+          "runtime": "Rust 1.99.1 -O native",
+          "group": "reference",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 0.695,
+          "compute_min_ms": 0.672,
+          "compute_max_ms": 0.707,
+          "wall_ms": 4.75,
+          "compute_runs_ms": [
+            0.707,
+            0.672,
+            0.696,
+            0.695,
+            0.688,
+            0.695,
+            0.699
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 0.695,
+            "mean_ms": 0.693,
+            "stdev_ms": 0.011,
+            "cv_pct": 1.57,
+            "q1_ms": 0.692,
+            "q3_ms": 0.698,
+            "iqr_ms": 0.006,
+            "min_ms": 0.672,
+            "max_ms": 0.707,
+            "mean_ci95": [
+              0.683,
+              0.703
+            ],
+            "median_ci95": [
+              0.688,
+              0.699
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 4616192,
+          "peak_rss_min_bytes": 4616192,
+          "peak_rss_max_bytes": 5136384,
+          "cpu_user_s": 0.0,
+          "cpu_kernel_s": 0.0,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "node",
+          "runtime": "Node 26",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 4.733,
+          "compute_min_ms": 3.266,
+          "compute_max_ms": 4.838,
+          "wall_ms": 48.94,
+          "compute_runs_ms": [
+            4.838,
+            4.812,
+            4.785,
+            4.544,
+            4.57,
+            3.266,
+            4.733
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 4.733,
+            "mean_ms": 4.507,
+            "stdev_ms": 0.559,
+            "cv_pct": 12.41,
+            "q1_ms": 4.557,
+            "q3_ms": 4.799,
+            "iqr_ms": 0.242,
+            "min_ms": 3.266,
+            "max_ms": 4.838,
+            "mean_ci95": [
+              3.99,
+              5.024
+            ],
+            "median_ci95": [
+              4.544,
+              4.812
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 43491328,
+          "peak_rss_min_bytes": 43343872,
+          "peak_rss_max_bytes": 43606016,
+          "cpu_user_s": 0.0156,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "php",
+          "runtime": "PHP 8.3",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 30.324,
+          "compute_min_ms": 29.603,
+          "compute_max_ms": 31.306,
+          "wall_ms": 58.06,
+          "compute_runs_ms": [
+            30.014,
+            30.627,
+            31.306,
+            29.603,
+            30.352,
+            30.324,
+            29.833
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 30.324,
+            "mean_ms": 30.294,
+            "stdev_ms": 0.564,
+            "cv_pct": 1.86,
+            "q1_ms": 29.923,
+            "q3_ms": 30.489,
+            "iqr_ms": 0.566,
+            "min_ms": 29.603,
+            "max_ms": 31.306,
+            "mean_ci95": [
+              29.773,
+              30.816
+            ],
+            "median_ci95": [
+              29.833,
+              30.627
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 16293888,
+          "peak_rss_min_bytes": 16293888,
+          "peak_rss_max_bytes": 16297984,
+          "cpu_user_s": 0.0312,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_native",
+          "runtime": "Spid3r 1.1.1 native --release",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 86.0,
+          "compute_min_ms": 85.0,
+          "compute_max_ms": 86.0,
+          "wall_ms": 95.23,
+          "compute_runs_ms": [
+            86.0,
+            85.0,
+            85.0,
+            86.0,
+            86.0,
+            85.0,
+            86.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 86.0,
+            "mean_ms": 85.571,
+            "stdev_ms": 0.535,
+            "cv_pct": 0.62,
+            "q1_ms": 85.0,
+            "q3_ms": 86.0,
+            "iqr_ms": 1.0,
+            "min_ms": 85.0,
+            "max_ms": 86.0,
+            "mean_ci95": [
+              85.077,
+              86.066
+            ],
+            "median_ci95": [
+              85.0,
+              86.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 8048640,
+          "peak_rss_min_bytes": 8036352,
+          "peak_rss_max_bytes": 8085504,
+          "cpu_user_s": 0.0625,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_bytecode",
+          "runtime": "Spid3r 1.1.1 bytecode exec",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 167.0,
+          "compute_min_ms": 166.0,
+          "compute_max_ms": 189.0,
+          "wall_ms": 184.09,
+          "compute_runs_ms": [
+            167.0,
+            167.0,
+            166.0,
+            189.0,
+            168.0,
+            166.0,
+            166.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 167.0,
+            "mean_ms": 169.857,
+            "stdev_ms": 8.474,
+            "cv_pct": 4.99,
+            "q1_ms": 166.0,
+            "q3_ms": 167.5,
+            "iqr_ms": 1.5,
+            "min_ms": 166.0,
+            "max_ms": 189.0,
+            "mean_ci95": [
+              162.02,
+              177.695
+            ],
+            "median_ci95": [
+              166.0,
+              168.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 11694080,
+          "peak_rss_min_bytes": 11640832,
+          "peak_rss_max_bytes": 11718656,
+          "cpu_user_s": 0.1719,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_tw",
+          "runtime": "Spid3r 1.1.1 tree-walk",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 168.0,
+          "compute_min_ms": 166.0,
+          "compute_max_ms": 170.0,
+          "wall_ms": 188.48,
+          "compute_runs_ms": [
+            170.0,
+            168.0,
+            170.0,
+            170.0,
+            168.0,
+            166.0,
+            167.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 168.0,
+            "mean_ms": 168.429,
+            "stdev_ms": 1.618,
+            "cv_pct": 0.96,
+            "q1_ms": 167.5,
+            "q3_ms": 170.0,
+            "iqr_ms": 2.5,
+            "min_ms": 166.0,
+            "max_ms": 170.0,
+            "mean_ci95": [
+              166.932,
+              169.925
+            ],
+            "median_ci95": [
+              167.0,
+              170.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12378112,
+          "peak_rss_min_bytes": 12333056,
+          "peak_rss_max_bytes": 12410880,
+          "cpu_user_s": 0.1562,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm",
+          "runtime": "Spid3r 1.1.1 VM",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 168.0,
+          "compute_min_ms": 166.0,
+          "compute_max_ms": 169.0,
+          "wall_ms": 186.97,
+          "compute_runs_ms": [
+            166.0,
+            166.0,
+            168.0,
+            169.0,
+            168.0,
+            168.0,
+            167.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 168.0,
+            "mean_ms": 167.429,
+            "stdev_ms": 1.134,
+            "cv_pct": 0.68,
+            "q1_ms": 166.5,
+            "q3_ms": 168.0,
+            "iqr_ms": 1.5,
+            "min_ms": 166.0,
+            "max_ms": 169.0,
+            "mean_ci95": [
+              166.38,
+              168.477
+            ],
+            "median_ci95": [
+              166.0,
+              168.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12398592,
+          "peak_rss_min_bytes": 12382208,
+          "peak_rss_max_bytes": 12414976,
+          "cpu_user_s": 0.1562,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "python",
+          "runtime": "Python 3.15",
+          "group": "baseline",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 182.554,
+          "compute_min_ms": 164.46,
+          "compute_max_ms": 213.192,
+          "wall_ms": 200.72,
+          "compute_runs_ms": [
+            182.554,
+            202.179,
+            213.192,
+            179.473,
+            205.782,
+            164.46,
+            170.48
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 182.554,
+            "mean_ms": 188.303,
+            "stdev_ms": 18.774,
+            "cv_pct": 9.97,
+            "q1_ms": 174.976,
+            "q3_ms": 203.981,
+            "iqr_ms": 29.004,
+            "min_ms": 164.46,
+            "max_ms": 213.192,
+            "mean_ci95": [
+              170.94,
+              205.666
+            ],
+            "median_ci95": [
+              170.48,
+              205.782
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12398592,
+          "peak_rss_min_bytes": 12394496,
+          "peak_rss_max_bytes": 12398592,
+          "cpu_user_s": 0.1875,
+          "cpu_kernel_s": 0.0156,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        },
+        {
+          "key": "spid3r_vm_noopt",
+          "runtime": "Spid3r 1.1.1 VM --no-opt",
+          "group": "spid3r",
+          "source": "host",
+          "result": "RESULT -1985 -40",
+          "compute_ms": 352.0,
+          "compute_min_ms": 349.0,
+          "compute_max_ms": 354.0,
+          "wall_ms": 373.48,
+          "compute_runs_ms": [
+            354.0,
+            352.0,
+            352.0,
+            350.0,
+            349.0,
+            352.0,
+            353.0
+          ],
+          "stats": {
+            "n": 7,
+            "median_ms": 352.0,
+            "mean_ms": 351.714,
+            "stdev_ms": 1.704,
+            "cv_pct": 0.48,
+            "q1_ms": 351.0,
+            "q3_ms": 352.5,
+            "iqr_ms": 1.5,
+            "min_ms": 349.0,
+            "max_ms": 354.0,
+            "mean_ci95": [
+              350.138,
+              353.291
+            ],
+            "median_ci95": [
+              350.0,
+              353.0
+            ],
+            "flags": [],
+            "stable": true
+          },
+          "peak_rss_bytes": 12271616,
+          "peak_rss_min_bytes": 12267520,
+          "peak_rss_max_bytes": 12312576,
+          "cpu_user_s": 0.3438,
+          "cpu_kernel_s": 0.0312,
+          "proc_metrics_method": "windows GetProcessMemoryInfo + GetProcessTimes"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "workloads_verified": 5,
+    "workloads_total": 5,
+    "variants": 44,
+    "quality": {
+      "stable_variants": 35,
+      "flagged_variants": 9,
+      "flag_detail": [
+        "A / Spid3r 1.1.1 native --release: timer floor (median 1.00 ms near the 1 ms now_ms resolution)",
+        "A / Spid3r 1.1.1 tree-walk: timer floor (median 8.00 ms near the 1 ms now_ms resolution)",
+        "A / Spid3r 1.1.1 VM: timer floor (median 8.00 ms near the 1 ms now_ms resolution)",
+        "A / Spid3r 1.1.1 bytecode exec: timer floor (median 8.00 ms near the 1 ms now_ms resolution)",
+        "C / Spid3r 1.1.1 native --release: timer floor (median 3.00 ms near the 1 ms now_ms resolution)",
+        "C / Spid3r 1.1.1 tree-walk: timer floor (median 7.00 ms near the 1 ms now_ms resolution)",
+        "C / Spid3r 1.1.1 VM: timer floor (median 7.00 ms near the 1 ms now_ms resolution)",
+        "C / Spid3r 1.1.1 bytecode exec: timer floor (median 7.00 ms near the 1 ms now_ms resolution)",
+        "D / Spid3r 1.1.1 native --release: timer floor (median 8.00 ms near the 1 ms now_ms resolution)"
+      ],
+      "worst_cv_pct": 12.41,
+      "thresholds": {
+        "noisy_cv_pct": 15.0,
+        "timer_floor_ms": 10.0
+      }
+    },
+    "slowdown_range": {
+      "min": 0.042,
+      "max": 506.475
+    },
+    "slowdown": {
+      "spid3r_bytecode": {
+        "label": "Spid3r 1.1.1 bytecode exec",
+        "vs_php": {
+          "workloads": {
+            "prime": 0.472,
+            "json": 1.297,
+            "map": 1.874,
+            "text": 4.563,
+            "matmul": 5.507
+          },
+          "geomean": 1.959
+        },
+        "vs_python": {
+          "workloads": {
+            "prime": 0.335,
+            "json": 1.641,
+            "map": 0.645,
+            "text": 1.827,
+            "matmul": 0.915
+          },
+          "geomean": 0.901
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 240.288
+          },
+          "geomean": 13.647
+        }
+      },
+      "spid3r_native": {
+        "label": "Spid3r 1.1.1 native --release",
+        "vs_php": {
+          "workloads": {
+            "prime": 0.059,
+            "json": 0.906,
+            "map": 0.803,
+            "text": 1.304,
+            "matmul": 2.836
+          },
+          "geomean": 0.692
+        },
+        "vs_python": {
+          "workloads": {
+            "prime": 0.042,
+            "json": 1.147,
+            "map": 0.276,
+            "text": 0.522,
+            "matmul": 0.471
+          },
+          "geomean": 0.318
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 1.0,
+            "json": 3.588,
+            "map": 1.833,
+            "text": 3.205,
+            "matmul": 123.741
+          },
+          "geomean": 4.822
+        }
+      },
+      "spid3r_tw": {
+        "label": "Spid3r 1.1.1 tree-walk",
+        "vs_php": {
+          "workloads": {
+            "prime": 0.472,
+            "json": 1.297,
+            "map": 1.874,
+            "text": 4.563,
+            "matmul": 5.54
+          },
+          "geomean": 1.961
+        },
+        "vs_python": {
+          "workloads": {
+            "prime": 0.335,
+            "json": 1.641,
+            "map": 0.645,
+            "text": 1.827,
+            "matmul": 0.92
+          },
+          "geomean": 0.902
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 241.727
+          },
+          "geomean": 13.663
+        }
+      },
+      "spid3r_vm": {
+        "label": "Spid3r 1.1.1 VM",
+        "vs_php": {
+          "workloads": {
+            "prime": 0.472,
+            "json": 1.297,
+            "map": 1.874,
+            "text": 4.563,
+            "matmul": 5.54
+          },
+          "geomean": 1.961
+        },
+        "vs_python": {
+          "workloads": {
+            "prime": 0.335,
+            "json": 1.641,
+            "map": 0.645,
+            "text": 1.827,
+            "matmul": 0.92
+          },
+          "geomean": 0.902
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 241.727
+          },
+          "geomean": 13.663
+        }
+      },
+      "spid3r_vm_noopt": {
+        "label": "Spid3r 1.1.1 VM --no-opt",
+        "vs_php": {
+          "workloads": {
+            "prime": 7.378,
+            "json": 1.325,
+            "map": 7.229,
+            "text": 6.03,
+            "matmul": 11.608
+          },
+          "geomean": 5.481
+        },
+        "vs_python": {
+          "workloads": {
+            "prime": 5.227,
+            "json": 1.676,
+            "map": 2.487,
+            "text": 2.415,
+            "matmul": 1.928
+          },
+          "geomean": 2.519
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 125.0,
+            "json": 5.243,
+            "map": 16.494,
+            "text": 14.824,
+            "matmul": 506.475
+          },
+          "geomean": 38.183
+        }
+      }
+    },
+    "matrix": {
+      "node": {
+        "label": "Node 26",
+        "geomeans": {
+          "php": 0.26,
+          "python": 0.12,
+          "rust": 1.346,
+          "spid3r_bytecode": 0.132,
+          "spid3r_native": 0.375,
+          "spid3r_tw": 0.132,
+          "spid3r_vm": 0.132,
+          "spid3r_vm_noopt": 0.047
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 1.835,
+            "json": 1.0,
+            "map": 1.0,
+            "text": 1.553,
+            "matmul": 6.81
+          },
+          "geomean": 1.81
+        }
+      },
+      "php": {
+        "label": "PHP 8.3",
+        "geomeans": {
+          "node": 3.85,
+          "python": 0.459,
+          "rust": 5.148,
+          "spid3r_bytecode": 0.511,
+          "spid3r_native": 1.445,
+          "spid3r_tw": 0.51,
+          "spid3r_vm": 0.51,
+          "spid3r_vm_noopt": 0.182
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 16.943,
+            "json": 3.958,
+            "map": 2.282,
+            "text": 2.458,
+            "matmul": 43.632
+          },
+          "geomean": 6.967
+        }
+      },
+      "python": {
+        "label": "Python 3.15",
+        "geomeans": {
+          "node": 8.376,
+          "php": 2.175,
+          "rust": 14.427,
+          "spid3r_bytecode": 1.11,
+          "spid3r_native": 3.143,
+          "spid3r_tw": 1.109,
+          "spid3r_vm": 1.109,
+          "spid3r_vm_noopt": 0.397
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 23.914,
+            "json": 3.128,
+            "map": 6.632,
+            "text": 6.139,
+            "matmul": 262.668
+          },
+          "geomean": 15.157
+        }
+      },
+      "rust": {
+        "label": "Rust 1.99.1 -O native",
+        "geomeans": {
+          "node": 0.743,
+          "php": 0.194,
+          "python": 0.07,
+          "spid3r_bytecode": 0.089,
+          "spid3r_native": 0.299,
+          "spid3r_tw": 0.089,
+          "spid3r_vm": 0.089,
+          "spid3r_vm_noopt": 0.025
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 1.361,
+            "map": 4.338,
+            "text": 1.0,
+            "matmul": 1.0
+          },
+          "geomean": 1.559
+        }
+      },
+      "spid3r_bytecode": {
+        "label": "Spid3r 1.1.1 bytecode exec",
+        "geomeans": {
+          "node": 7.541,
+          "php": 1.959,
+          "python": 0.901,
+          "rust": 11.18,
+          "spid3r_native": 2.83,
+          "spid3r_tw": 0.999,
+          "spid3r_vm": 0.999,
+          "spid3r_vm_noopt": 0.357
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 240.288
+          },
+          "geomean": 13.647
+        }
+      },
+      "spid3r_native": {
+        "label": "Spid3r 1.1.1 native --release",
+        "geomeans": {
+          "node": 2.665,
+          "php": 0.692,
+          "python": 0.318,
+          "rust": 3.33,
+          "spid3r_bytecode": 0.354,
+          "spid3r_tw": 0.353,
+          "spid3r_vm": 0.353,
+          "spid3r_vm_noopt": 0.126
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 1.0,
+            "json": 3.588,
+            "map": 1.833,
+            "text": 3.205,
+            "matmul": 123.741
+          },
+          "geomean": 4.822
+        }
+      },
+      "spid3r_tw": {
+        "label": "Spid3r 1.1.1 tree-walk",
+        "geomeans": {
+          "node": 7.55,
+          "php": 1.961,
+          "python": 0.902,
+          "rust": 11.197,
+          "spid3r_bytecode": 1.001,
+          "spid3r_native": 2.833,
+          "spid3r_vm": 1.0,
+          "spid3r_vm_noopt": 0.358
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 241.727
+          },
+          "geomean": 13.663
+        }
+      },
+      "spid3r_vm": {
+        "label": "Spid3r 1.1.1 VM",
+        "geomeans": {
+          "node": 7.55,
+          "php": 1.961,
+          "python": 0.902,
+          "rust": 11.197,
+          "spid3r_bytecode": 1.001,
+          "spid3r_native": 2.833,
+          "spid3r_tw": 1.0,
+          "spid3r_vm_noopt": 0.358
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 8.0,
+            "json": 5.133,
+            "map": 4.276,
+            "text": 11.218,
+            "matmul": 241.727
+          },
+          "geomean": 13.663
+        }
+      },
+      "spid3r_vm_noopt": {
+        "label": "Spid3r 1.1.1 VM --no-opt",
+        "geomeans": {
+          "node": 21.099,
+          "php": 5.481,
+          "python": 2.519,
+          "rust": 40.239,
+          "spid3r_bytecode": 2.798,
+          "spid3r_native": 7.919,
+          "spid3r_tw": 2.795,
+          "spid3r_vm": 2.795
+        },
+        "vs_fastest": {
+          "workloads": {
+            "prime": 125.0,
+            "json": 5.243,
+            "map": 16.494,
+            "text": 14.824,
+            "matmul": 506.475
+          },
+          "geomean": 38.183
+        }
+      }
+    },
+    "verdict": "Spid3r matched or beat a baseline in at least one workload.",
+    "note": "Language-runtime compute only; not an end-to-end HTTP framework comparison."
+  },
+  "artifacts": {
+    "json": "runtime_comparison.json",
+    "html": "",
+    "sources": "sources/"
+  },
+  "warnings": []
+}

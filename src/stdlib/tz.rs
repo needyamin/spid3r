@@ -36,6 +36,7 @@ static BLOB: &[u8] = include_bytes!("tzdata.bin");
 const MAGIC: &[u8; 5] = b"SPTZ1";
 
 pub fn native_defs() -> Vec<NativeDef> {
+    crate::config::schema::install_tz_validator(check_timezone_setting);
     vec![
         ("tz_names", n_tz_names),
         ("tz_info", n_tz_info),

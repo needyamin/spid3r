@@ -1189,3 +1189,655 @@ fn main() {
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
 }
+
+fn assert_native_matches_tree(stem: &str, src: &str) -> String {
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("spid3r_{}.matrix", stem));
+    let exe_path = dir.join(if cfg!(windows) {
+        format!("spid3r_{}.exe", stem)
+    } else {
+        format!("spid3r_{}", stem)
+    });
+    std::fs::write(&src_path, src).expect("write src");
+    let src_s = src_path.to_str().unwrap().to_string();
+    let exe_s = exe_path.to_str().unwrap().to_string();
+    let tree = out(&["run", "--engine", "tree", &src_s]).expect("tree run");
+    out(&["build", &src_s, "-o", &exe_s]).expect("native build");
+    let native = run_exe(&exe_s).expect("native run");
+    assert_eq!(tree, native, "tree vs native mismatch for {}", stem);
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    native
+}
+
+#[test]
+fn phase1_2d_int_matmul_matches_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn build_a(n: int) {
+    let a = list();
+    let i = 0;
+    while i < n {
+        let row = list();
+        let j = 0;
+        while j < n {
+            row.push((i * 7 + j * 13) % 19 - 9);
+            j += 1;
+        }
+        a.push(row);
+        i += 1;
+    }
+    return a;
+}
+fn build_bt(n: int) {
+    let bt = list();
+    let k = 0;
+    while k < n {
+        let row = list();
+        let j = 0;
+        while j < n {
+            row.push((k * 11 + j * 3) % 17 - 8);
+            j += 1;
+        }
+        bt.push(row);
+        k += 1;
+    }
+    return bt;
+}
+fn small_rect() {
+    let m1 = [[1, 2, 3], [4, 5, 6]];
+    let m2t = [[7, 9, 11], [8, 10, 12]];
+    let total = 0;
+    let i = 0;
+    while i < 2 {
+        let r = m1[i];
+        let k = 0;
+        while k < 2 {
+            let c = m2t[k];
+            let s = 0;
+            let j = 0;
+            while j < 3 {
+                s = s + r[j] * c[j];
+                j += 1;
+            }
+            println(s);
+            total = total + s;
+            k += 1;
+        }
+        i += 1;
+    }
+    return total;
+}
+fn main() {
+    println("RECT " + string(small_rect()));
+    let n = 128;
+    let a = build_a(n);
+    let bt = build_bt(n);
+    let total = 0;
+    let diag = 0;
+    let i = 0;
+    while i < n {
+        let ai = a[i];
+        let k = 0;
+        while k < n {
+            let btk = bt[k];
+            let s = 0;
+            let j = 0;
+            while j < n {
+                s = s + ai[j] * btk[j];
+                j += 1;
+            }
+            total = total + s;
+            if i == k { diag = diag + s; }
+            k += 1;
+        }
+        i += 1;
+    }
+    println("RESULT " + string(total) + " " + string(diag));
+    return 0;
+}
+"#;
+    let out_s = assert_native_matches_tree("p1_int_matmul", src);
+    assert!(
+        out_s.contains("RESULT -1985 -40\n"),
+        "unexpected matmul output:\n{}",
+        out_s
+    );
+}
+
+#[test]
+fn phase1_2d_float_dot_and_matmul_matches_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn float_matmul(n: int) {
+    let a = list();
+    let bt = list();
+    let i = 0;
+    while i < n {
+        let r1 = list();
+        let r2 = list();
+        let j = 0;
+        while j < n {
+            r1.push(float(i * 3 + j + 1) * 0.25);
+            r2.push(float(i + j * 5 - 2) * 0.5);
+            j += 1;
+        }
+        a.push(r1);
+        bt.push(r2);
+        i += 1;
+    }
+    let total = 0.0;
+    let ii = 0;
+    while ii < n {
+        let ai = a[ii];
+        let k = 0;
+        while k < n {
+            let btk = bt[k];
+            let s = 0.0;
+            let j = 0;
+            while j < n {
+                s = s + ai[j] * btk[j];
+                j += 1;
+            }
+            total = total + s;
+            k += 1;
+        }
+        ii += 1;
+    }
+    return total;
+}
+fn int_accum_on_float_row(row, n: int) {
+    let s = 0;
+    let j = 0;
+    while j < n {
+        s = s + row[j];
+        j += 1;
+    }
+    return s;
+}
+fn main() {
+    println(float_matmul(4));
+    let r = [1.5, 2.25, 3.75];
+    println(int_accum_on_float_row(r, 3));
+    println(int_accum_on_float_row(r, 0));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_float_matmul", src);
+}
+
+#[test]
+fn phase1_bce_edge_cases_negative_oob_empty() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn main() {
+    let row = [10, 20, 30, 40, 50];
+    let s1 = 0;
+    let j1 = -2;
+    try {
+        while j1 < 2 {
+            s1 = s1 + row[j1];
+            j1 += 1;
+        }
+        println("neg-ok " + string(s1));
+    } catch (e) {
+        println("neg-err " + string(e) + " s=" + string(s1) + " j=" + string(j1));
+    }
+
+    let s2 = 0;
+    let j2 = 0;
+    try {
+        while j2 < 8 {
+            s2 = s2 + row[j2];
+            j2 += 1;
+        }
+        println("oob-ok");
+    } catch (e) {
+        println("oob-err " + string(e) + " s=" + string(s2) + " j=" + string(j2));
+    }
+
+    let empty = [];
+    let s3 = 0;
+    let j3 = 0;
+    while j3 < 0 {
+        s3 = s3 + empty[j3];
+        j3 += 1;
+    }
+    println("empty0 " + string(s3));
+
+    try {
+        let j4 = 0;
+        while j4 < 2 {
+            s3 = s3 + empty[j4];
+            j4 += 1;
+        }
+    } catch (e) {
+        println("empty2-err " + string(e));
+    }
+
+    try {
+        let j5 = 0;
+        while j5 <= 0 {
+            s3 = s3 + empty[j5];
+            j5 += 1;
+        }
+    } catch (e) {
+        println("empty-le-err " + string(e));
+    }
+
+    let s6 = 0;
+    let j6 = 0;
+    while j6 <= row.len() - 1 {
+        s6 = s6 + row[j6];
+        j6 += 1;
+    }
+    println("le-sum " + string(s6) + " j=" + string(j6));
+
+    let j7 = 0;
+    let s7 = 123;
+    while j7 < -3 {
+        s7 = s7 + row[j7];
+        j7 += 1;
+    }
+    println("neg-bound " + string(s7));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_bce_edges", src);
+}
+
+#[test]
+fn phase1_mixed_list_and_non_list_fallback() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn sum_rows(rows) {
+    let i = 0;
+    while i < rows.len() {
+        let r = rows[i];
+        let s = 0;
+        let j = 0;
+        try {
+            while j < r.len() {
+                s = s + r[j];
+                j += 1;
+            }
+            println("row " + string(i) + "=" + string(s));
+        } catch (e) {
+            println("row " + string(i) + " err s=" + string(s) + " j=" + string(j));
+        }
+        i += 1;
+    }
+}
+fn main() {
+    sum_rows([[1, 2, 3], [4, "x", 6], [10, 20]]);
+    let m = map(0, 10, 1, 20, 2, 30);
+    let s = 0;
+    let j = 0;
+    while j < 3 {
+        s = s + m[j];
+        j += 1;
+    }
+    println("map=" + string(s));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_mixed_fallback", src);
+}
+
+#[test]
+fn phase1_aliasing_and_invalidation_safety() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn dot2(a, b, n: int) {
+    let s = 0;
+    let j = 0;
+    while j < n {
+        s = s + a[j] * b[j];
+        j += 1;
+    }
+    return s;
+}
+fn sum_all(r) {
+    let s = 0;
+    let j = 0;
+    while j < r.len() {
+        s = s + r[j];
+        j += 1;
+    }
+    return s;
+}
+fn main() {
+    let mat = [[1, 2, 3, 4]];
+    let ai = mat[0];
+    let bi = mat[0];
+    println("alias-dot=" + string(dot2(ai, bi, 4)));
+
+    ai.push(5);
+    println("after-push=" + string(sum_all(bi)) + " dot=" + string(dot2(ai, bi, 5)));
+
+    bi.set(1, 200);
+    println("after-set=" + string(sum_all(ai)));
+
+    ai.pop();
+    println("after-pop=" + string(sum_all(bi)));
+
+    bi.reverse();
+    println("after-rev=" + string(ai[0]) + "," + string(sum_all(ai)));
+
+    ai.clear();
+    println("after-clear-len=" + string(bi.len()) + " sum=" + string(sum_all(bi)));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_alias_inval", src);
+}
+
+#[test]
+fn phase1_overflow_and_break_writeback_inside_try() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn main() {
+    let ai = [1, 2, 1, 9223372036854775800];
+    let btk = [10, 20, 30, 2];
+    let s = 0;
+    let j = 0;
+    let n = 4;
+    try {
+        while j < n {
+            s = s + ai[j] * btk[j];
+            j += 1;
+        }
+    } catch (e) {
+        println("CAUGHT " + string(e));
+    }
+    println("POST_OVF s=" + string(s) + " j=" + string(j));
+
+    let sb = 0;
+    let jb = 0;
+    while jb < 5 {
+        if jb == 3 {
+            break;
+        }
+        sb = sb + ai[jb] * 5;
+        jb += 1;
+    }
+    println("BREAK s=" + string(sb) + " j=" + string(jb));
+
+    let sc = 0.0;
+    let jc = 0;
+    let fl = [1.5, 2.5, 4.0, 8.0];
+    while jc < 4 {
+        jc += 1;
+        if jc == 2 {
+            continue;
+        }
+        sc = sc + fl[jc - 1];
+    }
+    println("CONT s=" + string(sc) + " j=" + string(jc));
+
+    let sf = 1.0;
+    let jf = 0;
+    let f2 = [2.0, 0.0, 4.0];
+    try {
+        while jf < 3 {
+            sf = sf + 10.0 / f2[jf];
+            jf += 1;
+        }
+    } catch (e) {
+        println("FDIV_ERR " + string(e));
+    }
+    println("POST_FDIV s=" + string(sf) + " j=" + string(jf));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_ovf_break", src);
+}
+
+#[test]
+fn phase1_multithreaded_fallback_safety() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn main() {
+    let t = spawn fn() {
+        return 42;
+    };
+    println("spawned=" + string(t.join()));
+    let a = [[1, 2, 3], [4, 5, 6]];
+    let bt = [[7, 8, 9], [10, 11, 12]];
+    let total = 0;
+    let i = 0;
+    while i < 2 {
+        let ai = a[i];
+        let k = 0;
+        while k < 2 {
+            let btk = bt[k];
+            let s = 0;
+            let j = 0;
+            while j < 3 {
+                s = s + ai[j] * btk[j];
+                j += 1;
+            }
+            total = total + s;
+            k += 1;
+        }
+        i += 1;
+    }
+    println("mt-total=" + string(total));
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p1_mt_fallback", src);
+}
+
+#[test]
+fn phase2_string_builders_sso_rope_ring_and_unicode_len_match_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn shadow_param(string) {
+    return "param:" + string;
+}
+
+fn shadow_local() {
+    let string = fn(n) { return "S"; };
+    return "local:" + string(9);
+}
+
+fn main() {
+    let s0 = "";
+    let s1 = "abc";
+    let s2 = "hello_phase2_longer_than_sso";
+    let u1 = "café";
+    let u2 = "héllo 🌍 world café!";
+    println(s0.len(), s1.len(), s2.len(), u1.len(), u2.len());
+
+    let kept = [];
+    let i = 0;
+    while i < 14 {
+        let r = "prefix_longer_than_fifteen:" + string(i);
+        kept.push(r);
+        println(r.len());
+        i += 1;
+    }
+    for item in kept {
+        println(item);
+    }
+
+    try {
+        println("ok" + 42 + string(1 / 0));
+    } catch (e) {
+        println("err=" + string(e));
+    }
+
+    let obj = {
+        "tag": "obj",
+        "__radd__": fn(self_m, o) {
+            return o + ":" + self_m["tag"];
+        }
+    };
+    println("x" + obj);
+    println(shadow_param("abc"));
+    println(shadow_local());
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_str_builders", src);
+}
+
+#[test]
+fn phase2_inline_v2_binop_overflow_and_float_fallback_match_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn box_pair(a, b) {
+    let xs = [a, b];
+    return xs;
+}
+
+fn main() {
+    let vals = [
+        9223372036854775807,
+        1,
+        -9223372036854775808,
+        2,
+        1.5,
+        2.25,
+        "ab",
+        "cd",
+        10,
+        3
+    ];
+    let max_i = vals[0];
+    let one = vals[1];
+    let min_i = vals[2];
+    let two = vals[3];
+    let f1 = vals[4];
+    let f2 = vals[5];
+    let s1 = vals[6];
+    let s2 = vals[7];
+    let ten = vals[8];
+    let three = vals[9];
+
+    println(ten + three, ten - three, ten * three, ten / three, ten % three);
+    println(ten == ten, ten != three, three < ten, three <= three, ten > three, ten >= ten);
+    println(one + f1, f2 + two, 1 == f1, 1.5 == f1, one < f1, f2 >= two);
+    println(s1 + s2);
+
+    try { println(max_i + one); } catch (e) { println("add_ovf=" + string(e)); }
+    try { println(min_i - one); } catch (e) { println("sub_ovf=" + string(e)); }
+    try { println(max_i * two); } catch (e) { println("mul_ovf=" + string(e)); }
+    try { println(ten / (one - one)); } catch (e) { println("div0=" + string(e)); }
+    try { println(min_i / (0 - one)); } catch (e) { println("min_div=" + string(e)); }
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_v2_binop", src);
+}
+
+#[test]
+fn phase2_prehashed_map_and_json_roundtrip_match_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn main() {
+    let small = {"alpha": 10, "beta": 20, "gamma": "café"};
+    println(small["alpha"], small["beta"], small["gamma"]);
+    try {
+        println(small["absent"]);
+    } catch (e) {
+        println("miss=" + string(e));
+    }
+
+    let big = {};
+    let i = 0;
+    while i < 24 {
+        big["k" + string(i)] = i * 3 + 1;
+        i += 1;
+    }
+    println(big["k0"], big["k7"], big["k17"], big["k23"]);
+    let dk = "k" + string(12);
+    println(big[dk]);
+
+    let raw = "{\"s\":\"a\\\"b\\\\c\\n\\t\\u00e9\",\"uni\":\"héllo\",\"pos\":42,\"neg\":-17,\"max\":9223372036854775807,\"min\":-9223372036854775808,\"big\":9999999999999999999,\"f1\":1e5,\"f2\":-2.5e-3,\"arr\":[],\"obj\":{}}";
+    let parsed = json_parse(raw);
+    println(parsed["s"], parsed["uni"], parsed["pos"], parsed["neg"]);
+    println(parsed["max"], parsed["min"]);
+    println(json_write(parsed["arr"]), json_write(parsed["obj"]));
+    let rt = json_parse(json_write(parsed));
+    println(rt["pos"] == parsed["pos"], rt["s"] == parsed["s"], rt["f1"] == parsed["f1"]);
+
+    let cyc = [];
+    cyc.push(cyc);
+    try {
+        println(json_write(cyc));
+    } catch (e) {
+        println("cyc=" + string(e));
+    }
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_map_json", src);
+}
+
+#[test]
+fn phase2_fast_mutex_transition_on_spawn_matches_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn main() {
+    let shared = {"init": 100};
+    let items = [1, 2, 3, 4];
+    shared["pre"] = 55;
+    items.push(5);
+
+    let t1 = spawn fn() {
+        shared["w1"] = items[0] + items[4];
+        return shared["init"];
+    };
+    let t2 = spawn fn() {
+        shared["w2"] = shared["pre"] + items[2];
+        return 2;
+    };
+    let t3 = spawn fn() {
+        shared["w3"] = items[1] * 10;
+        return 3;
+    };
+    let r1 = t1.join();
+    let r2 = t2.join();
+    let r3 = t3.join();
+
+    println(r1, r2, r3, shared["init"], shared["pre"], shared["w1"], shared["w2"], shared["w3"]);
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_fast_mutex_spawn", src);
+}

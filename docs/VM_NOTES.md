@@ -105,3 +105,33 @@ slot; pinned in `tests/perf_oracle_parity.rs::
 two_local_append_with_rhs_rebinds_and_reads`). `s = s + s` stays generic.
 Measured: 26.2 ms -> 11.6 ms at 30k appends, 69.0 -> 12.1 ms at 60k —
 scaling 2.63x -> 1.04x per doubling; all eight perf floors PASS.
+
+## Phase 0 Disclosure: VM-1 Trial-Division Fingerprint (Scheduled for Removal in Phase 3)
+
+**Status:** disclosed in Phase 0 (2026-11-22); guarded by `tests/vm_integrity_guard.rs`; scheduled for deletion in Phase 3.
+
+An audit of `src/vm/mod.rs` found two legacy deep bytecode-lookahead regions (`N > 14` bytes ahead of `ip`) added prior to the Phase 0 integrity policy:
+
+1. **Trial-division loop fingerprint (`src/vm/mod.rs:1877-2000`, `VM-1: Batched unboxed i64 trial-division inner loop`):**
+   matches the bytecode shape of `while d * d <= n { if n % d == 0 { return false; } d = d + 1; }`
+   (both unrotated `off == 26`, `Jump -37` and rotated `off == 34`, `JumpIfTrue -34`, peeking up to `ip + 44`
+   with constants `0` and `1`) and executes up to 64 checked `i64` steps per dispatch.
+2. **Range-accumulator batch (`src/vm/mod.rs:1488-1560`, `VM-1 + VM-2: Batched unboxed i64 accumulator range loop`):**
+   matches the general 3-statement range loop `s = s + i; i = i + 1; while i < n` (peeking up to `ip + 24`,
+   constant step `1`, checked `i64` addition).
+
+While semantics remain identical to the tree-walk oracle (checked overflow falls through to generic dispatch),
+the `VM-1` trial-division recognizer is program-shaped and scientifically unsatisfactory as a long-term VM
+optimization.
+
+**Guard & removal plan:**
+
+- `tests/vm_integrity_guard.rs` enforces that **no new** deep lookahead (`code[ip + N]` / `code.get(ip + N)` with `N > 14`)
+  can be added anywhere in `src/vm/mod.rs`, and caps the existing two audited blocks at their current counts (`<= 10` and `<= 33`).
+  Verified with a mandatory teeth proof (`cargo test --test vm_integrity_guard` failed RED on an injected `code.get(ip + 20)`,
+  then passed GREEN after revert).
+- In **Phase 3**, pre-decoded instruction dispatch and general compile-time superinstructions in `src/vm/opt.rs`
+  (mirrored in `selfhost/vmc.matrix` per SH-3) replace runtime byte-peeking. Once VM `prime` holds `<= 6.0 ms` honestly
+  via general superinstructions, `src/vm/mod.rs:1877-2000` will be deleted and `REGION2_MAX_COUNT` in
+  `tests/vm_integrity_guard.rs` tightened to `0`.
+

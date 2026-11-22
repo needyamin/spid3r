@@ -116,6 +116,16 @@ def parse_bench_table(out: str):
     return rows
 
 
+def parse_spid3r_version(out: str) -> str:
+    """Extract 'spid3r <ver> (language <lang>)' from `spid3r --version` output."""
+    ver = re.search(r"^\s*Version\s+(\S+)", out, re.MULTILINE)
+    lang = re.search(r"^\s*Language\s+(\S+)", out, re.MULTILINE)
+    if ver:
+        return f"spid3r {ver.group(1)} (language {lang.group(1)})" if lang else f"spid3r {ver.group(1)}"
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    return lines[0] if lines else "spid3r"
+
+
 def run_bench(engine: str, runs: int, compare: bool = False):
     cmd = [str(bin_path()), "bench", "--engine", engine, "--runs", str(runs)]
     if compare:
@@ -123,7 +133,9 @@ def run_bench(engine: str, runs: int, compare: bool = False):
         # other engine, so the timing run doubles as the differential check the
         # report claims. A divergence exits non-zero and we stop here.
         cmd.append("--compare")
-    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     if proc.returncode != 0:
         sys.exit(f"`spid3r bench --engine {engine}` failed:\n{proc.stdout}\n{proc.stderr}")
     return parse_bench_table(proc.stdout), proc.stdout
@@ -184,9 +196,15 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
             "python": platform.python_version(),
         },
         "runs": {"spid3r": runs_spid3r, "tree": runs_tree, "other": runs_other},
-        "spid3r_version": subprocess.run([binp, "--version"], capture_output=True, text=True)
-        .stdout.strip()
-        .splitlines()[0],
+        "spid3r_version": parse_spid3r_version(
+            subprocess.run(
+                [binp, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            ).stdout
+        ),
         "startup": {},
         "vm": {},
         "tree": {},

@@ -1,9 +1,7 @@
-//! R12.2: Smoke/property suite exercising all pure I/O, serialization, tar, and
-//! OCI manifest fuzz entry points on adversarial, truncated, and malformed byte
+//! R12.2: Smoke/property suite exercising all pure I/O, serialization, and tar
+//! fuzz entry points on adversarial, truncated, and malformed byte
 //! inputs (verifies zero panics and bounded failure).
 
-use spid3r_lang::oci::layers::sanitize_tar_rel_path;
-use spid3r_lang::oci::manifest::{parse_image_config, parse_manifest_or_index};
 use spid3r_lang::pkg::read_tar;
 use spid3r_lang::stdlib::net::fuzz_parse_http_and_chunked;
 use spid3r_lang::stdlib::serialize::fuzz_decode_all;
@@ -27,11 +25,6 @@ fn r12_2_pure_fuzz_surfaces_never_panic_on_malformed_inputs() {
         fuzz_parse_http_and_chunked(sample);
         fuzz_decode_all(sample);
         let _ = read_tar(sample);
-        let _ = parse_manifest_or_index(sample);
-        let _ = parse_image_config(sample);
-        if let Ok(s) = std::str::from_utf8(sample) {
-            let _ = sanitize_tar_rel_path(s);
-        }
     }
 
     // Deterministic pseudo-random byte sweep (256 cases, 0..128 bytes each)
@@ -46,7 +39,5 @@ fn r12_2_pure_fuzz_surfaces_never_panic_on_malformed_inputs() {
         fuzz_parse_http_and_chunked(&buf);
         fuzz_decode_all(&buf);
         let _ = read_tar(&buf);
-        let _ = parse_manifest_or_index(&buf);
-        let _ = parse_image_config(&buf);
     }
 }

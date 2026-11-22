@@ -454,26 +454,123 @@ fn webview2_pins_a_plausible_artifact() {
     assert!(webview2::URL.starts_with("https://"));
 }
 
+fn find_makensis_exe(nsis_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut candidates = vec![
+        nsis_dir.join("nsis").join("nsis-3.10").join("makensis.exe"),
+        nsis_dir.join("nsis").join("makensis.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\NSIS\makensis.exe"),
+        PathBuf::from(r"C:\Program Files\NSIS\makensis.exe"),
+    ];
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            candidates.push(dir.join("makensis.exe"));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn read_zip_filenames(bytes: &[u8]) -> Result<Vec<String>, String> {
+    // Parse PKZIP central directory headers (`PK\x01\x02`) without external crates.
+    if bytes.len() < 4 || &bytes[0..4] != b"PK\x03\x04" {
+        return Err("missing ZIP local file header signature".into());
+    }
+    if !bytes.windows(4).any(|w| w == b"PK\x05\x06") {
+        return Err("missing ZIP End of Central Directory signature".into());
+    }
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i + 46 <= bytes.len() {
+        if &bytes[i..i + 4] == b"PK\x01\x02" {
+            let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+            let extra_len = u16::from_le_bytes([bytes[i + 30], bytes[i + 31]]) as usize;
+            let comment_len = u16::from_le_bytes([bytes[i + 32], bytes[i + 33]]) as usize;
+            let end = i + 46 + name_len;
+            if end + extra_len + comment_len <= bytes.len() {
+                let name = String::from_utf8_lossy(&bytes[i + 46..end]).into_owned();
+                names.push(name);
+                i = end + extra_len + comment_len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if names.is_empty() {
+        return Err("ZIP central directory had no file entries".into());
+    }
+    Ok(names)
+}
+
+#[test]
+fn bundled_formatter_vsix_is_valid_and_matches_sha256_pin() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vscode_dir = manifest_dir.join("packaging").join("vscode");
+    let vsix = vscode_dir.join("spid3r-formatter.vsix");
+    let sha_file = vscode_dir.join("spid3r-formatter.vsix.sha256");
+    assert!(vsix.is_file(), "missing bundled VSIX at {}", vsix.display());
+    assert!(
+        sha_file.is_file(),
+        "missing VSIX SHA-256 pin at {}",
+        sha_file.display()
+    );
+
+    let sha_text = std::fs::read_to_string(&sha_file).expect("read .sha256");
+    let expected = sha_text.split_whitespace().next().unwrap_or("");
+    assert_eq!(expected.len(), 64, "digest must be 64 hex chars");
+    webview2::verify_file(&vsix, expected, 1024).expect("VSIX checksum verification must succeed");
+
+    let bytes = std::fs::read(&vsix).expect("read VSIX bytes");
+    let entries = read_zip_filenames(&bytes).expect("parse VSIX central directory");
+    for required in [
+        "[Content_Types].xml",
+        "extension.vsixmanifest",
+        "extension/package.json",
+        "extension/out/extension.js",
+        "extension/out/formatter.js",
+        "extension/syntaxes/spid3r.tmLanguage.json",
+    ] {
+        assert!(
+            entries.iter().any(|e| e == required),
+            "VSIX missing required entry `{required}`; entries = {:?}",
+            entries
+        );
+    }
+    for forbidden in ["node_modules/", ".git/"] {
+        assert!(
+            !entries.iter().any(|e| e.contains(forbidden)),
+            "VSIX must not bundle `{forbidden}`"
+        );
+    }
+}
+
 #[test]
 fn nsis_installer_script_is_valid_and_compiles() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let nsis_dir = manifest_dir.join("packaging").join("nsis");
-    let makensis = nsis_dir.join("nsis").join("nsis-3.10").join("makensis.exe");
-    if !makensis.is_file() {
-        return;
-    }
     let script = nsis_dir.join("spid3r.nsi");
     assert!(script.is_file());
     let content = std::fs::read_to_string(&script).expect("read spid3r.nsi");
     assert!(content.contains("MicrosoftEdgeWebview2Setup.exe"));
     assert!(content.contains("https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
     assert!(content.contains("SecWebView2"));
+    assert!(content.contains("SecEditorExt"));
+    assert!(content.contains("FORMATTER_VSIX"));
+    assert!(content.contains("/NOEDITOR"));
+    assert!(content.contains("SPID3R_NO_EDITOR_EXT"));
+    assert!(content.contains("$$PATH:"));
+    assert!(content.contains("/d /v:on"));
+    assert!(content.contains("/TIMEOUT=60000"));
+    assert!(content.contains(r#"Delete "$INSTDIR\editor\spid3r-formatter.vsix""#));
+    assert!(content.contains(r#"RMDir "$INSTDIR\editor""#));
 
     // Ensure PowerShell command line does not use broken \" inside -Command "..."
     assert!(
         !content.contains("powershell.exe -NoProfile -NonInteractive -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile(\\\""),
         "PowerShell command must not use broken escaped quotes in NSIS string"
     );
+
+    let Some(makensis) = find_makensis_exe(&nsis_dir) else {
+        return;
+    };
 
     // 1. Dry-run makensis check with GUI=1 and no bundled bootstrapper
     let temp_out1 =
@@ -525,9 +622,13 @@ fn nsis_installer_script_is_valid_and_compiles() {
         Err(e) => panic!("cannot run makensis: {}", e),
     }
 
-    // 3. Dry-run makensis check with bundled WEBVIEW2_SETUP
+    // 3. Dry-run makensis check with bundled WEBVIEW2_SETUP + explicit FORMATTER_VSIX
     let dummy_setup = std::env::temp_dir().join(format!("dummy_setup_{}.exe", std::process::id()));
     let _ = std::fs::write(&dummy_setup, b"MZ dummy");
+    let vsix = manifest_dir
+        .join("packaging")
+        .join("vscode")
+        .join("spid3r-formatter.vsix");
     let temp_out3 =
         std::env::temp_dir().join(format!("spid3r_test_inst3_{}.exe", std::process::id()));
     let status3 = Command::new(&makensis)
@@ -538,6 +639,7 @@ fn nsis_installer_script_is_valid_and_compiles() {
         .arg("/DWITH_GUI=1")
         .arg("/DWITH_NATIVE=0")
         .arg(format!("/DWEBVIEW2_SETUP={}", dummy_setup.display()))
+        .arg(format!("/DFORMATTER_VSIX={}", vsix.display()))
         .arg("spid3r.nsi")
         .status();
     let created3 = temp_out3.is_file();
@@ -556,4 +658,131 @@ fn nsis_installer_script_is_valid_and_compiles() {
         }
         Err(e) => panic!("cannot run makensis: {}", e),
     }
+
+    // 4. Dry-run makensis check with opted-out /DFORMATTER_VSIX=
+    let temp_out4 =
+        std::env::temp_dir().join(format!("spid3r_test_inst4_{}.exe", std::process::id()));
+    let status4 = Command::new(&makensis)
+        .current_dir(&nsis_dir)
+        .arg("/V1")
+        .arg("/XSetCompressor /FINAL zlib")
+        .arg(format!("/DOUTFILE={}", temp_out4.display()))
+        .arg("/DWITH_GUI=0")
+        .arg("/DWITH_NATIVE=0")
+        .arg("/DFORMATTER_VSIX=")
+        .arg("spid3r.nsi")
+        .status();
+    let created4 = temp_out4.is_file();
+    let _ = std::fs::remove_file(&temp_out4);
+    match status4 {
+        Ok(s) => {
+            assert!(
+                s.success(),
+                "makensis failed on spid3r.nsi with /DFORMATTER_VSIX="
+            );
+            assert!(
+                created4,
+                "makensis did not produce expected temporary installer file"
+            );
+        }
+        Err(e) => panic!("cannot run makensis: {}", e),
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_editor_cli_lookup_and_invocation_are_safe() {
+    use std::os::windows::process::CommandExt;
+
+    let base = std::env::temp_dir().join(format!("spid3r_ed & test_{}", std::process::id()));
+    let path_bin = base.join("bin & tools");
+    let cwd_dir = base.join("untrusted cwd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&path_bin).expect("create temp bin");
+    std::fs::create_dir_all(&cwd_dir).expect("create temp cwd");
+
+    let log_file = base.join("invocations.log");
+    let vsix_file = base.join("spid3r & formatter.vsix");
+    std::fs::write(&vsix_file, b"PK\x03\x04test").expect("write dummy vsix");
+
+    // Decoy binary inside CWD must NOT be picked when searching `$PATH:code.cmd`.
+    std::fs::write(
+        cwd_dir.join("code.cmd"),
+        "@echo POISONED_CWD\r\n@exit /b 99\r\n",
+    )
+    .expect("write poisoned CWD cmd");
+
+    let mock_cmd = format!(
+        "@echo off\r\necho %1 %2 %3>>\"{}\"\r\nexit /b 0\r\n",
+        log_file.display()
+    );
+    for ed in ["code", "cursor", "windsurf"] {
+        std::fs::write(path_bin.join(format!("{ed}.cmd")), &mock_cmd).expect("write mock cmd");
+    }
+    // Simulate one failing editor CLI (`codium`) to verify non-zero exit does not break callers.
+    std::fs::write(path_bin.join("codium.cmd"), "@echo off\r\nexit /b 1\r\n")
+        .expect("write failing codium.cmd");
+
+    let win_dir = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let where_exe = win_dir.join("System32").join("where.exe");
+    let cmd_exe = win_dir.join("System32").join("cmd.exe");
+
+    for ed in ["code", "cursor", "windsurf", "codium"] {
+        let lookup = Command::new(&where_exe)
+            .current_dir(&cwd_dir)
+            .env("PATH", &path_bin)
+            .arg(format!("$PATH:{ed}.cmd"))
+            .output()
+            .expect("run where.exe");
+        assert!(lookup.status.success(), "where.exe should find {ed}.cmd");
+        let resolved = String::from_utf8_lossy(&lookup.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).ok(),
+            std::fs::canonicalize(path_bin.join(format!("{ed}.cmd"))).ok(),
+            "must resolve from PATH only, not CWD: {resolved}"
+        );
+
+        let inv = Command::new(&cmd_exe)
+            .current_dir(&cwd_dir)
+            .env("SPID3R_EDITOR_CLI", &resolved)
+            .env("SPID3R_VSIX_PATH", &vsix_file)
+            .raw_arg(r#"/d /v:on /c "call "!SPID3R_EDITOR_CLI!" --install-extension "!SPID3R_VSIX_PATH!" --force""#)
+            .output()
+            .expect("run cmd.exe /d /v:on");
+        if ed == "codium" {
+            assert_eq!(inv.status.code(), Some(1));
+        } else {
+            assert!(
+                inv.status.success(),
+                "{ed}.cmd invocation failed: {}",
+                String::from_utf8_lossy(&inv.stderr)
+            );
+        }
+    }
+
+    let missing = Command::new(&where_exe)
+        .current_dir(&cwd_dir)
+        .env("PATH", &path_bin)
+        .arg("$PATH:nonexistent_editor_xyz.cmd")
+        .output()
+        .expect("run where.exe missing");
+    assert!(!missing.status.success());
+
+    let log = std::fs::read_to_string(&log_file).expect("read invocation log");
+    let expected_arg = format!("\"{}\"", vsix_file.display());
+    assert_eq!(log.lines().count(), 3);
+    for line in log.lines() {
+        assert!(line.contains("--install-extension"), "line={line}");
+        assert!(line.contains(&expected_arg), "line={line}");
+        assert!(line.contains("--force"), "line={line}");
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
 }

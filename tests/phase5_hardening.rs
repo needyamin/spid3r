@@ -61,7 +61,7 @@ fn broken_pin_blocks_program_commands_but_keeps_diagnostics_available() {
     let dir = scratch("execution-pin");
     let other_dir = dir.join("config");
     std::fs::create_dir_all(&other_dir).expect("create alternate config directory");
-    write_ini(&other_dir, "[agent]\nname = alternate-config\n");
+    write_ini(&other_dir, "[spid3r]\nenv = alternate-config\n");
     let missing = dir.join("missing-pin.ini");
 
     let out = run_in(&dir, &missing, &["run", "does-not-matter.matrix"]);
@@ -79,7 +79,7 @@ fn broken_pin_blocks_program_commands_but_keeps_diagnostics_available() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("missing-pin.ini"));
 
-    let out = run_in(&dir, &missing, &["config", "get", "agent.name"]);
+    let out = run_in(&dir, &missing, &["config", "get", "spid3r.env"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("alternate-config"));
 
@@ -107,11 +107,11 @@ fn broken_pin_blocks_program_commands_but_keeps_diagnostics_available() {
 #[test]
 fn control_config_validate_returns_nonzero_for_invalid_config() {
     let dir = scratch("control-validate");
-    let invalid = write_ini(&dir, "[agent]\nport = banana\n");
+    let invalid = write_ini(&dir, "[net]\ntimeout_ms = banana\n");
     let out = run_in(&dir, &invalid, &["control", "config", "validate"]);
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("agent.port"), "{err}");
+    assert!(err.contains("net.timeout_ms"), "{err}");
 
     let valid = write_ini(&dir, "; valid isolated config\n");
     let out = run_in(&dir, &valid, &["control", "config", "validate"]);

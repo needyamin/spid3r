@@ -39,8 +39,7 @@ target/isolated/
 
 # --- Fuzzing artifacts -------------------------------------------------------
 fuzz/target/
-# The sample plugin is its own crate with its own target directory.
-examples/plugins/*/target/
+/packaging/nsis/redist/
 fuzz/corpus/
 fuzz/artifacts/
 
@@ -115,4 +114,3 @@ __pycache__/
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
 
-/kernel/target/

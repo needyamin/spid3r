@@ -9,7 +9,6 @@ default:
 | *(core, `--no-default-features`)* | — | Rust toolchain only |
 | `gui` *(default)* | embedded webview GUI (`spid3r gui`) via tao + wry | system webview runtime (see below) |
 | `native` *(default)* | LLVM AOT backend (`spid3r build`) via inkwell 0.11 | LLVM 23.1+ |
-| `plugins-wasm` *(default)* | sandboxed WASM plugin loading via wasmi | nothing beyond the crate |
 | `tls` *(default)* | `https://` in `http_fetch` via native-tls | OS certificate store (schannel / OpenSSL / Security.framework) |
 
 Without LLVM installed, build with `--no-default-features --features gui`.
@@ -337,6 +336,12 @@ then runs NSIS on `packaging/nsis/spid3r.nsi`.
   Shortcuts component.
 - Registers `.matrix` file associations with Windows Explorer context menu actions
   ("Run with Spid3r", "Check Syntax", and "Run with GUI").
+- Bundles the SHA-256-verified `spid3r-formatter.vsix` extension (`packaging/vscode/`)
+  as an optional **IDE formatter extension** component (`SecEditorExt`): extracts
+  an offline copy to `$INSTDIR\editor\spid3r-formatter.vsix` and runs
+  `--install-extension ... --force` for any `code`, `cursor`, `windsurf`, or `codium`
+  CLI found on `PATH` (skip CLI invocation with `/NOEDITOR` or `SPID3R_NO_EDITOR_EXT=1`;
+  fail-closed in `build.rs` if the `.sha256` pin mismatches).
 - With `native`, it also ships `LLVM-C.dll` (loaded by `spid3r.exe`),
   `LLVM-C.lib`, and the `spid3r_lang.lib` runtime staticlib, which `spid3r build`
   links into every program. Users still need MSVC Build Tools with the
@@ -401,6 +406,11 @@ sh install.sh --source --core        # build from source instead of downloading
 - `--source` compiles with `cargo install --no-default-features` (plus
   `native`/`gui` when LLVM 23 / WebKit2GTK 4.1 are detected) and installs the
   same self-contained binary.
+- By default `install.sh` also verifies `spid3r-formatter.vsix` against its
+  `.sha256` pin, saves an offline copy under `~/.spid3r/share/spid3r/`, and
+  installs it for any `code`, `cursor`, `windsurf`, or `codium` CLI found on
+  `PATH` (skipped when running as root; pass `--no-editor-ext` or set
+  `SPID3R_NO_EDITOR_EXT=1` to opt out).
 
 ### Environment variables
 

@@ -66,7 +66,7 @@ done
 
 if [ -z "$BIN_FEATURES" ]; then
   if [ "$IS_WIN" -eq 1 ]; then
-    BIN_FEATURES="gui,native,plugins-wasm,tls"
+    BIN_FEATURES="gui,native,tls"
   else
     BIN_FEATURES="native"
   fi

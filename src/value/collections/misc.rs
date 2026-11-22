@@ -1505,7 +1505,7 @@ impl VectorData {
                 want(name, args, 1)?;
                 let path = want_str(&args[0], "vector.save_npy")?;
                 save_npy_file(&path, &[self.data.len()], &self.data)?;
-                Ok(Value::Result(Ok(Box::new(Value::Null))))
+                Ok(Value::ok(Value::Null))
             }
             _ => Err(unknown(name, "vector")),
         }
@@ -1544,7 +1544,7 @@ pub fn check_matrix_dims(rows: usize, cols: usize) -> Result<usize, String> {
 
 pub fn matrix_from_list_val(val: &Value) -> Result<Value, String> {
     let rows: Vec<Value> = match val {
-        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
         Value::Tuple(t) => t.lock().unwrap().clone(),
         other => {
             return Err(format!(
@@ -1562,7 +1562,7 @@ pub fn matrix_from_list_val(val: &Value) -> Result<Value, String> {
     for (r_idx, row_val) in rows.iter().enumerate() {
         let (row_len, items) = match row_val {
             Value::List(l) | Value::VecDyn(l) => {
-                let items = l.lock().unwrap().items.clone();
+                let items = l.lock().unwrap().clone_items();
                 let len = items.len();
                 let mut nums = Vec::with_capacity(len);
                 for it in &items {
@@ -1981,7 +1981,7 @@ impl MatrixData {
                 })))
             }
             Value::List(l) | Value::VecDyn(l) => {
-                let items = l.lock().unwrap().items.clone();
+                let items = l.lock().unwrap().clone_items();
                 if items.len() != n {
                     return Err(format!(
                         "matrix solve dimension mismatch: matrix has {} rows, list has {}",
@@ -2324,7 +2324,7 @@ impl MatrixData {
                 want(name, args, 1)?;
                 let path = want_str(&args[0], "matrix.save_npy")?;
                 save_npy_file(&path, &[self.rows, self.cols], &self.data)?;
-                Ok(Value::Result(Ok(Box::new(Value::Null))))
+                Ok(Value::ok(Value::Null))
             }
             _ => Err(unknown(name, "matrix")),
         }
@@ -2799,10 +2799,8 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
             want(name, args, 0)?;
             let b = cell.lock().unwrap();
             match std::str::from_utf8(&b) {
-                Ok(s) => Ok(Value::Result(Ok(Box::new(Value::Str(s.into()))))),
-                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
-                    format!("utf-8 error: {}", e).into(),
-                ))))),
+                Ok(s) => Ok(Value::ok(Value::Str(s.into()))),
+                Err(e) => Ok(Value::err(Value::Str(format!("utf-8 error: {}", e).into()))),
             }
         }
         "to_hex" => {

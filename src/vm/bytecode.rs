@@ -32,6 +32,9 @@ pub struct Chunk {
     /// Modules embedded by the compiler so `exec` needs no source. Keyed by the
     /// import literal; flattened transitively so every dependency is present.
     pub modules: Vec<EmbeddedModule>,
+    /// Lazy pre-decoded fixed-width instruction stream (`src/vm/decode.rs`).
+    /// Never serialized; populated on first uninstrumented execution.
+    pub decoded: std::sync::OnceLock<Option<Arc<super::decode::DecodedChunk>>>,
 }
 
 /// One local binding's lifetime, for the debugger.
@@ -388,6 +391,7 @@ impl Chunk {
             inst_spans: Vec::new(),
             pending_span: Span::new(Arc::from("<spid3r>"), 0, 0, 0),
             modules: Vec::new(),
+            decoded: std::sync::OnceLock::new(),
         }
     }
 
@@ -1160,6 +1164,7 @@ fn get_chunk_body(r: &mut Reader) -> SpidResult<Chunk> {
         inst_spans,
         pending_span,
         modules,
+        decoded: std::sync::OnceLock::new(),
     })
 }
 

@@ -569,9 +569,9 @@ fn n_mysql_query(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 }
                 out.push(Value::Map(new_ref(MapData::from_entries(pairs))));
             }
-            Ok(Value::Result(Ok(Box::new(make_list(out)))))
+            Ok(Value::ok(make_list(out)))
         }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -603,22 +603,18 @@ fn n_mysql_exec(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let first = read_packet(&mut stream, &mut seq)?;
     let head = head_byte(&first)?;
     if head == 0xFF {
-        return Ok(Value::Result(Err(Box::new(Value::Str(
-            err_message(&first).into(),
-        )))));
+        return Ok(Value::err(Value::Str(err_message(&first).into())));
     }
     if head == 0x00 || head == 0xFE && first.len() < 9 {
-        return Ok(Value::Result(Ok(Box::new(Value::Int(
-            ok_affected(&first)? as i64,
-        )))));
+        return Ok(Value::ok(Value::Int(ok_affected(&first)? as i64)));
     }
     // It is a resultset: skip columns/rows to the final OK.
     let (mut columns, mut rows) = read_resultset_from_first(first, &mut stream, &mut seq)?;
     let _ = (&mut columns, &mut rows);
     let last = read_packet(&mut stream, &mut seq)?;
     match ok_affected(&last) {
-        Ok(n) => Ok(Value::Result(Ok(Box::new(Value::Int(n as i64))))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(n) => Ok(Value::ok(Value::Int(n as i64))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 

@@ -22,7 +22,6 @@ use std::sync::Arc;
 
 struct Servers {
     child: Child,
-    redis: u16,
     pg: u16,
     mysql: u16,
 }
@@ -72,7 +71,6 @@ fn start_servers() -> Option<Servers> {
     let lookup = |name: &str| -> Option<u16> { ports.get(name).copied() };
     Some(Servers {
         child,
-        redis: lookup("redis")?,
         pg: lookup("pg")?,
         mysql: lookup("mysql")?,
     })
@@ -107,33 +105,6 @@ fn both(src: &str) {
     assert_eq!(run_tree(src).unwrap(), 0, "tree engine");
     assert_eq!(run_vm(src).unwrap(), 0, "vm engine");
 }
-
-const REDIS: &str = r#"
-fn main() {
-    let r = redis_connect("127.0.0.1:PORT");
-    // SET returns the simple-string reply "+OK".
-    assert_eq(redis_command(r, "SET", "greeting", "hello"), "OK");
-    // A bulk reply decodes to a string.
-    assert_eq(redis_command(r, "GET", "greeting"), "hello");
-    // Integers come back as ints.
-    assert_eq(redis_command(r, "INCR", "counter"), 1);
-    assert_eq(redis_command(r, "INCR", "counter"), 2);
-    // An error reply becomes a catchable err value.
-    let bad = redis_command(r, "NOSUCH", "x");
-    assert_eq(is_failure(bad), true);
-    // Missing keys are null, not an empty string.
-    assert_eq(redis_command(r, "GET", "missing"), null);
-    // Arrays decode to lists.
-    redis_command(r, "LPUSH", "queue", "a");
-    redis_command(r, "LPUSH", "queue", "b");
-    let items = redis_command(r, "LRANGE", "queue", "0", "-1");
-    assert_eq(len(items), 2);
-    assert_eq(items[0], "b");
-    assert_eq(redis_close(r), true);
-    assert_eq(redis_close(r), false);
-    return 0;
-}
-"#;
 
 const PG: &str = r#"
 fn main() {
@@ -176,18 +147,6 @@ fn main() {
     return 0;
 }
 "#;
-
-#[test]
-fn redis_client_talks_to_a_real_resp_server() {
-    let servers = match start_servers() {
-        Some(s) => s,
-        None => {
-            eprintln!("skipping: python not available");
-            return;
-        }
-    };
-    both(&REDIS.replace("PORT", &servers.redis.to_string()));
-}
 
 #[test]
 fn postgres_client_handles_all_four_auth_methods() {

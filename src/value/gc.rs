@@ -56,7 +56,7 @@ struct Entry {
 
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
-const LOCAL_REGISTRY_CAP: usize = 2048;
+const LOCAL_REGISTRY_CAP: usize = 8192;
 
 thread_local! {
     /// Single-thread registration buffer (Track 3 RT-1): avoids locking
@@ -147,12 +147,12 @@ pub trait GcTrace {
 
 impl GcTrace for VecData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
-        for v in &self.items {
+        for v in self.as_slice() {
             f(v);
         }
     }
     fn gc_clear(&mut self) {
-        self.items.clear();
+        self.clear_items();
     }
 }
 
@@ -443,7 +443,7 @@ fn trace_erased<T: GcTrace + Send + 'static>(
     f: &mut dyn FnMut(&Value),
     cells: &mut dyn FnMut(usize),
 ) {
-    if let Some(m) = arc.downcast_ref::<Mutex<T>>() {
+    if let Some(m) = arc.downcast_ref::<crate::value::FastMutex<T>>() {
         if let Ok(g) = m.lock() {
             g.gc_trace(f);
             g.gc_trace_cells(cells);
@@ -452,7 +452,7 @@ fn trace_erased<T: GcTrace + Send + 'static>(
 }
 
 fn clear_erased<T: GcTrace + Send + 'static>(arc: &Arc<dyn Any + Send + Sync>) {
-    if let Some(m) = arc.downcast_ref::<Mutex<T>>() {
+    if let Some(m) = arc.downcast_ref::<crate::value::FastMutex<T>>() {
         if let Ok(mut g) = m.lock() {
             g.gc_clear();
         }
@@ -461,9 +461,12 @@ fn clear_erased<T: GcTrace + Send + 'static>(arc: &Arc<dyn Any + Send + Sync>) {
 
 /// Register a cell for cycle tracking and hand it back. Called at construction
 /// sites (so the registry holds a *weak* handle; it never keeps a cell alive).
-pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> {
+pub fn track<T: GcTrace + Send + 'static>(
+    cell: Arc<crate::value::FastMutex<T>>,
+) -> Arc<crate::value::FastMutex<T>> {
     let id = Arc::as_ptr(&cell) as *const () as usize;
-    let weak: Weak<dyn Any + Send + Sync> = Arc::downgrade(&cell) as Weak<Mutex<T>>;
+    let weak: Weak<dyn Any + Send + Sync> =
+        Arc::downgrade(&cell) as Weak<crate::value::FastMutex<T>>;
     register_entry(Entry {
         id,
         weak,
@@ -547,7 +550,9 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         Value::VFunc(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::VClass(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Option(Some(inner)) => for_each_cell_id(inner, f),
-        Value::Result(Ok(inner) | Err(inner)) => for_each_cell_id(inner, f),
+        Value::Result(r) => match r.as_ref() {
+            Ok(inner) | Err(inner) => for_each_cell_id(inner, f),
+        },
         _ => {}
     }
 }
@@ -701,7 +706,10 @@ fn child_bytes(v: &Value) -> usize {
     match v {
         Value::Str(s) => s.len() + 24,
         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => 0,
-        Value::Option(Some(b)) | Value::Result(Ok(b) | Err(b)) => 8 + child_bytes(b),
+        Value::Option(Some(b)) => 8 + child_bytes(b),
+        Value::Result(r) => match r.as_ref() {
+            Ok(b) | Err(b) => 8 + child_bytes(b),
+        },
         // Tracked cells: slot cost only; contents counted at their own entry.
         _ => 8,
     }

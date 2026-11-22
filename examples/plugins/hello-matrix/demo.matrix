@@ -1,5 +1,0 @@
-fn main() {
-    println(greet("Ada"));
-    println(sum_to(10));
-    return 0;
-}

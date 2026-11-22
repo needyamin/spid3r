@@ -265,16 +265,33 @@ def idle_baseline(samples: int = 21, target_ms: float = 2.0) -> dict:
 
 
 def toolchain_info(binp: Path) -> dict:
-    def capture(argv: list[str]) -> str | None:
+    def capture(argv: list[str], first_line: bool = True) -> str | None:
         try:
             p = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=30)
-            return (p.stdout or p.stderr).strip().splitlines()[0] if (p.stdout or p.stderr).strip() else None
+            text = (p.stdout or p.stderr).strip()
+            if not text:
+                return None
+            return text.splitlines()[0] if first_line else text
         except (OSError, subprocess.TimeoutExpired):
             return None
 
+    def spid3r_version_str() -> str | None:
+        raw = capture([str(binp), "--version"], first_line=False)
+        if not raw:
+            return None
+        ver = re.search(r"^\s*Version\s+(\S+)", raw, re.MULTILINE)
+        lang = re.search(r"^\s*Language\s+(\S+)", raw, re.MULTILINE)
+        if ver:
+            return (
+                f"spid3r {ver.group(1)} (language {lang.group(1)})"
+                if lang
+                else f"spid3r {ver.group(1)}"
+            )
+        return raw.splitlines()[0]
+
     info = {
-        "spid3r": capture([str(binp), "--version"]),
+        "spid3r": spid3r_version_str(),
         "rustc": capture(["rustc", "--version"]),
         "python": platform.python_version(),
         "php": capture(["php", "-r", "echo PHP_VERSION;"]),

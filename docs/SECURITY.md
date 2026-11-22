@@ -374,7 +374,6 @@ crypto crates:
   small-order public-key rejection).
 - `src/stdlib/argon2.rs` — Argon2id password hashing.
 - `src/stdlib/bcrypt.rs` — bcrypt password hashing.
-- `src/crypto/mod.rs` — SHA-256, HMAC-SHA256, and ChaCha20-Poly1305.
 
 **Honest trust statement:** these primitives are verified by internal RFC test
 vectors and negative/malleability tests, but **have not yet undergone an

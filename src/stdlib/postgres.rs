@@ -551,9 +551,9 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             // thrown error: the caller decides whether a bad password ends the
             // program.
             b'E' => {
-                return Ok(Value::Result(Err(Box::new(Value::Str(
+                return Ok(Value::err(Value::Str(
                     format!("{}: {}", WHO, error_fields(&msg.payload)).into(),
-                )))))
+                )))
             }
             // ParameterStatus/BackendKeyData/NoticeResponse are ordinary
             // chatter on the way to ReadyForQuery and are skipped.
@@ -599,8 +599,8 @@ fn n_pg_query(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let stream = get_stream(id, WHO)?;
     let mut stream = stream.lock().unwrap();
     match simple_query(&mut stream, &sql) {
-        Ok(v) => Ok(Value::Result(Ok(Box::new(v)))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(v) => Ok(Value::ok(v)),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -624,8 +624,8 @@ fn n_pg_exec(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let stream = get_stream(id, WHO)?;
     let mut stream = stream.lock().unwrap();
     match simple_query(&mut stream, &sql) {
-        Ok(_) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(_) => Ok(Value::ok(Value::Null)),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 

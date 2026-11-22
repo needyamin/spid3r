@@ -24,6 +24,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "WordFunc.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 !ifndef WITH_GUI
 !define WITH_GUI 1
@@ -50,6 +51,18 @@ Unicode true
 !endif
 !ifndef CALCULATOR_EXE
 !define CALCULATOR_EXE "..\..\target\release\calculator.exe"
+!endif
+!ifndef FORMATTER_VSIX
+!if /FileExists "..\vscode\spid3r-formatter.vsix"
+!define FORMATTER_VSIX "..\vscode\spid3r-formatter.vsix"
+!endif
+!endif
+!ifdef FORMATTER_VSIX
+  !if "${FORMATTER_VSIX}" != ""
+    !if /FileExists "${FORMATTER_VSIX}"
+      !define HAVE_FORMATTER_VSIX 1
+    !endif
+  !endif
 !endif
 ; The desktop control panel (spid3r-control.exe). Passed by build.rs when the
 ; gui payload built it; absent in core-only installers.
@@ -355,6 +368,138 @@ Section "Associate .matrix files with Spid3r" SecAssoc
   System::Call 'shell32::SHChangeNotify(l 0x08000000, l 0, p 0, p 0)'
 SectionEnd
 
+!ifdef HAVE_FORMATTER_VSIX
+; Trim $0 at the first CR or LF so multi-line `where.exe` output yields only the first hit.
+Function FirstLine
+  Push $1
+  Push $2
+  Push $3
+  StrLen $1 $0
+  StrCpy $2 0
+  ${DoWhile} $2 < $1
+    StrCpy $3 $0 1 $2
+    ${If} $3 == "$\r"
+    ${OrIf} $3 == "$\n"
+      StrCpy $0 $0 $2
+      ${ExitDo}
+    ${EndIf}
+    IntOp $2 $2 + 1
+  ${Loop}
+  Pop $3
+  Pop $2
+  Pop $1
+FunctionEnd
+
+; Install the bundled offline VSIX into one detected editor CLI ($R0 = code|cursor|windsurf|codium).
+; Expects $R7 = native where.exe path, $R8 = native cmd.exe path; increments $R9 if CLI was found.
+Function InstallEditorVsix
+  Push $0
+  Push $1
+
+  ; Search ONLY PATH (`$$PATH:` prevents `where.exe` from searching CWD).
+  nsExec::ExecToStack '"$R7" "$$PATH:$R0.cmd"'
+  Pop $1
+  Pop $0
+  ${If} $1 == 0
+    Call FirstLine
+    ${If} $0 != ""
+    ${AndIf} ${FileExists} "$0"
+      IntOp $R9 $R9 + 1
+      DetailPrint "Installing Spid3r IDE extension via $0..."
+      ; Pass paths via env vars + cmd /d /v:on so spaces/&/AutoRun cannot inject into cmd.
+      System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_EDITOR_CLI", t r0)'
+      System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_VSIX_PATH", t "$INSTDIR\editor\spid3r-formatter.vsix")'
+      nsExec::ExecToLog /TIMEOUT=60000 '"$R8" /d /v:on /c "call "!SPID3R_EDITOR_CLI!" --install-extension "!SPID3R_VSIX_PATH!" --force"'
+      Pop $1
+      System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_EDITOR_CLI", p 0)'
+      System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_VSIX_PATH", p 0)'
+      ${If} $1 == 0
+        DetailPrint "Installed Spid3r IDE extension for $R0."
+      ${Else}
+        DetailPrint "Note: $R0 CLI exited with '$1'; offline VSIX remains at $INSTDIR\editor\spid3r-formatter.vsix."
+      ${EndIf}
+      Goto editor_cli_done
+    ${EndIf}
+  ${EndIf}
+
+  nsExec::ExecToStack '"$R7" "$$PATH:$R0.exe"'
+  Pop $1
+  Pop $0
+  ${If} $1 == 0
+    Call FirstLine
+    ${If} $0 != ""
+    ${AndIf} ${FileExists} "$0"
+      IntOp $R9 $R9 + 1
+      DetailPrint "Installing Spid3r IDE extension via $0..."
+      nsExec::ExecToLog /TIMEOUT=60000 '"$0" --install-extension "$INSTDIR\editor\spid3r-formatter.vsix" --force'
+      Pop $1
+      ${If} $1 == 0
+        DetailPrint "Installed Spid3r IDE extension for $R0."
+      ${Else}
+        DetailPrint "Note: $R0 CLI exited with '$1'; offline VSIX remains at $INSTDIR\editor\spid3r-formatter.vsix."
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+editor_cli_done:
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Section "IDE formatter extension (VS Code, Cursor, Windsurf, VSCodium)" SecEditorExt
+  SetOutPath "$INSTDIR\editor"
+  File "/oname=spid3r-formatter.vsix" "${FORMATTER_VSIX}"
+  ; Restore working directory to the trusted $INSTDIR before running external tools.
+  SetOutPath "$INSTDIR"
+
+  ClearErrors
+  ${GetParameters} $R1
+  ${GetOptions} "$R1" "/NOEDITOR" $R2
+  ${IfNot} ${Errors}
+    DetailPrint "Skipping automatic IDE extension install (/NOEDITOR); offline VSIX saved at $INSTDIR\editor\spid3r-formatter.vsix."
+    Goto editor_ext_done
+  ${EndIf}
+
+  ReadEnvStr $R2 "SPID3R_NO_EDITOR_EXT"
+  ${If} $R2 == "1"
+    DetailPrint "Skipping automatic IDE extension install (SPID3R_NO_EDITOR_EXT=1); offline VSIX saved at $INSTDIR\editor\spid3r-formatter.vsix."
+    Goto editor_ext_done
+  ${EndIf}
+
+  ${If} ${FileExists} "$WINDIR\Sysnative\where.exe"
+    StrCpy $R7 "$WINDIR\Sysnative\where.exe"
+  ${Else}
+    StrCpy $R7 "$SYSDIR\where.exe"
+  ${EndIf}
+  ${If} ${FileExists} "$WINDIR\Sysnative\cmd.exe"
+    StrCpy $R8 "$WINDIR\Sysnative\cmd.exe"
+  ${Else}
+    StrCpy $R8 "$SYSDIR\cmd.exe"
+  ${EndIf}
+
+  ${IfNot} ${FileExists} "$R7"
+    DetailPrint "where.exe not found; offline VSIX saved at $INSTDIR\editor\spid3r-formatter.vsix."
+    Goto editor_ext_done
+  ${EndIf}
+
+  StrCpy $R9 0
+  StrCpy $R0 "code"
+  Call InstallEditorVsix
+  StrCpy $R0 "cursor"
+  Call InstallEditorVsix
+  StrCpy $R0 "windsurf"
+  Call InstallEditorVsix
+  StrCpy $R0 "codium"
+  Call InstallEditorVsix
+
+  ${If} $R9 == 0
+    DetailPrint "No supported editor CLI (code, cursor, windsurf, codium) found on PATH. Offline VSIX saved at: $INSTDIR\editor\spid3r-formatter.vsix"
+  ${EndIf}
+
+editor_ext_done:
+SectionEnd
+!endif
+
 ; --------------------------------------------------------- descriptions ----
 !if ${WITH_NATIVE} == 1
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui / build (native executables via LLVM), standalone calculator app, and PATH registration."
@@ -365,6 +510,9 @@ LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / 
 !endif
 LangString DESC_SecDesktop ${LANG_ENGLISH} "Creates convenient shortcuts on your desktop for quick terminal access and the standalone calculator."
 LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
+!ifdef HAVE_FORMATTER_VSIX
+LangString DESC_SecEditorExt ${LANG_ENGLISH} "Bundles the offline spid3r-formatter.vsix extension and installs it automatically for detected VS Code, Cursor, Windsurf, or VSCodium editors on PATH."
+!endif
 !if ${WITH_GUI} == 1
 LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView2 runtime that spid3r gui windows use, only if it is missing (Windows 11 and Microsoft Edge already include it)."
 !endif
@@ -376,6 +524,9 @@ LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView
 !endif
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop}  $(DESC_SecDesktop)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc}    $(DESC_SecAssoc)
+!ifdef HAVE_FORMATTER_VSIX
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecEditorExt} $(DESC_SecEditorExt)
+!endif
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ; ------------------------------------------------------------ uninstall ----
@@ -415,6 +566,8 @@ Section "Uninstall"
   Delete "$INSTDIR\spid3r.lib"
   Delete "$INSTDIR\spid3r.ico"
   Delete "$INSTDIR\README.md"
+  Delete "$INSTDIR\editor\spid3r-formatter.vsix"
+  RMDir "$INSTDIR\editor"
   Delete "$INSTDIR\uninstall.exe"
   ; README.md, docs, examples, benchmarks and stdlib/ are no longer installed,
   ; but an install made by an earlier version still has them: remove them on

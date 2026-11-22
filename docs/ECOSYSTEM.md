@@ -4,34 +4,26 @@ How third-party code reaches a Spid3r program, what each route is allowed to do,
 and which parts exist today.
 
 Status: every route on this page is implemented. `spidr-<name>` external tools,
-packages, Spid3r-source / WASM / host plugins, and native FFI.
+packages, and native FFI.
 
-## 0. The seven routes, at a glance
+## 0. Code routes, at a glance
 
-![Seven routes by which third-party code reaches a Spid3r program](diagrams/ecosystem.svg)
+![Routes by which third-party code reaches a Spid3r program](diagrams/ecosystem.svg)
 
-Every row ships. Only the WASM route can be sandboxed — the rest are trusted
-code, and the diagram says so on each row.
-
-## 1. The seven ways code enters a program
+## 1. How code enters a program
 
 | Route | Today | Trust | Notes |
 | --- | --- | --- | --- |
 | Embedded stdlib | ✅ | T0 | Compiled into the binary; immutable, no disk override from the install tree |
 | Project `.matrix` files | ✅ | T1 | Same trust as the project's own source |
-| Spid3r plugins | ✅ | T1 | `kind = "matrix"`: a `.matrix` file whose `public fn`s are exposed. Script trust |
 | Vendored packages (`vendor/`, `spider.lock`) | ✅ | T2 | Checksummed on install |
-| Host plugins | ✅ | T4 | **Trusted code.** Not sandboxed, and cannot be — see `docs/PLUGINS.md` |
-| WASM plugins | ✅ | T3 | The only genuine sandbox: empty linker, so no ambient authority; fuel-limited |
 | FFI (`extern fn`) | ✅ | T5 | **Trusted code**, AOT-only — see `docs/FFI.md` |
 
-The trust tiers (T0–T5) rank routes by who controls the code, from T0
+The trust tiers rank routes by who controls the code, from T0
 (immutable, compiled in) to T5 (arbitrary trusted native code). The one rule
 that matters most: **capability filtering is a policy filter, not a sandbox.**
-It replaces
-known builtin natives with stubs that return a catchable `capability denied`
-error. A host function a plugin registers keeps whatever authority it was given,
-and no filter can revoke it.
+It replaces known builtin natives with stubs that return a catchable `capability denied`
+error.
 
 ## 2. `spidr-<name>` external tools
 
@@ -113,39 +105,6 @@ module search path (see `docs/REGISTRY.md` and `docs/BUILDING.md` → "Module
 resolution"). Dependency installation **never executes package code** — there are
 no build scripts, unlike Cargo. That is a real security advantage and it is
 intentional; do not add them.
-
-## 4a. Plugins
-
-A **host plugin** is a Rust type implementing `PluginHost`, declared in a
-`plugin.toml`, and registered by its host before any engine exists:
-
-```rust
-spid3r_lang::plugin::register(Box::new(HelloPlugin::new()))?;
-```
-
-Registration merges its functions into `stdlib::native_defs()`, the one list all
-three engines install from — so a plugin function needs no per-engine code. A
-plugin is **compiled into** its host; there is no `dlopen`, because a native
-function is a Rust pointer over `Value` and `Value` has no stable C
-representation.
-
-`register` rejects, before any plugin code runs: a wrong `abi`, a function the
-manifest never declared or one whose arity disagrees, a `permission` the
-manifest does not announce, a duplicate name, and a function that would shadow a
-builtin. A `kind = "wasm"` plugin is refused outright rather than loaded through
-the host path, where it would silently get the host's full authority.
-
-A complete, runnable sample: `examples/plugins/hello-host/`.
-
-A **WASM plugin** is the other half: it lives on disk, so `spid3r run` can use it
-without being rebuilt. Discovery is `SPID3R_PLUGINS`, `./plugins`,
-`<exe>/plugins`, `~/.spidr/plugins`; the guest exports `memory`, `alloc`, and one
-`(i32, i32) -> i64` function per manifest entry. The host links nothing into it,
-so the sandbox is structural rather than a filter, and a fuel budget stops a
-runaway guest. `spid3r build` refuses a program that calls one, because a
-standalone binary cannot carry it.
-
-Sample: `examples/plugins/hello-wasm/`. The contract in full: `docs/PLUGINS.md`.
 
 ## 5. Resolution and the module search path
 

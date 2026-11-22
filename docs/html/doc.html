@@ -1507,21 +1507,18 @@
           <a href="#stdlib-formats" class="sb-link"><span>JSON, CSV &amp; Formats</span></a>
           <a href="#stdlib-regex" class="sb-link"><span>Regular Expressions</span></a>
           <a href="#stdlib-time" class="sb-link"><span>DateTime &amp; Timezones</span></a>
-          <a href="#stdlib-modules" class="sb-link"><span>29 Stdlib Modules</span></a>
+          <a href="#stdlib-modules" class="sb-link"><span>26 Stdlib Modules</span></a>
         </div>
       </div>
 
       <div class="sb-group">
         <div class="sb-group-header" onclick="toggleGroup(this)">
-          <span class="group-title"><span>🛠️</span> Runtime &amp; Remote Mgmt</span>
+          <span class="group-title"><span>🛠️</span> Runtime Configuration</span>
           <span class="sb-arrow">▼</span>
         </div>
         <div class="sb-links">
           <a href="#runtime-config" class="sb-link"><span>spid3r.ini</span><span class="sb-tag">config</span></a>
           <a href="#spid3rinfo" class="sb-link"><span>spid3rinfo()</span></a>
-          <a href="#agent" class="sb-link"><span>Management Agent</span><span class="sb-tag">remote</span></a>
-          <a href="#agent-cli" class="sb-link"><span>spid3r admin</span></a>
-          <a href="#agent-security" class="sb-link"><span>Auth, Roles &amp; Audit</span></a>
         </div>
       </div>
 
@@ -1536,8 +1533,6 @@
           <a href="#gc" class="sb-link"><span>Garbage Collector</span></a>
           <a href="#wasm-arch" class="sb-link"><span>WebAssembly Integration</span></a>
           <a href="#systems-ffi" class="sb-link"><span>Systems FFI &amp; Freestanding</span></a>
-          <a href="#containers" class="sb-link"><span>OCI Containers</span><span class="sb-tag">R11</span></a>
-          <a href="#os-kernel" class="sb-link"><span>Bare-Metal Kernel</span><span class="sb-tag">R13</span></a>
         </div>
       </div>
 
@@ -1551,15 +1546,6 @@
         <div class="sb-links">
           <a href="benchmark.html" class="sb-link"><span>Benchmarks</span></a>
         </div>
-
-        <div class="sb-links">
-          <a href="plugin.html" class="sb-link">
-            Plugins
-          </a>
-        </div>
-
-
-
       </div>
 
     </nav>
@@ -1670,7 +1656,7 @@
             <ul style="font-size: 13px; margin-bottom: 18px; color: var(--fg-secondary);">
               <li>Adds <code>spid3r-self.exe</code> (self-hosted native AOT compiler &amp; dev CLI), <code>spid3r.exe</code> (VM/interpreter/REPL/LSP), and <code>spid3r-control.exe</code> to your system <code>PATH</code>.</li>
               <li>Bundles <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the SHA-256-pinned runtime staticlib (<code>spid3r_lang.lib</code> + <code>spid3r_lang.lib.sha256</code> + <code>runtime-manifest.json</code>) for out-of-the-box AOT compilation.</li>
-              <li>Registers <code>.matrix</code> source files so double-clicking executes them, with all 29 stdlib modules compiled directly into the binaries.</li>
+              <li>Registers <code>.matrix</code> source files so double-clicking executes them, with all 26 stdlib modules compiled directly into the binaries.</li>
             </ul>
 
             <!-- Option 3: Cargo Source Build -->
@@ -1981,7 +1967,7 @@
               </tr>
               <tr id="cli-config">
                 <td><code>spid3r config</code></td>
-                <td><code>spid3r config get agent.port</code></td>
+                <td><code>spid3r config get spid3r.engine</code></td>
                 <td>Read and write <code>spid3r.ini</code>. Subcommands: <code>get KEY</code>,
                   <code>set KEY VALUE</code>, <code>list</code>, <code>path</code>, <code>validate</code>,
                   <code>reload</code>, <code>init</code>.</td>
@@ -2005,21 +1991,8 @@
               <tr>
                 <td><code>spid3r control config validate</code></td>
                 <td><code>spid3r control config validate</code></td>
-                <td>Agent-side validation; exits 1 and prints errors to stderr when the config is
-                  <code>valid:false</code> (it no longer prints a blank line and exits 0).</td>
-              </tr>
-              <tr id="cli-agent">
-                <td><code>spid3r agent</code></td>
-                <td><code>spid3r agent start</code></td>
-                <td>Local management agent. Subcommands: <code>start</code>, <code>pair [--role R] [--name N]</code>,
-                  <code>status</code>, <code>ops</code>. Listens on <code>[agent] bind:port</code> (default
-                  <code>127.0.0.1:9527</code>). No unrestricted shell.</td>
-              </tr>
-              <tr id="cli-admin">
-                <td><code>spid3r admin</code></td>
-                <td><code>spid3r admin --host web-1 ping</code></td>
-                <td>Remote administration client. Pair first with <code>spid3r admin pair &lt;host:port&gt; &lt;code&gt;</code>,
-                  then call operations against the paired name.</td>
+                <td>Local configuration validation; exits 1 and prints errors to stderr when the config is
+                  <code>valid:false</code>.</td>
               </tr>
               <tr>
                 <td><code>spid3r init [dir]</code></td>
@@ -2088,19 +2061,10 @@
                 </td>
               </tr>
               <tr>
-                <td><code>spid3r plugin abi|list|check</code></td>
-                <td><code>spid3r plugin check examples/plugins/hello-wasm</code></td>
-                <td>Inspect the plugin contract: <code>abi</code> prints the version string this build
-                  implements, <code>list</code> shows what the plugin search path would load, and
-                  <code>check &lt;dir&gt;</code> validates one directory against ABI v1 using the loader's own
-                  code path, without registering anything. Exit codes: 0 valid, 1 invalid, 2 usage.
-                </td>
-              </tr>
-              <tr>
                 <td><code>spid3r modules &lt;file&gt;</code></td>
                 <td><code>spid3r modules main.matrix --tree</code></td>
                 <td>List every module a program imports as <code>origin&lt;TAB&gt;path</code>, where origin is
-                  <code>disk</code>, <code>vendor</code>, <code>embedded</code> or <code>plugin</code>;
+                  <code>disk</code>, <code>vendor</code>, or <code>embedded</code>;
                   <code>--tree</code> prints the dependency graph. Nothing is executed — this is the command to reach
                   for when a build fails and you need to know which file an <code>import</code> actually named.
                 </td>
@@ -2117,23 +2081,6 @@
                 <td><code>spid3r pack -o dist/app.tar</code></td>
                 <td>Archive <code>spider.toml</code> + <code>src/</code> into a tarball, and extract one again with
                   <code>spid3r unpack &lt;archive&gt; [dir]</code>.
-                </td>
-              </tr>
-              <tr>
-                <td><code>spid3r container &lt;subcmd&gt;</code></td>
-                <td><code>spid3r container run alpine:latest /bin/sh</code></td>
-                <td>OCI container engine (built with <code>--features container</code>; Linux runtime isolation).
-                  Subcommands: <code>pull [--require-sig --pubkey &lt;hex&gt;]</code>, <code>create [--name ID]</code>,
-                  <code>start</code>, <code>run</code>, <code>stop</code>, <code>kill</code>, <code>rm</code>,
-                  <code>ps</code>, <code>inspect</code>, <code>logs</code>, <code>gc</code>.
-                </td>
-              </tr>
-              <tr>
-                <td><code>spid3r kernel build</code></td>
-                <td><code>spid3r kernel build --out kernel.bin</code></td>
-                <td>Build the zero-dependency <code>no_std</code> <code>x86_64-unknown-none</code> kernel crate
-                  (<code>kernel/Cargo.toml</code>) via <code>cargo build --release</code> and copy the ELF binary to
-                  <code>--out</code> (default <code>kernel/build/kernel.bin</code>).
                 </td>
               </tr>
               <tr>
@@ -2220,17 +2167,20 @@
           — is the subject of the next section.
         </p>
 
-        <h3 class="section-h3" id="ecosystem">The Ecosystem: Packages, Plugins and Trust</h3>
+        <h3 class="section-h3" id="ecosystem">The Ecosystem: Packages and Trust</h3>
         <p>
-          Third-party code reaches a program through seven routes, and they do not carry the same authority. The tiers
-          below are the whole trust model; anything not on this list is not a supported extension point.
+          Third-party code reaches a program through four supported core routes, and they do not carry the same
+          authority. Rust host applications embed via <code>spid3r_lang::embed::Engine</code>, and external CLI
+          extensions run as <code>spidr-&lt;name&gt;</code> executables on <code>PATH</code>; anything not on this
+          list is not an extension point.
         </p>
 
         <figure class="diagram">
           <img src="../diagrams/ecosystem.svg"
-            alt="A Spid3r program receives code through seven routes: the embedded standard library, project source files, Spid3r plugins, vendored packages, WASM plugins, host plugins and native FFI — every route ships. Only the WASM plugin route is sandboxed; the Spid3r, host and FFI routes are trusted code by definition.">
-          <figcaption>Seven routes in, all of them shipped. Only one — WASM plugins — can be sandboxed; the rest
-            are trusted code, and the diagram marks which is which.</figcaption>
+            alt="A Spid3r program receives code through four core routes: the 26 embedded standard library modules, project source files, vendored packages, and native FFI (extern fn) in AOT builds.">
+          <figcaption>Four core routes in, each labelled with its trust tier. Rust hosts embed via
+            <code>spid3r_lang::embed::Engine</code> and CLI helpers dispatch via <code>spidr-&lt;name&gt;</code> on
+            <code>PATH</code>.</figcaption>
         </figure>
 
         <div class="table-wrap">
@@ -2247,7 +2197,7 @@
               <tr>
                 <td>T0</td>
                 <td>Built-in stdlib</td>
-                <td>Embedded, immutable, no disk override from the install tree</td>
+                <td>Embedded (26 modules, 254 native builtins), immutable, no disk override from the install tree</td>
                 <td>shipped</td>
               </tr>
               <tr>
@@ -2257,27 +2207,9 @@
                 <td>shipped</td>
               </tr>
               <tr>
-                <td>T1</td>
-                <td>Spid3r plugins (<code>kind = "matrix"</code>)</td>
-                <td>Written in the language and loaded from disk; script authority, like your own source</td>
-                <td>shipped</td>
-              </tr>
-              <tr>
                 <td>T2</td>
                 <td>Vendored packages</td>
                 <td>Checksummed against <code>spider.lock</code>; <code>spid3r verify</code> re-checks</td>
-                <td>shipped</td>
-              </tr>
-              <tr>
-                <td>T3</td>
-                <td>WASM plugins</td>
-                <td>Sandboxed — no ambient authority, manifest-declared permissions, fuel-limited</td>
-                <td>shipped</td>
-              </tr>
-              <tr>
-                <td>T4</td>
-                <td>Host plugins</td>
-                <td>Trusted code. Not sandboxed, and cannot be</td>
                 <td>shipped</td>
               </tr>
               <tr>
@@ -2292,10 +2224,10 @@
         <p>
           Two things this page will not overstate. Capability filtering is a <strong>policy filter, not a
             sandbox</strong>: it replaces known builtin natives with stubs that return a catchable
-          <code>capability denied</code> error, and a host function a plugin registers keeps whatever authority it was
-          given — no filter can take that back. And dependency installation <strong>never executes package
-            code</strong> — there are no build scripts, unlike Cargo — which is a real security advantage and is
-          deliberate.
+          <code>capability denied</code> error for script engines, and a host function registered through
+          <code>spid3r_lang::embed::Engine::register</code> keeps whatever authority the host gave it. And dependency
+          installation <strong>never executes package code</strong> — there are no build scripts, unlike Cargo —
+          which is a real security advantage and is deliberate.
         </p>
 
         <h4 id="packages" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
@@ -2415,311 +2347,6 @@
           <div style="color: var(--fg-muted); margin-bottom: 4px;"># Publish into a static registry directory</div>
           <div style="color: var(--fg-primary);">spid3r publish --to-dir ../registry</div>
         </div>
-
-        <h4 id="plugins" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Plugins</h4>
-        <p>
-          Host plugins work today. A plugin declares itself in a <code>plugin.toml</code>, implements one trait, and is
-          registered by its host at startup. There is <strong>no dynamic loading</strong>: a plugin is compiled into
-          the host that uses it, because a native function is a Rust function pointer over <code>Value</code>, and
-          <code>Value</code> has no stable representation that could cross a C ABI boundary.
-        </p>
-        <p>
-          The payoff of the design is that registration merges the plugin's functions into
-          <code>stdlib::native_defs()</code> — the one list the tree interpreter, the bytecode VM and the AOT backend
-          all install from. A plugin function needs <strong>no per-engine code</strong>.
-        </p>
-        <figure class="diagram">
-          <img src="../diagrams/host-plugins.svg"
-            alt="Host plugin flow: plugin.toml declares the ABI string and one block per function with arity and permission, the plugin implements one Rust trait over Value, the host registers it at startup with plugin::register, and the functions merge into the native table all three engines read — no per-engine code. Warning strip: trusted code, same address space, compiled into its host, no dynamic loading.">
-          <figcaption>Declare, implement, register. The plugin's functions land in the one native table every engine
-            installs from — and because it is compiled into its host, it is trusted code by definition.</figcaption>
-        </figure>
-        <div
-          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
-          <div style="color: var(--fg-muted); margin-bottom: 4px;"># plugin.toml — the manifest is the contract</div>
-          <div style="color: var(--fg-primary);">[plugin]</div>
-          <div style="color: var(--fg-primary);">name = "hello"</div>
-          <div style="color: var(--fg-primary);">abi = "spid3r-plugin-abi-1"</div>
-          <div style="color: var(--fg-primary);">capabilities = ["environment"]</div>
-          <div style="color: var(--fg-muted); margin: 8px 0 4px;"># one block per function, with its arity and
-            permission</div>
-          <div style="color: var(--fg-primary);">[[function]]</div>
-          <div style="color: var(--fg-primary);">name = "hello_env"</div>
-          <div style="color: var(--fg-primary);">arity = 1</div>
-          <div style="color: var(--fg-primary);">permission = "environment"</div>
-        </div>
-        <p>
-          <code>register</code> rejects, <strong>before any plugin code runs</strong>: an <code>abi</code> that is not
-          exactly <code>spid3r-plugin-abi-1</code>; a function the manifest never declared, or one whose arity
-          disagrees; a <code>permission</code> the manifest's <code>capabilities</code> does not announce; a duplicate
-          name; and a function that would shadow a builtin — <code>write_file</code> must not be interceptable. A
-          plugin whose <code>start()</code> fails is recorded as <code>Failed</code> and simply never offers its
-          functions, so one broken plugin cannot take the host down.
-        </p>
-        <p>
-          The permission gate is the same mechanism as for builtins: <code>Engine::deny(Capability::Environment)</code>
-          replaces <code>hello_env</code> with a stub returning a <em>catchable</em>
-          <code>capability denied</code> error, while the plugin's other functions keep working.
-        </p>
-        <p>
-          A complete sample lives at <code>examples/plugins/hello-host/</code> — a manifest, a <code>PluginHost</code>
-          implementation, a host binary and two scripts, including one that demonstrates the gate.
-          <strong>The full plugin contract:</strong> status is <em>every route works</em> — Spid3r-source, WASM and
-          host plugins plus native FFI — full contract in the deep dive below.
-        </p>
-        <details class="deep">
-          <summary>Plugin deep dive — three kinds, manifest contract, lifecycle, WASM guest ABI, status</summary>
-          <div class="deep-body">
-            <p>
-              <strong>The three kinds and their trust stories:</strong>
-            </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th><code>kind</code></th>
-                <th>How it loads</th>
-                <th>Trust</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>matrix</code></td>
-                <td>a <code>.matrix</code> file the toolchain loads and runs</td>
-                <td><strong>script code</strong> — the authority a script has</td>
-              </tr>
-              <tr>
-                <td><code>wasm</code></td>
-                <td>a <code>.wasm</code> module loaded and interpreted by <code>wasmi</code></td>
-                <td><strong>sandboxed</strong> — no imports, so no ambient authority</td>
-              </tr>
-              <tr>
-                <td><code>host</code></td>
-                <td>compiled into a Rust host that calls <code>plugin::register</code></td>
-                <td><strong>trusted native code</strong> — same address space and authority</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p>
-          <code>matrix</code> is the default (write <code>public fn</code>s, declare them, done); <code>wasm</code>
-          is for code you did not write; <code>host</code> is for a Rust host exposing its own internals. A host
-          plugin cannot be loaded from disk — a native function is
-          <code>(&amp;'static str, fn(&amp;NativeCtx, Vec&lt;Value&gt;) -&gt; Result&lt;Value, String&gt;)</code>,
-          and <code>Value</code> is a reference-counted enum with no stable C ABI, so dynamic loading would need a
-          serialisation hop or handle table plus <code>dlopen</code>, which ABI v1 deliberately does not do. The
-          <code>spid3r</code> binary itself registers no plugins, so <code>spid3r run</code> cannot call a host
-          plugin function; an embedding binary calls <code>plugin::register(Box::new(Hello))?</code> at startup,
-          before creating an engine.
-        </p>
-        <p>
-          <strong>Manifest contract.</strong> <code>[plugin]</code> carries <code>name</code>,
-          <code>version</code>, an exact <code>abi = "spid3r-plugin-abi-1"</code>, <code>kind</code>
-          (<code>host</code>|<code>wasm</code>), and <code>capabilities</code>. Each <code>[[function]]</code> declares
-          <code>name</code>, <code>arity</code> and an optional <code>permission</code>. <code>register</code> rejects
-          <em>before any plugin code runs</em>: a non-exact <code>abi</code>; a function the manifest does not
-          declare; a disagreeing arity; a permission the <code>capabilities</code> list omits; a duplicate
-          plugin/function name or one that shadows a builtin (<code>write_file</code> must not be interceptable).
-        </p>
-        <p>
-          <strong>Lifecycle.</strong> <code>Loaded —start()→ Started —stop()→ Stopped</code>, with a failed
-          <code>start()</code> moving to <code>Failed</code>. <code>start</code> runs during <code>register</code>
-          with the registry lock released (so it may open a pool or read config) and a failure is recorded but
-          never offered — the host keeps running. <code>stop</code> runs in <code>plugin::shutdown_all()</code>,
-          must tolerate being called twice, and returns errors rather than failing fast so one bad teardown cannot
-          leave the rest running. Enforcement of <code>permission</code> happens <strong>at call time</strong> for
-          all three kinds, so it does not matter whether the plugin was registered before or after
-          <code>deny()</code> was configured; a pure function with no declared permission still runs under
-          <code>deny_all</code>.
-        </p>
-        <p>
-          <strong>Spid3r-source plugins.</strong> A directory with <code>plugin.toml</code> (<code>kind =
-          "matrix"</code>, optional <code>entry</code> defaulting to <code>&lt;name&gt;.matrix</code>) and a
-          <code>.matrix</code> file. The loader parses and checks it with the ordinary front end, runs it as a
-          module (no <code>fn main</code> required), wraps each declared global function as a native closure, and
-          registers it. Each plugin gets its own interpreter and globals (it cannot clobber the caller's), can call
-          the whole standard library, and a <code>throw</code> reaches the caller's <code>catch</code> intact.
-          Trust is tier T1 script authority; no feature flag is needed. Sample:
-          <code>examples/plugins/hello-matrix/</code>.
-        </p>
-        <p>
-          <strong>WASM plugins.</strong> Discovery order: <code>SPID3R_PLUGINS</code> (<code>;</code>-separated
-          directories containing plugin directories), <code>./plugins</code>, <code>&lt;exe&gt;/plugins</code>,
-          <code>~/.spidr/plugins</code>; the load order is sorted so a name clash reports the same plugin every
-          time. <code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>,
-          <code>bench</code>, <code>debug</code>, <code>gui</code>, <code>magic</code> and <code>repl</code> load
-          plugins; <code>build</code> and <code>dist</code> do not (a standalone binary cannot link one, so such a
-          call is rejected at compile time). A plugin that fails to load is a warning, not a fatal error. The guest
-          exports <code>memory</code>, <code>alloc(i32)-&gt;i32</code>, optional
-          <code>dealloc(i32,i32)</code>, and one <code>(i32,i32)-&gt;i64</code> per function, named exactly as in
-          the manifest (no dispatch table). Wire format (little-endian, defined in <code>src/plugin/abi.rs</code>):
-          <code>request := u8 argc, argc × value</code>;
-          <code>response := value | (0xFF, u32 len, utf8 message)</code>;
-          <code>value := u8 tag, payload</code> with <code>0 null · 1 i64 · 2 f64 · 3 u8 bool · 4 (u32 len, utf8) · 5 (u32 count, values)</code>.
-          A map, class instance or closure is refused rather than coerced. The host builds an <strong>empty</strong>
-          <code>Linker</code> — a module importing anything (WASI, a clock, randomness) fails to instantiate; the
-          capability never existed, it is not revoked. Every call gets a fuel budget (<code>DEFAULT_FUEL</code>,
-          50M instructions, or a tighter host limit), so <code>loop {}</code> traps as a catchable script error.
-          Sample: <code>examples/plugins/hello-wasm/</code>.
-        </p>
-        <p>
-          <strong>Status of every route.</strong> Spid3r plugins (<code>kind = "matrix"</code>): works, no feature
-          flag or build step. Host plugins: works. WASM plugins (<code>kind = "wasm"</code>, disk-loaded): works,
-          <code>wasmi</code> behind the default <code>plugins-wasm</code> feature (without it, a wasm plugin
-          reports the missing feature rather than being silently ignored). FFI (<code>extern fn</code>): works,
-          AOT only. <code>spid3r plugin abi|list|check</code>: works — <code>abi</code> prints the version,
-          <code>list</code> reports the search path (name, kind and function count per directory, not what is
-          registered in this process), <code>check</code> validates a directory with the loader's own code path.
-          <code>enable/disable</code> is not implemented (discovery is per run, so there is no persistent enable
-          list) and native <code>dlopen</code> of host plugins is deliberately absent. To write one: copy
-          <code>examples/plugins/hello-host</code>, edit <code>plugin.toml</code> (names are
-          <code>&amp;'static str</code> compile-time constants), implement <code>PluginHost</code> with
-          <code>manifest()</code> using <code>include_str!</code> so the shipped manifest cannot drift, return one
-          <code>PluginFnDef</code> per declared function, and register before creating the engine.
-        </p>
-            </div>
-        </details>
-        <h5 id="wasm-plugins"
-          style="font-size: 0.98rem; font-weight: 600; margin: 20px 0 8px; color: var(--fg-primary);">WASM plugins: the
-          sandboxed route</h5>
-        <p>
-          A WASM plugin is the opposite of a host plugin: it exists only as a file. The toolchain reads
-          <code>plugin.toml</code> and <code>plugin.wasm</code> from the plugin search path and interprets the module,
-          so
-          <code>spid3r run</code> can call it without the binary being rebuilt.
-        </p>
-        <div
-          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
-          <div style="color: var(--fg-muted); margin-bottom: 4px;"># discovery order</div>
-          <div style="color: var(--fg-primary); margin-bottom: 8px;">SPID3R_PLUGINS · ./plugins · &lt;exe&gt;/plugins ·
-            ~/.spidr/plugins</div>
-          <div style="color: var(--fg-muted); margin-bottom: 4px;"># run a program that calls a sandboxed plugin</div>
-          <div style="color: var(--cyan); margin-bottom: 8px;">SPID3R_PLUGINS=examples/plugins spid3r run app.matrix
-          </div>
-          <div style="color: var(--fg-muted); margin-bottom: 4px;"># the guest must export its memory and two helpers
-          </div>
-          <div style="color: var(--fg-primary);">memory · alloc(i32) -&gt; i32 · dealloc(i32, i32)</div>
-        </div>
-        <p>
-          Each manifest function is one export with the signature <code>(i32, i32) -&gt; i64</code>: the host writes the
-          arguments into linear memory, calls the export, and reads the result back. There is no dispatch table inside
-          the guest. The wire format is a small typed binary encoding — <code>null</code>, <code>int</code>,
-          <code>float</code>, <code>bool</code>, <code>string</code>, <code>list</code> — rather than JSON, so a plugin
-          author does not have to ship a JSON parser <em>into</em> the sandbox.
-        </p>
-        <p>
-          The sandbox is structural: the host builds an <strong>empty linker</strong>, so a module that imports anything
-          — <code>fd_write</code>, a clock, randomness — fails to instantiate. Nothing is revoked at run time, because
-          nothing was ever granted. Every call also carries a fuel budget, so a <code>loop {}</code> traps instead of
-          hanging the interpreter; that is the one place a limit is enforceable <em>below</em> the language, and it is
-          what makes running an untrusted plugin safe.
-        </p>
-        <p>
-          <code>spid3r build</code> and <code>spid3r dist</code> deliberately do <strong>not</strong> load plugins: a
-          standalone native executable cannot link one. A program that calls a plugin function is rejected at compile
-          time, with a note explaining why — not compiled into a binary that throws at run time.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Route</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Spid3r plugins (<code>kind = "matrix"</code>, loaded from disk)</td>
-                <td>works — no feature flag, no build step</td>
-              </tr>
-              <tr>
-                <td>Host plugins (compiled into the host)</td>
-                <td>works</td>
-              </tr>
-              <tr>
-                <td>WASM plugins (<code>kind = "wasm"</code>, loaded from disk)</td>
-                <td>works — <code>wasmi</code>, behind the default <code>plugins-wasm</code> feature</td>
-              </tr>
-              <tr>
-                <td>FFI (<code>extern fn</code>)</td>
-                <td>works — AOT only; <code>spid3r run</code> rejects it at compile time</td>
-              </tr>
-              <tr>
-                <td><code>spid3r plugin abi|list|check</code></td>
-                <td>works — <code>abi</code> prints the version, <code>list</code> reports the search path,
-                  <code>check</code> validates a directory against ABI v1
-                </td>
-              </tr>
-              <tr>
-                <td><code>spid3r plugin enable/disable</code></td>
-                <td>not implemented — a plugin is discovered per run, so there is no persistent enable list</td>
-              </tr>
-              <tr>
-                <td>Dynamic loading of <em>native</em> host plugins (<code>dlopen</code>)</td>
-                <td>deliberately not implemented for host plugins (no stable ABI over Rust <code>Value</code>);
-                  AOT C-ABI FFI is the opt-in native route — see the FFI deep dive below.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <details class="deep">
-          <summary>FFI deep dive — <code>extern fn</code> types, marshalling, linking, callbacks, <code>--allow-dlopen</code></summary>
-          <div class="deep-body">
-            <p>
-              <strong>The native C route (AOT only).</strong> <code>extern fn</code> declarations name the C symbol
-              verbatim — no mangling, no aliasing — and only six types cross the boundary:
-              <code>int</code> → <code>int64_t</code>, <code>float</code> → <code>double</code> (an
-              <code>int</code> argument is widened), <code>bool</code> → 1-byte <code>_Bool</code>,
-              <code>string</code> → UTF-8 NUL-terminated <code>const char*</code>, <code>ptr</code> → opaque
-              <code>void*</code> handle, <code>usize</code> → 64-bit <code>size_t</code>. Lists, maps, classes and
-              closures are refused <strong>at build time</strong> with the type named; an untyped parameter is an
-              error (C has none). A <code>ptr</code> is a boxed address — nothing is copied or freed around it, and
-              passing a handle C did not hand you is undefined behavior on the C side.
-            </p>
-            <p>
-              <strong>Marshalling &amp; linking.</strong> Every call copies string arguments into temporary C
-              buffers and frees them when the call returns; a string <em>returned</em> from C is copied into a
-              Spid3r string and the C buffer is not freed — a C function must not retain a pointer to a string
-              argument. <code>--link-lib</code> is repeatable: a bare name becomes <code>-l&lt;name&gt;</code> on
-              Unix and <code>&lt;name&gt;.lib</code> under MSVC; paths ending in
-              <code>.a</code>/<code>.lib</code>/<code>.so</code>/<code>.dylib</code> pass through as given. A
-              missing symbol is a link error, so no binary is produced — a bad symbol can never reach a user as a
-              crash.
-            </p>
-            <p>
-              <strong>Where it runs &amp; trust.</strong> The tree interpreter and bytecode VM reject
-              <code>extern fn</code> outright (exit 2, before any statement runs) because they link nothing.
-              AOT FFI is tier-T5 trusted code: a C function runs with full process authority, no sandbox can
-              exist at this layer, and <code>--sandbox</code> does not apply to a compiled executable. Untrusted
-              third-party code belongs in a WASM plugin.
-            </p>
-            <p>
-              <strong>Extensions.</strong> POD structs (parent-less classes with 1–2 scalar fields) marshal by
-              value (Win64/SysV ABIs); larger or non-POD classes are refused at build time. Variadics work
-              (<code>extern fn printf(fmt: string, ...) -&gt; int;</code>, <code>bool</code> promoted to
-              <code>int</code>). <code>ffi_callback(fn_val, "fn(int, int) -&gt; int")</code> emits a C-ABI thunk
-              for passing Spid3r closures to C APIs — the slot lives for the process lifetime, a
-              <code>throw</code> inside returns a zero/null sentinel to C and re-raises through
-              <code>try</code>/<code>catch</code>. Runtime dynamic loading —
-              <code>dl_open</code>/<code>dl_sym</code>/<code>dl_call</code>/<code>dl_close</code> — is
-              <strong>disabled by default</strong> and requires <code>spid3r build --allow-dlopen</code> (refused
-              at build time otherwise, and rejected on <code>tree</code>/<code>vm</code>/<code>--sandbox</code>).
-              C++ symbols (name mangling) and non-POD/large structs are not implemented.
-            </p>
-          </div>
-        </details>
-        <p>
-          The distinction that matters: a host plugin is <em>trusted code</em> — same address space, same authority, and
-          no filter can revoke what it already has. A WASM plugin is the only route that can be sandboxed, and it is
-          the one to prefer for anything you did not write. Both samples are in the repository:
-          <code>examples/plugins/hello-host</code> and <code>examples/plugins/hello-wasm</code>.
-        </p>
-        <p>
-          The full developer guide &mdash; the manifest contract, the guest ABI, the wire format and a
-          troubleshooting table &mdash; is its own page:
-          <a href="plugin.html"><strong>Writing Spid3r Plugins &rarr;</strong></a>
-        </p>
 
         <h3 class="section-h3" id="native-compilation">Native Machine-Code Compilation (AOT)</h3>
         <p>
@@ -4191,7 +3818,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
             </thead>
             <tbody>
               <tr>
-                <td><code>selfhost/corpus/</code> (134 programs)</td>
+                <td><code>selfhost/corpus/</code> (136 programs)</td>
                 <td>0 existing programs use <code>&lt;T&gt;</code></td>
                 <td>Frozen corpus parity unchanged; add generic instantiation cases under the SH-4 ledger entry</td>
               </tr>
@@ -4771,8 +4398,8 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
       <section class="chapter" id="stdlib">
         <h2 class="chapter-title"><span class="ch-num">14.</span> Standard Library &amp; System API Reference</h2>
         <p class="chapter-lead">
-          Spid3r includes a comprehensive set of built-in global functions and 29 first-party modules covering
-          networking, cryptography, formats, compression, civil calendars, and machine learning.
+          Spid3r includes a comprehensive set of built-in global functions (254 natives) and 26 first-party modules
+          covering networking, standard hashing, formats, compression, and civil calendars.
         </p>
 
         <h3 class="section-h3" id="stdlib-console">Console, System &amp; Filesystem Built-ins</h3>
@@ -4950,7 +4577,7 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                 <td><code>signal_requested</code> / <code>shutdown_requested</code></td>
                 <td><code>signal_requested(name, clear?)</code> / <code>shutdown_requested()</code></td>
                 <td>Cooperative signal polling for <code>"INT"</code>, <code>"TERM"</code>, <code>"HUP"</code>,
-                  <code>"USR1"</code>, <code>"USR2"</code> (Unix signal handlers coordinated with agent <code>SIGHUP</code>
+                  <code>"USR1"</code>, <code>"USR2"</code> (Unix signal handlers including <code>SIGHUP</code>
                   reload; Windows console control handler for shutdown).</td>
               </tr>
               <tr>
@@ -5285,9 +4912,9 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
           </div>
         </div>
 
-        <h3 class="section-h3" id="stdlib-modules">The 29 Standard Library Modules (<code>stdlib/</code>)</h3>
+        <h3 class="section-h3" id="stdlib-modules">The 26 Standard Library Modules (<code>stdlib/</code>)</h3>
         <p>
-          Spid3r includes 29 zero-dependency standard library modules in <code>stdlib/</code>, automatically
+          Spid3r includes 26 zero-dependency standard library modules in <code>stdlib/</code>, automatically
           discoverable via <code>import "name" as alias;</code> or selective symbol imports
           (<code>import { ClassA, helper as h } from "name";</code>). In Spid3r, top-level symbols in imported files must
           be marked with the <code>public</code> modifier (e.g., <code>public fn</code>, <code>public class</code>,
@@ -5312,19 +4939,9 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                   (<code>stream_response</code>), and URL param decoding.</td>
               </tr>
               <tr>
-                <td><code>dataframe.matrix</code></td>
-                <td><code>import "dataframe" as df;</code></td>
-                <td>Pandas-style tabular dataframes: column selection, filtering, group-by, joining.</td>
-              </tr>
-              <tr>
                 <td><code>stats.matrix</code></td>
                 <td><code>import "stats" as st;</code></td>
                 <td>Descriptive statistics, normal/poisson distributions, linear regression, ANOVA.</td>
-              </tr>
-              <tr>
-                <td><code>ml.matrix</code></td>
-                <td><code>import "ml" as ml;</code></td>
-                <td>K-Means clustering, logistic regression, decision trees, k-nearest neighbors.</td>
               </tr>
               <tr>
                 <td><code>mathx.matrix</code></td>
@@ -5449,11 +5066,6 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                 <td><code>import "uuid" as uuid;</code></td>
                 <td>UUID v4 generation (CSPRNG-backed).</td>
               </tr>
-              <tr>
-                <td><code>ssh.matrix</code></td>
-                <td><code>import "ssh" as ssh;</code></td>
-                <td>SSH/SFTP by driving the system OpenSSH client.</td>
-              </tr>
             </tbody>
           </table>
         </div>
@@ -5499,23 +5111,13 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
 
       </section>
 
-      <!-- CHAPTER 14b: RUNTIME CONFIG & REMOTE MANAGEMENT -->
+      <!-- CHAPTER 14b: RUNTIME CONFIG & LOCAL CONTROL -->
       <section class="chapter" id="runtime-config">
-        <h2 class="chapter-title"><span class="ch-num">14b.</span> Runtime Configuration &amp; Remote Management</h2>
+        <h2 class="chapter-title"><span class="ch-num">14b.</span> Runtime Configuration &amp; Local Control</h2>
         <p class="chapter-lead">
-          Spid3r has <code>spid3r.ini</code>,
-          <code>spid3rinfo()</code>, and an encrypted management agent. One installed binary can be inspected,
-          reconfigured, and operated from another machine — without a shell.
+          Spid3r has <code>spid3r.ini</code> (45 schema keys across 12 sections),
+          <code>spid3rinfo()</code>, and local <code>spid3r control</code> / <code>spid3r-control</code> management.
         </p>
-
-        <figure class="diagram">
-          <img src="../diagrams/runtime-management.svg"
-            alt="The host runs spid3r agent start on [agent] bind:port; an operator's machine pairs once with a one-time 48-hex code and then speaks spid3r-agent/1 over TCP with ChaCha20 plus HMAC-SHA256. Every request is role-checked (viewer, operator, admin) against an ops allow-list and dispatched to a predefined operation; calls land in audit.log and config is saved atomically. Below, the spid3r.ini precedence chain and the remote config.set deny-list.">
-          <figcaption>Runtime configuration &amp; remote management. The wire never reaches a shell: an unknown
-            operation is refused, every call is role-checked and audited, and the schema-derived frozen set —
-            every <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
-            listener switches and the capability deny lists — is read-only over the wire.</figcaption>
-        </figure>
 
         <h3 class="section-h3" id="ini">The <code>spid3r.ini</code> File</h3>
         <p>
@@ -5537,13 +5139,12 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
           <code>exec</code>, <code>test</code>, <code>bench</code>, <code>debug</code>, <code>gui</code>,
           <code>repl</code>, <code>magic</code>) refuse to start with exit 1. <code>--version</code>,
           <code>help</code>, <code>info</code>, <code>config path</code> and <code>config validate</code> remain
-          usable to diagnose the pin, and remote <code>config.set</code> refuses to persist while it is broken —
-          the local <code>control config set</code> / <code>spid3r config init</code> paths are how an operator
-          repairs it. Restart a long-lived process that initialized its policy while the pin was broken; its
-          fail-closed policy remains sticky until restart. <code>spid3r config validate</code> reports a broken pin as a problem (exit 1) and treats an
-          unknown flag as a usage error (exit 2); local diagnostics keep policy values raw so the bad entry is
-          visible. <code>spid3r control config validate</code> exits
-          1 with errors on stderr when <code>valid:false</code>.
+          usable to diagnose the pin — the local <code>control config set</code> / <code>spid3r config init</code>
+          paths are how an operator repairs it. Restart a long-lived process that initialized its policy while the pin
+          was broken; its fail-closed policy remains sticky until restart. <code>spid3r config validate</code> reports
+          a broken pin as a problem (exit 1) and treats an unknown flag as a usage error (exit 2); local diagnostics
+          keep policy values raw so the bad entry is visible. <code>spid3r control config validate</code> exits 1 with
+          errors on stderr when <code>valid:false</code>.
         </p>
         <p>
           Precedence, highest first: process environment → <code>[env.&lt;name&gt;]</code> (selected by
@@ -5552,7 +5153,7 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
           compiled default stays in effect (a bool must be <code>true/false/1/0/on/off/yes/no</code>; a typo like
           <code>ture</code> is an error, not a silent true). A UTF-8 BOM at the start of the file is tolerated.
           Unknown keys are reported by <code>spid3r config validate</code> and never abort a run. Live reload:
-          <code>spid3r config reload</code>, <code>SIGHUP</code> on Unix, or the agent's reload operation. The
+          <code>spid3r config reload</code> or <code>SIGHUP</code> on Unix. The
           <code>[logging]</code> keys <code>enabled</code>, <code>file</code> and <code>audit</code> are honored
           (the <code>SPID3R_LOG</code>/<code>SPID3R_LOG_FILE</code> env vars override the INI). Config and state
           files are written atomically (temp file + rename).
@@ -5586,13 +5187,7 @@ level = info               ; error|warn|info — minimum surfaced diagnostic lev
 display = false            ; mirror diagnostic log lines to stderr
 log_file =                 ; dedicated error-log path; empty = shared log only
 
-[agent]
-enabled = false
-bind = 127.0.0.1         ; 0.0.0.0 to accept other hosts
-port = 9527
-
 [security]
-allow_remote = false
 basedir =                ; open_basedir analog: paths scripts may touch
 disable_natives =        ; natives replaced by a catchable denial
                          ; WARNING: basedir alone is NOT a jail - Process
@@ -5612,15 +5207,15 @@ allow_local_git = false
 
 [paths]
 cache_dir =              ; extracted-runtime cache home (alias: SPID3R_CACHE_DIR)
-state_dir =              ; agent store, audit log, pid file (alias: SPID3R_STATE_DIR)
+state_dir =              ; audit log, state and pid files (alias: SPID3R_STATE_DIR)
 sqlite_path =            ; SQLite library tried first (alias: SPID3R_SQLITE_PATH)
 
 [cache]
 bytecode_dir =           ; bytecode cache for `spid3r run`; empty = disabled
 
 [env.production]
-agent.enabled = true
-agent.bind = 0.0.0.0
+runtime.wall_clock_limit_ms = 30000
+errors.level = warn
 </div>
         </div>
 
@@ -5781,27 +5376,25 @@ agent.bind = 0.0.0.0
                 <td><code>[logging]</code></td>
                 <td><code>enabled</code></td>
                 <td><code>true</code></td>
-                <td>Write the append-only diagnostic log. Frozen for remote <code>config.set</code>.</td>
+                <td>Write the append-only diagnostic log. Frozen against unprivileged live override.</td>
               </tr>
               <tr>
                 <td><code>[logging]</code></td>
                 <td><code>file</code></td>
                 <td><em>empty</em></td>
-                <td>Log path override (empty = platform default; <code>SPID3R_LOG_FILE</code> env alias). Frozen
-                  for remote <code>config.set</code>.</td>
+                <td>Log path override (empty = platform default; <code>SPID3R_LOG_FILE</code> env alias). Frozen against unprivileged live override.</td>
               </tr>
               <tr>
                 <td><code>[logging]</code></td>
                 <td><code>rotate_mb</code></td>
                 <td><code>1</code></td>
-                <td>Rotate the log once it passes this size (1–1024 MiB). Frozen for remote
-                  <code>config.set</code>.</td>
+                <td>Rotate the log once it passes this size (1–1024 MiB). Startup-only; frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[logging]</code></td>
                 <td><code>audit</code></td>
                 <td><code>true</code></td>
-                <td>Append remote-management actions to the audit log. Frozen for remote <code>config.set</code>.</td>
+                <td>Append control-plane configuration actions to the audit log. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[errors]</code></td>
@@ -5832,54 +5425,28 @@ agent.bind = 0.0.0.0
                 <td>Extra module search directories, semicolon-separated (alias of <code>SPID3R_PATH</code>).</td>
               </tr>
               <tr>
-                <td><code>[modules]</code></td>
-                <td><code>plugins</code></td>
-                <td><em>empty</em></td>
-                <td>Plugin search path (defaults to <code>SPID3R_PLUGINS</code>).</td>
-              </tr>
-              <tr>
-                <td><code>[modules]</code></td>
-                <td><code>allow_host</code></td>
-                <td><code>true</code></td>
-                <td>Allow host-registered plugins (compiled into the embedding host).</td>
-              </tr>
-              <tr>
-                <td><code>[modules]</code></td>
-                <td><code>allow_wasm</code></td>
-                <td><code>true</code></td>
-                <td>Allow loading sandboxed <code>.wasm</code> plugins.</td>
-              </tr>
-              <tr>
                 <td><code>[security]</code></td>
                 <td><code>deny_filesystem</code></td>
                 <td><code>false</code></td>
-                <td>Deny filesystem natives to scripts (embed-style policy). Frozen for remote
-                  <code>config.set</code>.</td>
+                <td>Deny filesystem natives to scripts (embed-style policy). Startup-only; frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[security]</code></td>
                 <td><code>deny_process</code></td>
                 <td><code>false</code></td>
-                <td>Deny process natives to scripts. Frozen for remote <code>config.set</code>.</td>
+                <td>Deny process natives to scripts. Startup-only; frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[security]</code></td>
                 <td><code>deny_network</code></td>
                 <td><code>false</code></td>
-                <td>Deny network natives to scripts. Frozen for remote <code>config.set</code>.</td>
+                <td>Deny network natives to scripts. Startup-only; frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[security]</code></td>
                 <td><code>deny_environment</code></td>
                 <td><code>false</code></td>
-                <td>Deny environment natives to scripts. Frozen for remote <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[security]</code></td>
-                <td><code>allow_remote</code></td>
-                <td><code>false</code></td>
-                <td>Serves the management agent when true; the agent also serves when <code>[agent] enabled</code>
-                  is true (either switch starts it, bound to <code>agent.bind</code>).</td>
+                <td>Deny environment natives to scripts. Startup-only; frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[security]</code></td>
@@ -5937,21 +5504,21 @@ agent.bind = 0.0.0.0
                 <td><em>empty</em></td>
                 <td>Canonical home of <code>SPID3R_TRUST_PK</code>: 64-character hex Ed25519 public key used to verify
                   <code>sha256.txt.sig</code> on <code>spid3r install</code> (refuses unsigned or tampered packages when
-                  set). Frozen for remote <code>config.set</code>.</td>
+                  set). Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[packages]</code></td>
                 <td><code>allow_insecure_git</code></td>
                 <td><code>false</code></td>
                 <td>Canonical home of <code>SPID3R_ALLOW_INSECURE_GIT</code>: permit <code>http://</code> and
-                  <code>git://</code> git dependencies. Frozen for remote <code>config.set</code>.</td>
+                  <code>git://</code> git dependencies. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[packages]</code></td>
                 <td><code>allow_local_git</code></td>
                 <td><code>false</code></td>
                 <td>Canonical home of <code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code>: permit bare-path and
-                  <code>file://</code> git dependencies. Frozen for remote <code>config.set</code>.</td>
+                  <code>file://</code> git dependencies. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[paths]</code></td>
@@ -5959,16 +5526,15 @@ agent.bind = 0.0.0.0
                 <td><em>empty</em></td>
                 <td>Canonical home of <code>SPID3R_CACHE_DIR</code> (generic spelling
                   <code>SPID3R_PATHS_CACHE_DIR</code>): cache root for the extracted bundle runtime
-                  (<code>runtime/</code>). Empty = platform default. Frozen for remote
-                  <code>config.set</code>.</td>
+                  (<code>runtime/</code>). Empty = platform default. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[paths]</code></td>
                 <td><code>state_dir</code></td>
                 <td><em>empty</em></td>
                 <td>Canonical home of <code>SPID3R_STATE_DIR</code> (generic spelling
-                  <code>SPID3R_PATHS_STATE_DIR</code>): paired devices, admin-client book, audit log, pid file.
-                  Empty = platform default. Frozen for remote <code>config.set</code>.</td>
+                  <code>SPID3R_PATHS_STATE_DIR</code>): per-user mutable state directory, audit log, pid file.
+                  Empty = platform default. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[paths]</code></td>
@@ -5976,7 +5542,7 @@ agent.bind = 0.0.0.0
                 <td><em>empty</em></td>
                 <td>Canonical home of <code>SPID3R_SQLITE_PATH</code> (generic spelling
                   <code>SPID3R_PATHS_SQLITE_PATH</code>): full path of the SQLite shared library tried before the
-                  default lookup. Read once per process. Frozen for remote <code>config.set</code>.</td>
+                  default lookup. Read once per process. Frozen in schema.</td>
               </tr>
               <tr>
                 <td><code>[cache]</code></td>
@@ -5984,80 +5550,7 @@ agent.bind = 0.0.0.0
                 <td><em>empty</em></td>
                 <td>Bytecode cache for <code>spid3r run</code>: the compiled <code>.matrixc</code> container is
                   keyed by the source's SHA-256, verified by its v3 checksum on load, and recompiled fresh when
-                  corrupt — a hit is byte-identical to compiling. Empty = disabled. Frozen for remote
-                  <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>enabled</code></td>
-                <td><code>false</code></td>
-                <td>Start the management agent when <code>spid3r agent start</code> runs. Frozen for remote
-                  <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>bind</code></td>
-                <td><code>127.0.0.1</code></td>
-                <td>Listen address. <code>127.0.0.1</code> is local-only; <code>0.0.0.0</code> is required for
-                  other hosts. Bind the local address unless you actually need other hosts. Frozen for remote
-                  <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>port</code></td>
-                <td><code>9527</code></td>
-                <td>TCP port of the encrypted management API (1–65535). Frozen for remote
-                  <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>max_connections</code></td>
-                <td><code>16</code></td>
-                <td>Concurrent management connections (1–256). Frozen for remote <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>request_timeout_ms</code></td>
-                <td><code>10000</code></td>
-                <td>Per-request deadline in ms (1000–300000). Frozen for remote <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>max_body</code></td>
-                <td><code>262144</code></td>
-                <td>Largest accepted (decrypted) request body, in bytes (1024–8388608). Frozen for remote
-                  <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>pairing_ttl_sec</code></td>
-                <td><code>300</code></td>
-                <td>How long a one-time pairing code remains valid (30–3600 s). Remotely settable.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>name</code></td>
-                <td><em>empty</em></td>
-                <td>Friendly name advertised to administrators (empty = hostname). Remotely settable.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>role_viewer</code></td>
-                <td><code>status,ping,info,config.get,logs.tail,modules.list,devices.list</code></td>
-                <td>Operations granted to the viewer role. Frozen for remote <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>role_operator</code></td>
-                <td><code>status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload</code></td>
-                <td>Operations granted to the operator role. Frozen for remote <code>config.set</code>.</td>
-              </tr>
-              <tr>
-                <td><code>[agent]</code></td>
-                <td><code>role_admin</code></td>
-                <td><code>*</code></td>
-                <td>Operations granted to the admin role (<code>*</code> = all). Frozen for remote
-                  <code>config.set</code>.</td>
+                  corrupt — a hit is byte-identical to compiling. Empty = disabled. Frozen in schema.</td>
               </tr>
             </tbody>
           </table>
@@ -6109,24 +5602,23 @@ agent.bind = 0.0.0.0
           Sections: <strong>Spid3r</strong> (version, language, Rust, profile), <strong>System</strong> (OS, arch,
           memory, CPUs, <code>Process RSS</code> / <code>Process RSS bytes</code>), <strong>Installation</strong> (exe,
           ini, log, state), <strong>Features</strong> (<code>gui</code>, <code>native (LLVM AOT)</code>,
-          <code>tls</code>, <code>plugins-wasm</code>, <code>agent</code>, <code>spid3rinfo</code>),
-          <strong>Modules</strong> (embedded stdlib, plugins), <strong>Configuration</strong>, <strong>Environment</strong>,
-          <strong>Memory (interpreter)</strong>, <strong>AOT Memory</strong> (bump-slab arena allocation &amp; slab
-          counters), and <strong>Agent</strong>. On <code>wasm32</code> (the playground build) the Environment and Agent
-          sections are omitted — there is no OS process or environment there. Keys containing or ending in
+          <code>tls</code>, <code>spid3rinfo</code>),
+          <strong>Modules</strong> (embedded stdlib), <strong>Configuration</strong>, <strong>Environment</strong>,
+          <strong>Memory (interpreter)</strong>, and <strong>AOT Memory</strong> (bump-slab arena allocation &amp; slab
+          counters). On <code>wasm32</code> (the playground build) the Environment
+          section is omitted — there is no OS process or environment there. Keys containing or ending in
           <code>password</code>, <code>passwd</code>, <code>pwd</code>, <code>passphrase</code>,
           <code>token</code>, <code>secret</code>, <code>shared</code>, <code>credential</code>,
           <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>apikey</code>,
           <code>private</code>, or any <code>…_key</code>/<code>…-key</code> name are replaced with
-          <code>[redacted sha256:&lt;12 hex&gt;]</code>. Remote callers never receive unredacted output.
+          <code>[redacted sha256:&lt;12 hex&gt;]</code>. Unredacted inspection requires passing
+          <code>--no-redact</code> or <code>spid3rinfo("map", true)</code> from a local context.
         </p>
 
         <p>
-          Local <code>spid3rinfo()</code> includes the configuration notes and any broken-pin details for
-          operators. Remote <code>info</code> and <code>dump_diagnostics</code> omit the configuration-notes row,
-          and remote <code>info</code> redacts its Installation path rows. Local validation diagnostics keep
-          policy values such as <code>security.basedir</code> and <code>paths.*</code> raw so an operator can see
-          which entry is wrong; credential-like values are hashed.
+          Local <code>spid3rinfo()</code> includes configuration notes and any broken-pin details for operators, and
+          local validation diagnostics keep policy values such as <code>security.basedir</code> and <code>paths.*</code>
+          raw so an operator can see which entry is wrong while credential-like values are hashed.
         </p>
 
         <div class="w3-card-example" id="ex-spid3rinfo">
@@ -6142,146 +5634,20 @@ agent.bind = 0.0.0.0
     println("os: " + m["System"]["OS"]);
     println("json is " + type_of(spid3rinfo("json")));
 
-    let port = config_get("agent.port");
-    println("agent.port = " + port);
-    println(config_set("agent.name", "docs-demo"));
-    println("name is now " + config_get("agent.name"));
+    let eng = config_get("spid3r.engine");
+    println("spid3r.engine = " + eng);
+    println(config_set("runtime.timezone", "UTC"));
+    println("timezone is now " + config_get("runtime.timezone"));
     return 0;
 }
 </div>
         </div>
 
-        <h3 class="section-h3" id="agent">The Management Agent</h3>
-        <p>
-          <code>spid3r agent start</code> listens on <code>[agent] bind:port</code> and speaks
-          <code>spid3r-agent/1</code> over TCP. There is <strong>no unrestricted shell</strong>. Every operation is a
-          predefined name checked against the caller's role. The same protocol runs on Windows, Linux and macOS with
-          no certificate store and no third-party crates.
-        </p>
-
-        <div class="w3-card-example" id="ex-agent">
-          <div class="w3-card-header">
-            <span class="w3-card-title"><span>⚡</span> Example: Pair and Operate Another Host</span>
-            <div class="w3-card-actions">
-              <button class="btn-copy" onclick="copySnippet(this)" title="Copy code">⧉</button>
-            </div>
-          </div>
-          <div class="w3-code-body" data-lang="console"># On the host that will be managed:
-$ spid3r agent start
-$ spid3r agent pair --role operator --name laptop-1
-pairing code (operator): 9f2c…        # 48 hex chars, single use, short TTL
-
-# On the administrator's machine:
-$ spid3r admin pair 192.168.1.10:9527 9f2c… --name laptop-1
-$ spid3r admin --host laptop-1 ping
-$ spid3r admin --host laptop-1 status
-$ spid3r admin --host laptop-1 info
-$ spid3r admin --host laptop-1 config.get --key agent.port
-$ spid3r admin --host laptop-1 config.set --key agent.name --value web-1
-$ spid3r admin --host laptop-1 logs.tail --lines 80
-$ spid3r admin --host laptop-1 modules.list
-$ spid3r admin --host laptop-1 devices.list
-$ spid3r admin --host laptop-1 ops.run --op-name self_test
-$ spid3r admin --host laptop-1 reload
-</div>
-        </div>
-
-        <p>
-          Predefined operations (<code>ops.run --name …</code>): <code>ping</code>, <code>reload_config</code>,
-          <code>rotate_log</code>, <code>gc_collect</code>, <code>self_test</code>, <code>dump_diagnostics</code>,
-          <code>restart_runtime</code>. <code>restart_runtime</code> acknowledges the caller first, then exits and
-          spawns the same executable; the new process retries its bind for a few seconds so the handover cannot
-          lose the port. Run the agent under a service manager (Windows service, systemd) in production.
-        </p>
-
-        <h3 class="section-h3" id="agent-cli">Wire Protocol</h3>
-        <p>
-          Pairing is out-of-band: the host prints a one-time code; the client sends it once. Both sides derive the
-          long-term shared key as <code>SHA-256(code)</code>. The shared key <strong>never crosses the wire</strong>.
-          After pairing, every data frame is:
-        </p>
-        <div class="code-block">
-          <div style="color: var(--fg-primary); font-family: var(--font-mono); font-size: 0.85rem;">
-magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
-          </div>
-        </div>
-        <p>
-          <code>kind = pair</code> is plaintext JSON (the code is the secret). <code>kind = data</code> is ChaCha20
-          encrypted and HMAC-SHA256 authenticated (encrypt-then-MAC). Subkeys come from HKDF-SHA256. The frame header
-          is AAD, so a swapped payload fails the tag. Nonces are random 96-bit values; the server keeps a
-          <strong>server-wide</strong> replay window (device + nonce, entries expire after ~1 hour, capped at 4096
-          frames) — a captured frame cannot be replayed on a fresh connection or after a restart. A frame whose
-          declared size exceeds <code>agent.max_body</code> (+16 bytes of tag) is rejected straight after the
-          header, before the body is read.
-        </p>
-
-        <h3 class="section-h3" id="agent-security">Roles, Devices and Audit</h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Role</th>
-                <th>May call</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>viewer</code></td>
-                <td><code>status</code>, <code>ping</code>, <code>info</code>, <code>config.get</code>,
-                  <code>logs.tail</code>, <code>modules.list</code>, <code>devices.list</code></td>
-              </tr>
-              <tr>
-                <td><code>operator</code></td>
-                <td>viewer + <code>config.set</code>, <code>ops.run</code>, <code>config.reload</code></td>
-              </tr>
-              <tr>
-                <td><code>admin</code></td>
-                <td>everything, including <code>devices.revoke</code> and <code>pair.create</code></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p>
-          Role lists are configurable via <code>agent.role_viewer</code> / <code>role_operator</code> /
-          <code>role_admin</code> (<code>*</code> = all). Every accepted or rejected operation is one JSON line in
-          <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code> — locally only:
-          the remote <code>config.set</code> op refuses a schema-derived set of security-relevant keys — every
-          <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
-          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, the package/module
-          policy keys (<code>modules.disable</code>, <code>packages.allow_insecure_git</code>,
-          <code>packages.allow_local_git</code>, <code>packages.trust_pk</code>), and the path keys (<code>paths.cache_dir</code>,
-          <code>paths.state_dir</code>, <code>paths.sqlite_path</code>, <code>cache.bytecode_dir</code>) — so a
-          paired operator cannot grant itself more operations, silence the audit trail, re-bind the listener, widen
-          the script deny lists, or relocate the host's write targets. Benign keys (e.g.
-          <code>agent.name</code>, <code>packages.registry</code>, <code>modules.assert_active</code>) stay remotely
-          settable; change the rest by editing <code>spid3r.ini</code> on the host.
-        </p>
-        <p>
-          State files: <code>devices.json</code> (paired devices), <code>clients.json</code> (admin-client known
-          hosts), <code>audit.log</code>. <code>&lt;state&gt;</code> is
-          <code>%LOCALAPPDATA%\Spid3r\state</code>, <code>$XDG_STATE_HOME/spid3r</code>, the
-          <code>paths.state_dir</code> ini key, or <code>SPID3R_STATE_DIR</code> (env alias; process env beats the
-          INI). Those files are <code>0600</code> on Unix.
-        </p>
-        <p>
-          Security notes: scripts still run with process authority (see the trust model). The agent is a management
-          plane, not a sandbox. There is no <code>exec</code>, no <code>spawn_process</code>, and no path-based file
-          write. Remote <code>info</code> and <code>config.get</code> are always redacted. Devices and config state
-          are saved atomically (temp file + rename). Pair on a network you trust:
-          the code is high-entropy and short-lived, but it is not a PAKE.
-        </p>
-        <p>
-          One more pairing rule for operators: <code>security.basedir</code> confines only the guarded path-taking
-          natives. A script with Process capability reaches arbitrary paths through
-          <code>spawn_process</code>/<code>exec_capture</code> no matter what <code>basedir</code> says — deny those
-          natives (<code>disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict</code>) or
-          run under <code>--sandbox</code> for a meaningful jail.
-        </p>
         <details class="deep">
-          <summary>Operator deep dive — run-time &amp; HTTP limits, diagnostics, audit records, cross-platform paths</summary>
+          <summary>Operator deep dive — run-time &amp; HTTP limits, diagnostics, cross-platform paths</summary>
           <div class="deep-body">
         <h4 id="agent-config-limits" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Operator Reference: Limits, Audit and Cross-Platform Details</h4>
+          Operator Reference: Limits, Diagnostics and Cross-Platform Details</h4>
         <p>
           <strong>Run-time limits.</strong> <code>runtime.wall_clock_limit_ms</code> arms a wall-clock deadline for
           <code>spid3r run</code> — expiry is a <strong>fatal, uncatchable</strong>
@@ -6306,8 +5672,9 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <code>net.keepalive_ms</code> is the idle window between keep-alive requests (<code>0</code> closes after
           each response). A server may override all four per listen via its options map
           (<code>timeout_ms</code>, <code>max_body_bytes</code>, <code>max_headers</code>,
-          <code>idle_timeout_ms</code>); an explicit option beats the INI default, and all four are re-read per
-          accepted connection so <code>config reload</code> applies to later connections.
+          <code>idle_timeout_ms</code>, plus <code>workers</code> for multi-worker accept loops on unbounded non-TLS
+          listeners); an explicit option beats the INI default, and all four are re-read per accepted connection so
+          <code>config reload</code> applies to later connections.
         </p>
         <p>
           <strong>Diagnostics and script policy.</strong> <code>errors.level</code>
@@ -6320,30 +5687,20 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <code>module disabled by configuration: '…'</code> under the platform's default filename case rules
           (case-insensitive on Windows/macOS, case-sensitive on Linux); <code>modules.assert_active = false</code>
           turns <code>assert()</code>/<code>assert_eq()</code> into no-ops returning <code>true</code>. The policy
-          keys (<code>security.basedir</code>, <code>security.disable_natives</code>, <code>modules.disable</code>)
-          are read once per process (a script cannot widen them mid-run with <code>config_set</code>) and are frozen
-          for remote <code>config.set</code>. <code>packages.registry</code> is the canonical home of
+          keys (<code>security.basedir</code>, <code>security.disable_natives</code>, <code>modules.disable</code>, and
+          <code>security.deny_*</code>) are read once per process (a script cannot widen them mid-run with
+          <code>config_set</code>), matching each <code>KeySpec</code>'s <code>reload</code>/<code>frozen</code> metadata
+          in <code>src/config/schema.rs</code>. <code>packages.registry</code> is the canonical home of
           <code>SPID3R_REGISTRY</code>; <code>packages.allow_insecure_git</code> /
           <code>packages.allow_local_git</code> are the canonical homes of their env aliases. Scripts read and write
           live values with <code>config_get</code>, <code>config_set</code> and <code>config_reload()</code>;
-          sensitive-looking values are redacted on read unless the caller is local. The
-          <code>config.set</code> freeze set is derived from the schema (<code>frozen</code> on each
-          <code>KeySpec</code> in <code>src/config/schema.rs</code>) — a single enforcement point, not a
-          hand-written deny list. <code>packages.registry</code> is deliberately remote-settable: a compromised
-          channel could redirect the install source, and a <strong>first</strong> install from a redirected registry
-          trusts its <code>sha256.txt</code> (<code>spider.lock</code> protects re-installs only); operators who
-          reject that trade-off should restrict <code>config.set</code> in <code>agent.role_operator</code>.
+          sensitive-looking values are redacted on read unless the local caller requests unredacted output.
         </p>
         <p>
-          <strong>Audit record.</strong> Every accepted or rejected operation is one JSON line in
-          <code>&lt;state&gt;/audit.log</code>, e.g.
-          <code>{"ts":1762252800,"device":"laptop-1","role":"operator","op":"config.set","ok":true,"peer":"192.168.1.4:51000","detail":""}</code>.
-          The audit log rotates at 1 MiB (current file renamed to <code>audit.log.1</code>, a fresh
-          <code>audit.log</code> starts). <code>rotate_log</code> rotates both <code>spid3r.log</code> and
-          <code>audit.log</code> immediately (each renamed to <code>&lt;name&gt;.1</code>, replacing any previous
-          <code>.1</code>) and returns both new paths in its response. A stolen <code>devices.json</code> is game
-          over for that host: rotate by revoking the device and re-pairing, and keep the file off unencrypted
-          backups.
+          <strong>Local control panel &amp; audit log.</strong> Operators inspect runtime state, validate
+          <code>spid3r.ini</code>, and manage local configuration via <code>spid3r control</code> (or the optional
+          desktop <code>spid3r-control</code> GUI). Configuration changes written through the local control surface are
+          recorded atomically alongside the append-only audit log under the configured state directory.
         </p>
         <div class="table-wrap">
           <table>
@@ -6370,9 +5727,9 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
               </tr>
               <tr>
                 <td>Reload</td>
-                <td><code>config reload</code> / agent</td>
-                <td><code>SIGHUP</code> + those</td>
-                <td><code>SIGHUP</code> + those</td>
+                <td><code>config reload</code></td>
+                <td><code>SIGHUP</code> + <code>config reload</code></td>
+                <td><code>SIGHUP</code> + <code>config reload</code></td>
               </tr>
               <tr>
                 <td>CSPRNG</td>
@@ -6390,8 +5747,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           </table>
         </div>
         <p>
-          No third-party crates were added for the management plane: the agent, INI parser, ChaCha20, HMAC, HKDF
-          and Poly1305 (unused, kept with a vector) are all in-tree.
+          Core toolchain configuration, INI parsing, and local logging run cleanly with zero third-party dependencies.
         </p>
             </div>
         </details>
@@ -6424,12 +5780,15 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             tools (<code>pack</code>/<code>unpack</code>/<code>verify</code>/<code>dist</code>). Compiled via Stage 0
             (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>), <code>spid3r-self</code>
             reaches a bit-identical <strong>Stage 1 &rarr; Stage 2 &rarr; Stage 3</strong> object fixed point across the
-            134-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
+            136-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
             (<code>spid3r-self verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and
-            records frozen Stage-0 vs selfhost throughput baselines in <a href="benchmark.html">Benchmarks</a>. See
+            links split runtime units (<code>spid3r_reg_core</code> plus 10 opt-in subsystem groups) alongside compact
+            16-byte <code>Value</code>/<code>ThinArcStr</code> representations and pre-decoded VM superinstructions. See
             <a href="../selfhost/README.md">the self-hosting hub</a>,
-            <a href="../selfhost/SELFHOST.md">ADR</a>, and
-            <a href="../selfhost/SELFHOST_RETIREMENT.md">retirement review</a>.
+            <a href="../selfhost/SELFHOST.md">ADR</a>,
+            <a href="../LANGUAGE_SPEC.md">Language Specification</a>,
+            <a href="../CONCURRENCY.md">Concurrency Model</a>, and
+            <a href="../STABILITY_REPORT.md">Stability Report</a>.
           </p>
         </div>
 
@@ -6438,16 +5797,16 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           Rebuilding <code>selfhost/</code> or running compiler and dev-CLI commands with <code>spid3r-self</code>
           requires zero <code>cargo</code> or <code>rustc</code> calls. Rust Stage 0 (<code>src/</code>) stays in
           place permanently as the cold bootstrap seed, differential oracle (<code>src/oracle.rs</code>), pinned
-          runtime staticlib (87 <code>spid3r_*</code> trampolines + 257 stdlib natives), and host for non-AOT
+          runtime staticlib (87 <code>spid3r_*</code> trampolines + 254 stdlib natives), and host for non-AOT
           engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>, <code>debug</code>, <code>lsp</code>,
-          <code>agent</code>, <code>gui</code>, <code>wasm32</code>, <code>plugin</code>).
+          <code>spid3r-control</code>, <code>gui</code>, <code>wasm32</code>).
         </p>
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/bootstrap-stages.svg"
-            alt="Stage 0 Rust compiles Stage 1 spid3r-self, Stage 1 compiles Stage 2, and Stage 2 compiles Stage 3 with bit-identical spid3r_main.o fixed point across the 134-program frozen corpus.">
+            alt="Stage 0 Rust compiles Stage 1 spid3r-self, Stage 1 compiles Stage 2, and Stage 2 compiles Stage 3 with bit-identical spid3r_main.o fixed point across the 136-program frozen corpus.">
           <figcaption>Bootstrap chain (SH-1 · SH-5 · SH-8): Stage 2 and Stage 3 emit bit-identical
-            <code>spid3r_main.o</code> objects and pass 124/124 runnable corpus parity (111/111 object match).</figcaption>
+            <code>spid3r_main.o</code> objects across the 136-program frozen parity corpus.</figcaption>
         </figure>
 
         <figure class="diagram">
@@ -6460,7 +5819,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
-            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (87 trampolines, 257 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (87 trampolines, 254 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
           <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
             coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI.</figcaption>
         </figure>
@@ -6471,14 +5830,6 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <figcaption>Generics &amp; unboxing (R10 · DP-1): multi-arg type parameters, constraint checking,
             AOT function specialization (<code>spid3r_mono_*</code>), and unboxed <code>list&lt;int&gt;</code> /
             <code>list&lt;float&gt;</code> storage.</figcaption>
-        </figure>
-
-        <figure class="diagram">
-          <img src="../diagrams/containers-oci.svg"
-            alt="Spid3r OCI container engine architecture: Registry v2 pull, SHA-256 verification, whiteout layer cache, snapshotter, and DP-7 Linux syscall shims.">
-          <figcaption>OCI container engine (R11 · DP-7): Registry v2 pull + SHA-256 verification,
-            <code>.wh.</code> whiteout layer pipeline, copy-up / <code>overlayfs</code> snapshotter,
-            and <code>--features container</code> Linux syscall shims.</figcaption>
         </figure>
 
         <table>
@@ -6615,7 +5966,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <img src="../diagrams/security.svg"
             alt="A script reaches the operating system only through built-in natives, which can be filtered opt-in via --sandbox on script engines or Engine::deny when embedding.">
           <figcaption>By default a program runs with user authority; opt-in capability gates filter built-in natives
-            and matching plugin permissions via <code>spid3r run --sandbox</code>, <code>spid3r exec --sandbox</code>,
+            via <code>spid3r run --sandbox</code>, <code>spid3r exec --sandbox</code>,
             or <code>Engine::deny</code> (not applied to Native AOT binaries). For OS isolation, run untrusted code as a
             separate user or in a container.</figcaption>
         </figure>
@@ -6792,141 +6143,6 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             <code>allow_dlopen</code> is enabled, and <code>freestanding</code> emits host-independent IR without
             linking the standard runtime.</li>
         </ul>
-
-        <h3 class="section-h3" id="containers">OCI Container Engine (<code>spid3r container</code>)</h3>
-        <p>
-          Built behind the <code>container</code> Cargo feature (<code>--features container</code>), Spid3r
-          includes an OCI Image &amp; Container engine (<code>src/oci/</code> and <code>src/container/</code>).
-          Status: <code>R11.1</code>–<code>R11.9</code> implemented across <code>src/oci/</code>,
-          <code>src/container/</code>, <code>src/native/sys.rs</code> (<code>DP-7</code>) and
-          <code>spid3r container</code>; Linux kernel namespace/overlayfs/cgroup execution is gated behind
-          <code>#[cfg(all(target_os = "linux", feature = "container"))]</code>.
-        </p>
-        <ul>
-          <li><strong>OCI Image Pull &amp; Verification:</strong> <code>src/oci/</code> implements OCI Distribution
-            pulls, SHA-256 manifest and layer digest verification, optional Ed25519 signature enforcement
-            (<code>--require-sig --pubkey &lt;hex&gt;</code>), and OCI <code>.wh.</code> whiteout layer
-            extraction.</li>
-          <li><strong>Linux Isolation:</strong> <code>src/native/sys.rs</code> (Linux-only, gated behind
-            <code>#[cfg(all(target_os = "linux", feature = "container"))]</code>) provides namespace isolation,
-            <code>pivot_root</code>, cgroups v2 resource limits, and veth/NAT networking for
-            <code>spid3r container &lt;pull|create|start|run|stop|kill|rm|ps|inspect|logs|gc&gt;</code>.</li>
-        </ul>
-        <details class="deep">
-          <summary>Container deep dive — quickstart commands, module architecture &amp; security model</summary>
-          <div class="deep-body">
-        <h4 id="container-quickstart" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Quickstart</h4>
-        <div
-          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">
-# Pull an OCI image (verifies manifest, config, and every layer SHA-256)
-spid3r container pull http://127.0.0.1:5000/app/demo:v1
-
-# Create &amp; inspect a container bundle
-spid3r container create --name web http://127.0.0.1:5000/app/demo:v1
-spid3r container ps
-spid3r container inspect web
-
-# Run on Linux (built with --features container)
-spid3r container run --name web http://127.0.0.1:5000/app/demo:v1 /bin/echo ok
-
-# Stop, remove, and garbage-collect unreferenced layers
-spid3r container stop web
-spid3r container rm web
-spid3r container gc</div>
-        <h4 id="container-architecture" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Architecture</h4>
-        <ul>
-          <li><strong><code>src/oci/</code></strong> — Cross-platform OCI Image Spec v1 parser
-            (<code>manifest.rs</code>), Registry v2 HTTP(S) client with anonymous Bearer token flow and multi-arch
-            host selection (<code>client.rs</code>), and hardened gzip/ustar layer pipeline with <code>.wh.</code>
-            whiteouts, path-traversal refusal, and atomic cache commits (<code>layers.rs</code>).</li>
-          <li><strong><code>src/container/</code></strong> — Snapshotter (<code>snapshot.rs</code>: Linux
-            <code>overlayfs</code> + copy-up fallback + refcounted GC), runtime state machine &amp; OCI
-            <code>config.json</code> bundle loader (<code>runtime.rs</code>), <code>spid3r0</code> bridge IPAM pool
-            (<code>net.rs</code>), and daemon state recovery (<code>daemon.rs</code>).</li>
-          <li><strong><code>src/native/sys.rs</code> (<code>DP-7</code>)</strong> — Sanctioned <code>unsafe</code>
-            home for Linux syscall shims (<code>unshare</code>, <code>setns</code>, <code>mount</code>,
-            <code>umount2</code>, <code>pivot_root</code>, <code>chroot</code>, <code>sethostname</code>,
-            <code>prctl(PR_SET_NO_NEW_PRIVS)</code>, <code>fork</code>, <code>waitpid</code>, <code>kill</code>,
-            <code>setuid</code>/<code>setgid</code>). Zero external crates; gated out of
-            <code>--no-default-features</code> and <code>wasm32</code> builds.</li>
-        </ul>
-        <h4 id="container-security" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Security Model &amp; Honest Limitations</h4>
-        <ul>
-          <li><strong>Digest &amp; signature verification:</strong> Every config and layer blob is SHA-256 verified
-            before caching or extraction; mismatches fail closed with exit code <code>4</code>. Optional Ed25519
-            manifest signature enforcement (<code>--require-sig --pubkey &lt;hex&gt;</code>) reuses
-            <code>crate::pkg::ed25519</code>.</li>
-          <li><strong>Tar hardening:</strong> Absolute paths, drive prefixes, and <code>..</code> components are
-            refused before writing any file. Uncompressed layer buffering is capped at 64 MiB
-            (<code>MAX_LAYER_TAR_BYTES</code>).</li>
-          <li><strong>Platform scope:</strong> Image pull, verification, whiteout assembly, IPAM, OCI bundle
-            creation, and CLI management (<code>pull</code>/<code>create</code>/<code>ps</code>/<code>inspect</code>/<code>logs</code>/<code>rm</code>/<code>gc</code>)
-            run on Windows, macOS, and Linux. Kernel namespace/cgroup/overlayfs execution
-            (<code>spid3r container start</code>/<code>run</code>) requires Linux built with
-            <code>--features container</code>.</li>
-        </ul>
-          </div>
-        </details>
-
-        <h3 class="section-h3" id="os-kernel">Bare-Metal Kernel Track (<code>spid3r kernel build</code>)</h3>
-        <p>
-          The <code>kernel/</code> workspace member is a zero-dependency <code>no_std</code>
-          <code>x86_64-unknown-none</code> kernel foundation (<code>R13</code> / <code>DP-8</code>). Status:
-          <code>DP-8</code> chartered and the <code>R13.1</code> bare-metal <code>kernel/</code> foundation +
-          host-testable subsystems implemented; QEMU 10m/30m soak tests (<code>R13.2</code>/<code>R13.5</code>),
-          live ring-3 <code>sysret</code> execution (<code>R13.6</code>), virtio-tap packet roundtrip
-          (<code>R13.7</code>), and external <code>unsafe</code> review (<code>R13.8</code>) remain open until run
-          on Linux QEMU CI.
-        </p>
-        <details class="deep">
-          <summary>Kernel deep dive — boot &amp; core subsystems, build &amp; verify commands</summary>
-          <div class="deep-body">
-        <h4 id="kernel-boot" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Boot &amp; Core Subsystems</h4>
-        <ul>
-          <li><strong>Boot:</strong> The 24-byte Multiboot2 header (<code>0xE85250D6</code>) is embedded in
-            <code>.multiboot2</code>; COM1 (<code>0x3F8</code>) serial UART is initialized,
-            <code>Spid3rOS v0.1 (x86_64 multiboot2) ready</code> is emitted, and the CPU idles via <code>hlt</code>.</li>
-          <li><strong>Memory:</strong> An audited 4 KiB physical bitmap frame allocator (double-free refusal, exact
-            frame accounting) plus a checked-arithmetic bump heap (<code>KernelBumpHeap</code>, clean error on
-            exhaustion without integer wrap).</li>
-          <li><strong>Interrupts &amp; Console:</strong> 64-bit GDT/IDT descriptors, exception vector table
-            (<code>#DE</code>, <code>#UD</code>, <code>#DF</code>, <code>#GP</code>, <code>#PF</code>), PS/2
-            scancode set 1 decoder, and <code>help</code>/<code>ps</code>/<code>meminfo</code> shell commands.</li>
-          <li><strong>Userland &amp; Syscall ABI:</strong> ELF64 x86-64 validator (<code>0x7F ELF</code>,
-            <code>ELFCLASS64</code>, <code>EM_X86_64</code>) with documented syscall numbers
-            (<code>SYS_WRITE = 1</code>, <code>SYS_GETPID = 39</code>, <code>SYS_EXIT = 60</code>);
-            <code>kernel/init/init.matrix</code> targets the <code>R9.4</code> freestanding Spid3r build profile
-            (<code>--freestanding --entry _start --target x86_64-unknown-none --emit-obj</code>).</li>
-          <li><strong>Drivers:</strong> PCI Type-0 configuration address encoder (<code>0xCF8</code>) and modern
-            virtio device classification (<code>virtio-net = 0x1041</code>, <code>virtio-blk = 0x1042</code>).</li>
-          <li><strong>Toolchain Integration:</strong> Run <code>spid3r kernel build [--out &lt;path&gt;]</code> to
-            build <code>kernel/Cargo.toml</code> for <code>x86_64-unknown-none --release</code> (requires
-            <code>rustup target add x86_64-unknown-none</code>). The 24-byte Multiboot2 header and
-            <code>kernel/link.ld</code> link at 1 MiB physical with <code>-C disable-redzone=yes</code> and
-            <code>-C relocation-model=static</code>; zero external crate dependencies.</li>
-        </ul>
-        <h4 id="kernel-build" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
-          Build &amp; Verify</h4>
-        <div
-          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">
-# Host unit tests for all kernel subsystems (Windows / Linux / macOS)
-cargo test --manifest-path kernel/Cargo.toml
-
-# Bare-metal x86_64-unknown-none kernel build + SHA-256 sidecar
-rustup target add x86_64-unknown-none
-spid3r kernel build</div>
-          </div>
-        </details>
-        <figure class="diagram">
-          <img src="../diagrams/os-baremetal.svg"
-            alt="Bare-metal x86_64 kernel architecture: Multiboot2 boot, GDT/IDT, paging, allocators, serial/VGA console, scheduler, syscalls, and initrd.">
-          <figcaption>Bare-metal kernel architecture (<code>kernel/</code>, <code>x86_64-unknown-none</code>, zero
-            external crate dependencies).</figcaption>
-        </figure>
       </section>
 
     </main>

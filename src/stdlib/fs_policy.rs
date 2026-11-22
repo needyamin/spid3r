@@ -405,14 +405,8 @@ basedir_guard!(g_file_open, super::file::n_file_open, [0]);
 basedir_guard!(g_uds_listen, super::net::n_uds_listen, [0]);
 basedir_guard!(g_uds_connect, super::net::n_uds_connect, [0]);
 
-/// The guarded replacement for a path-taking native, or `None` when the
-/// native takes no script-controlled path (pure computation, network handles,
-/// or no path argument).
-///
-/// The map is pinned by tests below against BOTH sides of the contract:
-/// every `Capability::FileSystem` native that takes a path must appear here,
-/// and every name here must be a real native.
-pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
+/// Path-guarded native wrappers for the `fs` group.
+pub fn guarded_fs(name: &str) -> Option<crate::vm::NativeImpl> {
     match name {
         "read_file" => Some(g_read_file),
         "write_file" => Some(g_write_file),
@@ -431,15 +425,33 @@ pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
         "dir_remove" => Some(g_dir_remove),
         "read_bytes" => Some(g_read_bytes),
         "write_bytes" => Some(g_write_bytes),
+        "file_open" => Some(g_file_open),
+        _ => None,
+    }
+}
+
+/// Path-guarded native wrappers for the `data` group.
+pub fn guarded_data(name: &str) -> Option<crate::vm::NativeImpl> {
+    match name {
         "save_npy" => Some(g_save_npy),
         "load_npy" => Some(g_load_npy),
         "read_csv" => Some(g_read_csv),
         "write_csv" => Some(g_write_csv),
-        "file_open" => Some(g_file_open),
-        // Beyond the Capability::FileSystem list: the SQLite database file
-        // handle, the two TCP natives that stream to/from a script path, the
-        // TLS listener cert archive path, and Unix domain socket paths.
+        _ => None,
+    }
+}
+
+/// Path-guarded native wrappers for the `db` group.
+pub fn guarded_db(name: &str) -> Option<crate::vm::NativeImpl> {
+    match name {
         "db_open" => Some(g_db_open),
+        _ => None,
+    }
+}
+
+/// Path-guarded native wrappers for the `net` group.
+pub fn guarded_net(name: &str) -> Option<crate::vm::NativeImpl> {
+    match name {
         "tcp_recv_to_file" => Some(g_tcp_recv_to_file),
         "tcp_send_file" => Some(g_tcp_send_file),
         "tls_listen" => Some(g_tls_listen),
@@ -447,6 +459,20 @@ pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
         "uds_connect" => Some(g_uds_connect),
         _ => None,
     }
+}
+
+/// The guarded replacement for a path-taking native, or `None` when the
+/// native takes no script-controlled path (pure computation, network handles,
+/// or no path argument).
+///
+/// The map is pinned by tests below against BOTH sides of the contract:
+/// every `Capability::FileSystem` native that takes a path must appear here,
+/// and every name here must be a real native.
+pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
+    guarded_fs(name)
+        .or_else(|| guarded_data(name))
+        .or_else(|| guarded_db(name))
+        .or_else(|| guarded_net(name))
 }
 
 #[cfg(test)]

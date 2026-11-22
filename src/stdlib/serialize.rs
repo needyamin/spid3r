@@ -14,8 +14,8 @@ use crate::value::{new_ref, MapKey, NativeCtx, Value};
 
 const MAX_DEPTH: usize = 128;
 
-fn entries_of(m: &std::sync::Arc<std::sync::Mutex<MapData>>) -> Vec<(MapKey, Value)> {
-    m.lock().unwrap().entries.clone()
+fn entries_of(m: &crate::value::Ref<MapData>) -> Vec<(MapKey, Value)> {
+    crate::value::lock_ref(m).entries.clone()
 }
 
 fn build_map(pairs: Vec<(MapKey, Value)>) -> Value {
@@ -109,7 +109,7 @@ fn msgpack_encode_into(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(),
             out.extend_from_slice(&b);
         }
         Value::List(l) | Value::VecDyn(l) => {
-            let items = l.lock().unwrap().items.clone();
+            let items = l.lock().unwrap().clone_items();
             let n = items.len();
             if n < 16 {
                 out.push(0x90 | n as u8);
@@ -211,7 +211,7 @@ impl<'a> Reader<'a> {
 
 fn mp_key(v: Value) -> MapKey {
     match v {
-        Value::Str(s) => MapKey::Str(s),
+        Value::Str(s) => MapKey::Str(s.into()),
         Value::Int(i) => MapKey::Int(i),
         Value::Bool(b) => MapKey::Bool(b),
         _ => MapKey::Null,
@@ -393,7 +393,7 @@ fn cbor_encode_into(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), St
             out.extend_from_slice(&b);
         }
         Value::List(l) | Value::VecDyn(l) => {
-            let items = l.lock().unwrap().items.clone();
+            let items = l.lock().unwrap().clone_items();
             cbor_head(out, 4, items.len() as u64);
             for it in items.iter() {
                 cbor_encode_into(it, out, depth + 1)?;
@@ -579,7 +579,7 @@ fn pb_encode_field(out: &mut Vec<u8>, field: u64, v: &Value, depth: usize) -> Re
         }
         Value::List(l) | Value::VecDyn(l) => {
             // A list becomes repeated occurrences of the field.
-            let items = l.lock().unwrap().items.clone();
+            let items = l.lock().unwrap().clone_items();
             for it in items.iter() {
                 pb_encode_field(out, field, it, depth + 1)?;
             }
@@ -692,8 +692,8 @@ fn n_msgpack_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     let data = bytes_arg(&args[0], "msgpack_decode")?;
     let mut r = Reader::new(&data);
     match msgpack_decode_from(&mut r, 0) {
-        Ok(v) => Ok(Value::Result(Ok(Box::new(v)))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(v) => Ok(Value::ok(v)),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -717,8 +717,8 @@ fn n_cbor_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let data = bytes_arg(&args[0], "cbor_decode")?;
     let mut r = Reader::new(&data);
     match cbor_decode_from(&mut r, 0) {
-        Ok(v) => Ok(Value::Result(Ok(Box::new(v)))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Ok(v) => Ok(Value::ok(v)),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -768,16 +768,16 @@ fn n_pb_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 };
                 if let Some(pos) = order.iter().position(|f| *f == field) {
                     if let Value::List(l) = &grouped[pos].1 {
-                        l.lock().unwrap().items.push(v);
+                        l.lock().unwrap().push_item(v);
                     }
                 } else {
                     order.push(field);
                     grouped.push((MapKey::Int(field), make_list(vec![v])));
                 }
             }
-            Ok(Value::Result(Ok(Box::new(build_map(grouped)))))
+            Ok(Value::ok(build_map(grouped)))
         }
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 

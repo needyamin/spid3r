@@ -177,6 +177,30 @@ find_makensis() {
   return 1
 }
 
+verify_formatter_vsix() {
+  local vsix="$ROOT/packaging/vscode/spid3r-formatter.vsix"
+  local sha="$ROOT/packaging/vscode/spid3r-formatter.vsix.sha256"
+  if [ ! -f "$vsix" ] && [ ! -f "$sha" ]; then
+    return 1
+  fi
+  if [ ! -f "$vsix" ] || [ ! -f "$sha" ]; then
+    echo "FAIL: partial formatter VSIX pin (need both spid3r-formatter.vsix and .sha256)" >&2
+    exit 1
+  fi
+  local expected actual
+  expected="$(awk '{print tolower($1); exit}' "$sha")"
+  if ! printf '%s' "$expected" | grep -qE '^[0-9a-f]{64}$'; then
+    echo "FAIL: invalid digest in $sha" >&2
+    exit 1
+  fi
+  actual="$(sha256_hex "$vsix")"
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL: spid3r-formatter.vsix sha256 mismatch (expected $expected, got $actual)" >&2
+    exit 1
+  fi
+  return 0
+}
+
 smoke_test_compiler_binary() {
   local bin="$1"
   local rt_dir="$2"
@@ -372,6 +396,13 @@ cmd_build() {
     cp -f "$stage0" "$out_dir/_work/tar/spid3r${exe_suf}"
     tar_members+=("spid3r${exe_suf}")
   fi
+  local has_vsix=0
+  if verify_formatter_vsix; then
+    has_vsix=1
+    cp -f "$ROOT/packaging/vscode/spid3r-formatter.vsix" "$out_dir/_work/tar/spid3r-formatter.vsix"
+    cp -f "$ROOT/packaging/vscode/spid3r-formatter.vsix.sha256" "$out_dir/_work/tar/spid3r-formatter.vsix.sha256"
+    tar_members+=("spid3r-formatter.vsix" "spid3r-formatter.vsix.sha256")
+  fi
   local tarball_name="spid3r-${target}.tar.gz"
   tar czf "$out_dir/$tarball_name" -C "$out_dir/_work/tar" "${tar_members[@]}"
   write_sha256_file "$out_dir" "$tarball_name"
@@ -426,6 +457,11 @@ cmd_build() {
       nsis_args+=("/DCONTROL_EXE=$(to_win_path "$control_bin")")
     fi
     nsis_args+=("/DWITH_GUI=${with_gui}")
+    if [ "$has_vsix" -eq 1 ]; then
+      nsis_args+=("/DFORMATTER_VSIX=$(to_win_path "$ROOT/packaging/vscode/spid3r-formatter.vsix")")
+    else
+      nsis_args+=("/DFORMATTER_VSIX=")
+    fi
     nsis_args+=("$(to_win_path "$ROOT/packaging/nsis/spid3r.nsi")")
 
     MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$makensis" "${nsis_args[@]}"
@@ -448,13 +484,19 @@ cmd_build() {
       mkdir -p "$sin_dir"
       local win_sin
       win_sin="$(to_win_path "$sin_dir")"
-      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$inst_out" /S "/D=${win_sin}"
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$inst_out" /S /NOEDITOR "/D=${win_sin}"
       for req in spid3r-self.exe spid3r.exe spid3r_lang.lib spid3r_lang.lib.sha256 runtime-manifest.json LLVM-C.dll LLVM-C.lib; do
         [ -f "$sin_dir/$req" ] || {
           echo "FAIL: installed file missing: $sin_dir/$req" >&2
           exit 1
         }
       done
+      if [ "$has_vsix" -eq 1 ]; then
+        [ -f "$sin_dir/editor/spid3r-formatter.vsix" ] || {
+          echo "FAIL: installed offline formatter VSIX missing: $sin_dir/editor/spid3r-formatter.vsix" >&2
+          exit 1
+        }
+      fi
       smoke_test_compiler_binary "$sin_dir/spid3r-self.exe" "$sin_dir" "installed spid3r-self.exe"
       if [ -f "$sin_dir/uninstall.exe" ]; then
         MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$sin_dir/uninstall.exe" /S _?="${win_sin}" || true
@@ -528,9 +570,29 @@ cmd_verify() {
       echo "FAIL: $t does not contain spid3r-self" >&2
       exit 1
     fi
+    local expect_vsix=0
+    if verify_formatter_vsix; then
+      expect_vsix=1
+      if ! printf '%s\n' "$listing" | grep -qE '^(\./)?spid3r-formatter\.vsix$' \
+        || ! printf '%s\n' "$listing" | grep -qE '^(\./)?spid3r-formatter\.vsix\.sha256$'; then
+        echo "FAIL: $t does not contain spid3r-formatter.vsix (+ .sha256)" >&2
+        exit 1
+      fi
+    fi
     local ext_tmp
     ext_tmp="$(mktemp -d)"
     tar xzf "$t" -C "$ext_tmp"
+    if [ "$expect_vsix" -eq 1 ]; then
+      local vsix_exp vsix_act vsix_repo
+      vsix_exp="$(awk '{print tolower($1); exit}' "$ext_tmp/spid3r-formatter.vsix.sha256")"
+      vsix_repo="$(awk '{print tolower($1); exit}' "$ROOT/packaging/vscode/spid3r-formatter.vsix.sha256")"
+      vsix_act="$(sha256_hex "$ext_tmp/spid3r-formatter.vsix")"
+      if [ "$vsix_act" != "$vsix_exp" ] || [ "$vsix_act" != "$vsix_repo" ]; then
+        echo "FAIL: unpacked $base_tar spid3r-formatter.vsix checksum mismatch" >&2
+        rm -rf "$ext_tmp"
+        exit 1
+      fi
+    fi
     local self_bin=""
     if [ -f "$ext_tmp/spid3r-self.exe" ]; then
       self_bin="$ext_tmp/spid3r-self.exe"

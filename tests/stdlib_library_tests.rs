@@ -108,77 +108,6 @@ fn main() {
 }
 
 #[test]
-fn test_stdlib_dataframe_module() {
-    let src = r#"
-import "dataframe" as df_mod;
-
-fn main() {
-    let records = list(
-        map("name", "Alice", "dept", "Engineering", "salary", 120.0),
-        map("name", "Bob", "dept", "Engineering", "salary", 110.0),
-        map("name", "Charlie", "dept", "Marketing", "salary", 90.0),
-        map("name", "Dave", "dept", "Marketing", "salary", 95.0),
-        map("name", "Eve", "dept", "HR", "salary", 80.0)
-    );
-
-    let df = df_mod.from_records(records);
-    println("df_rows:" + string(df.num_rows));
-    println("df_cols:" + string(df.col_names.len()));
-
-    // select
-    let sel = df.select(list("name", "salary"));
-    println("sel_cols:" + string(sel.col_names));
-
-    // filter
-    let high_earners = df.filter(fn(r) { return r["salary"] >= 100.0; });
-    println("high_earners_rows:" + string(high_earners.num_rows));
-
-    // sort_by
-    let sorted = df.sort_by("salary", true);
-    println("top_earner:" + sorted.get_row(0)["name"]);
-
-    // group_by
-    let grp = df.group_by("dept", map("salary", "mean"));
-    println("dept_groups_count:" + string(grp.num_rows));
-
-    // head
-    let top2 = df.head(2);
-    println("head_len:" + string(top2.num_rows));
-
-    // drop_na & fill_na
-    let with_nulls = df_mod.from_records(list(
-        map("a", 1.0, "b", null),
-        map("a", null, "b", 2.0),
-        map("a", 3.0, "b", 4.0)
-    ));
-    let dropped = with_nulls.drop_na("b");
-    println("dropped_rows:" + string(dropped.num_rows));
-    let filled = with_nulls.fill_na("b", 0.0);
-    println("filled_rows:" + string(filled.num_rows));
-    println("filled_b0:" + string(filled.get_row(0)["b"]));
-
-    // describe
-    let stats = df.describe();
-    println("describe_rows:" + string(stats.num_rows));
-}
-"#;
-    let path = write_tmp("test_stdlib_dataframe.matrix", src);
-    let out_tree = run_engine("tree", &path).expect("tree run dataframe");
-    let out_vm = run_engine("vm", &path).expect("vm run dataframe");
-    assert_eq!(
-        out_tree, out_vm,
-        "dataframe module outputs differ between tree and vm"
-    );
-    assert!(out_tree.contains("df_rows:5"));
-    assert!(out_tree.contains("high_earners_rows:2"));
-    assert!(out_tree.contains("top_earner:Alice"));
-    assert!(out_tree.contains("dept_groups_count:3"));
-    assert!(out_tree.contains("dropped_rows:2"));
-    assert!(out_tree.contains("filled_b0:0.0"));
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn test_stdlib_stats_module() {
     let src = r#"
 import "stats" as st;
@@ -242,91 +171,10 @@ fn main() {
 }
 
 #[test]
-fn test_stdlib_ml_module() {
-    let src = r#"
-import "ml" as ml;
-
-fn main() {
-    // 1. Linear regression
-    let X = matrix(4, 1);
-    X.set(0, 0, 1.0);
-    X.set(1, 0, 2.0);
-    X.set(2, 0, 3.0);
-    X.set(3, 0, 4.0);
-    let y = vector(list(3.0, 5.0, 7.0, 9.0)); // y = 2x + 1
-
-    let lin = ml.linear_regression_fit(X, y);
-    let lin_preds = ml.linear_regression_predict(lin, X);
-    println("lin_r2_high:" + string(ml.r2_score(y, lin_preds) > 0.999));
-    println("lin_pred_0:" + string(round(lin_preds[0])));
-
-    // 2. Logistic regression
-    let X_log = matrix(6, 1);
-    X_log.set(0, 0, 0.5);
-    X_log.set(1, 0, 1.0);
-    X_log.set(2, 0, 1.5);
-    X_log.set(3, 0, 7.0);
-    X_log.set(4, 0, 8.0);
-    X_log.set(5, 0, 9.0);
-    let y_log = vector(list(0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
-
-    let log_mod = ml.logistic_regression_fit(X_log, y_log, 0.2, 200);
-    let log_preds = ml.logistic_regression_predict(log_mod, X_log);
-    let acc = ml.accuracy(y_log, log_preds);
-    println("log_acc_high:" + string(acc >= 0.8));
-
-    // 3. KNN
-    let knn_preds = ml.knn_predict(X_log, y_log, X_log, 3);
-    println("knn_acc_1:" + string(ml.accuracy(y_log, knn_preds) == 1.0));
-
-    // 4. KMeans
-    let km = ml.kmeans_fit(X_log, 2, 50);
-    println("km_k:" + string(km["k"]));
-    println("km_inertia_nonneg:" + string(km["inertia"] >= 0.0));
-
-    // 5. PCA
-    let X_pca = matrix(3, 3);
-    X_pca.set(0, 0, 1.0); X_pca.set(0, 1, 2.0); X_pca.set(0, 2, 3.0);
-    X_pca.set(1, 0, 2.0); X_pca.set(1, 1, 4.0); X_pca.set(1, 2, 6.0);
-    X_pca.set(2, 0, 3.0); X_pca.set(2, 1, 6.0); X_pca.set(2, 2, 9.0);
-    let pca = ml.pca_fit_transform(X_pca, 2);
-    let tr = pca["transformed"];
-    println("pca_shape:" + string(tr.rows()) + "x" + string(tr.cols()));
-
-    // 6. Metrics
-    let yt = vector(list(1.0, 0.0, 1.0, 1.0));
-    let yp = vector(list(1.0, 0.0, 1.0, 0.0));
-    println("cm_tp:" + string(ml.confusion_matrix(yt, yp)["tp"]));
-    println("prec:" + string(ml.precision(yt, yp)));
-    println("rec:" + string(round(ml.recall(yt, yp) * 100.0) / 100.0));
-    println("f1:" + string(round(ml.f1_score(yt, yp) * 10.0) / 10.0));
-    println("mse:" + string(ml.mse(yt, yp)));
-    println("rmse:" + string(ml.rmse(yt, yp)));
-}
-"#;
-    let path = write_tmp("test_stdlib_ml.matrix", src);
-    let out_tree = run_engine("tree", &path).expect("tree run ml");
-    let out_vm = run_engine("vm", &path).expect("vm run ml");
-    assert_eq!(
-        out_tree, out_vm,
-        "ml module outputs differ between tree and vm"
-    );
-    assert!(out_tree.contains("lin_r2_high:true"));
-    assert!(out_tree.contains("lin_pred_0:3.0"));
-    assert!(out_tree.contains("log_acc_high:true"));
-    assert!(out_tree.contains("knn_acc_1:true"));
-    assert!(out_tree.contains("pca_shape:3x2"));
-    assert!(out_tree.contains("cm_tp:2"));
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn test_all_four_stdlib_modules_differential_three_engines() {
+fn test_stdlib_modules_differential_three_engines() {
     let src = r#"
 import "web" as web;
-import "dataframe" as df;
 import "stats" as stats;
-import "ml" as ml;
 
 fn main() {
     let q = web.parse_query("page=2&sort=desc");
@@ -337,24 +185,6 @@ fn main() {
     let nums = list(10.0, 20.0, 30.0, 40.0, 50.0);
     println("stats_mean:" + string(stats.mean(nums)));
     println("stats_median:" + string(stats.median(nums)));
-
-    let table = df.from_records(list(
-        map("id", 1, "score", 85.0),
-        map("id", 2, "score", 95.0)
-    ));
-    println("df_rows:" + string(table.num_rows));
-    let s_first = table.get_row(0);
-    println("df_first_score:" + string(s_first["score"]));
-
-    let X = matrix(3, 1);
-    X.set(0, 0, 1.0);
-    X.set(1, 0, 2.0);
-    X.set(2, 0, 3.0);
-    let y = vector(list(2.0, 4.0, 6.0));
-    let model = ml.linear_regression_fit(X, y);
-    let preds = ml.linear_regression_predict(model, X);
-    println("ml_pred0:" + string(round(preds[0])));
-    println("ml_pred2:" + string(round(preds[2])));
 
     return 0;
 }

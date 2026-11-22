@@ -2,11 +2,10 @@
 //!
 //! A tao/wry window over the same op layer the CLI uses ([`super::ops`]).
 //! Deliberately NOT the `spid3r gui` program machinery: the panel is a fixed
-//! native surface and never runs `.matrix` source in-process or loads plugins
-//! itself. Language actions (run/check/build/…) go through
-//! [`super::lang`], which launches the real `spid3r` binary as a child
-//! process, so a faulty program cannot crash the panel. Its IPC surface is a
-//! closed set of ops.
+//! native surface and never runs `.matrix` source in-process. Language
+//! actions (run/check/build/…) go through [`super::lang`], which launches the
+//! real `spid3r` binary as a child process, so a faulty program cannot crash
+//! the panel. Its IPC surface is a closed set of ops.
 //!
 //! Protocol: the page calls `window.spid3r.emit(json)` where json is
 //! `{op, id, params}`; the Rust side dispatches through
@@ -146,12 +145,9 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
   <button data-tab="language">Language</button>
   <button data-tab="safety">Safety</button>
   <button data-tab="config">Configuration</button>
-  <button data-tab="agent">Agent</button>
-  <button data-tab="devices">Devices</button>
-  <button data-tab="remote">Remote hosts</button>
-  <button data-tab="audit">Logs &amp; Audit</button>
+  <button data-tab="audit">Logs</button>
   <div class="nav-danger">Every change on this panel is validated against the
-    schema and written to the audit log.</div>
+    schema and saved to spid3r.ini.</div>
 </nav>
 <main>
   <section id="tab-overview">
@@ -160,13 +156,8 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
     <div class="card" id="overview-cards"></div>
     <div class="card" style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="act" onclick="reloadIni()">Reload spid3r.ini</button>
-      <button class="ghost" onclick="runLocalOp('self_test')">Self-test</button>
-      <button class="ghost" onclick="runLocalOp('gc_collect')">GC collect</button>
-      <button class="ghost" onclick="runLocalOp('rotate_log')">Rotate logs</button>
-      <button class="ghost" onclick="runLocalOp('dump_diagnostics')">Dump diagnostics</button>
       <button class="ghost" onclick="refreshOverview()">Refresh</button>
     </div>
-    <pre id="overview-op-out" class="hidden"></pre>
   </section>
   <section id="tab-language" class="hidden">
     <h1>Language</h1>
@@ -203,7 +194,6 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
         <button class="ghost" onclick="langQuick('build','--release')">Build exe</button>
         <button class="ghost" onclick="langQuick('test','',true)">Test</button>
         <button class="ghost" onclick="langQuick('modules','--tree')">Modules</button>
-        <button class="ghost" onclick="langQuick('plugin','list',true)">Plugins</button>
         <button class="ghost" onclick="langQuick('init','',true)">Init project</button>
         <button class="ghost" onclick="langQuick('install','',true)">Install deps</button>
         <button class="ghost" onclick="langQuick('info','',true)">Runtime info</button>
@@ -228,7 +218,7 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
     <h1>Safety switches</h1>
     <p class="sub">What a Spid3r <b>program</b> may do on this machine. "Open"
        means programs can use the capability; "Restricted" means the runtime
-       denies it. Changes take effect for newly started runs and are audited.</p>
+       denies it. Changes save to spid3r.ini and apply to newly started runs.</p>
     <div id="safety-banner"></div>
     <div id="safety-list"></div>
   </section>
@@ -244,110 +234,12 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
     </div>
     <div id="config-groups"></div>
   </section>
-  <section id="tab-agent" class="hidden">
-    <h1>Management agent</h1>
-    <p class="sub">The local agent answers on [agent] bind:port from spid3r.ini
-       over encrypted <code>spid3r-agent/1</code>. Create one-time pairing codes
-       here or manage remote machines in the <b>Remote hosts</b> tab.</p>
-    <div class="card" id="agent-status"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-      <button class="act" onclick="agentStart()">Start agent</button>
-      <button class="ghost" onclick="agentStop()">Stop agent</button>
-      <button class="ghost" onclick="runLocalOp('restart_runtime')">Restart agent</button>
-      <button class="ghost" onclick="showAgent()">Refresh</button>
-    </div>
-    <div class="sec-title">Create one-time pairing code</div>
-    <div class="card">
-      <div class="item">
-        <div class="info"><b>Role &amp; label</b>
-          <div class="desc">Codes expire automatically after TTL seconds and can be used once.</div></div>
-        <div class="ctl">
-          <select id="pair-role">
-            <option value="viewer">viewer</option>
-            <option value="operator" selected>operator</option>
-            <option value="admin">admin</option>
-          </select>
-          <input type="text" id="pair-name" placeholder="device label (optional)" style="width:180px">
-          <input type="number" id="pair-ttl" placeholder="TTL sec" style="width:90px">
-          <button class="act" onclick="createPairCode()">Create code</button>
-        </div>
-      </div>
-      <pre id="pair-out" class="hidden"></pre>
-    </div>
-  </section>
-  <section id="tab-devices" class="hidden">
-    <h1>Paired devices</h1>
-    <p class="sub">Devices allowed to call this machine's agent. Revoking a
-       device takes effect immediately and is written to the audit log.</p>
-    <div class="card" style="padding:0" id="dev-card">
-      <div style="padding:12px 16px" id="dev-empty">…</div>
-      <table id="dev-table" style="display:none">
-        <thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Last seen</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-  <section id="tab-remote" class="hidden">
-    <h1>Remote hosts</h1>
-    <p class="sub">Manage paired remote Spid3r hosts over encrypted
-       <code>spid3r-agent/1</code> (predefined, role-checked ops only — never an
-       unrestricted shell).</p>
-    <div class="card">
-      <div class="item">
-        <div class="info"><b>Pair a remote host</b>
-          <div class="desc">Enter the remote agent's <code>host:port</code> and one-time 48-hex pairing code.</div></div>
-        <div class="ctl" style="flex-wrap:wrap">
-          <input type="text" id="rem-name" placeholder="name (e.g. prod-1)" style="width:140px">
-          <input type="text" id="rem-addr" placeholder="127.0.0.1:9527" style="width:160px">
-          <input type="text" id="rem-code" placeholder="48-hex pairing code" style="width:220px">
-          <button class="act" onclick="remotePair()">Pair host</button>
-        </div>
-      </div>
-    </div>
-    <div class="sec-title">Paired remote hosts</div>
-    <div class="card" style="padding:0">
-      <div style="padding:12px 16px" id="rem-empty">…</div>
-      <table id="rem-table" style="display:none">
-        <thead><tr><th>Name</th><th>Address</th><th>Device ID</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="sec-title">Dispatch remote operation</div>
-    <div class="card">
-      <div class="item">
-        <div class="info"><b>Target host &amp; operation</b>
-          <div class="desc">Select a paired host and predefined <code>spid3r-agent/1</code> op.</div></div>
-        <div class="ctl" style="flex-wrap:wrap">
-          <select id="rem-host"></select>
-          <select id="rem-op">
-            <option value="status">status</option>
-            <option value="ping">ping</option>
-            <option value="info">info</option>
-            <option value="config.get">config.get</option>
-            <option value="config.set">config.set</option>
-            <option value="config.reload">config.reload</option>
-            <option value="logs.tail">logs.tail</option>
-            <option value="modules.list">modules.list</option>
-            <option value="devices.list">devices.list</option>
-            <option value="ops.list">ops.list</option>
-            <option value="ops.run">ops.run</option>
-          </select>
-          <input type="text" id="rem-key" placeholder="key / op name (optional)" style="width:180px">
-          <input type="text" id="rem-val" placeholder="value (for config.set)" style="width:160px">
-          <button class="act" onclick="remoteCall()">Send</button>
-        </div>
-      </div>
-    </div>
-    <pre id="rem-out">(select a host and send an operation)</pre>
-  </section>
   <section id="tab-audit" class="hidden">
-    <h1>Logs &amp; Audit</h1>
-    <p class="sub">Inspect <code>audit.log</code> (panel &amp; remote actions)
-       and <code>spid3r.log</code> (runtime diagnostics, controlled by
+    <h1>Logs</h1>
+    <p class="sub">Inspect <code>spid3r.log</code> (runtime diagnostics, controlled by
        <code>[logging]</code> &amp; <code>[debug]</code> in spid3r.ini).</p>
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <button class="act" onclick="loadAudit('audit')">Audit log</button>
-      <button class="ghost" onclick="loadAudit('diag')">Diagnostic log (spid3r.log)</button>
+      <button class="act" onclick="loadAudit()">Refresh log</button>
     </div>
     <pre id="audit-text"></pre>
   </section>
@@ -375,39 +267,24 @@ function handleErr(e) { toast(String(e), true); }
 
 // ------------------------------------------------------------- overview --
 async function refreshOverview() {
-  const s = await call('status');
-  const ini = s.ini_exists === 'true'
-    ? (s.ini_valid === 'true'
-        ? '<span class="ok">valid</span>'
-        : '<span class="bad">INVALID</span><br><code>' + esc(s.ini_errors) + '</code>')
-    : '<span class="warn">no spid3r.ini yet</span> <button class="ghost" onclick="initIni()">write default</button>' +
-      (s.ini_errors ? '<br><span class="bad">' + esc(s.ini_errors) + '</span>' : '');
-  const agent = s.agent_listening === 'true'
-    ? '<span class="ok">listening</span> on ' + esc(s.agent_addr)
-    : '<span class="bad">not listening</span> on ' + esc(s.agent_addr);
-  document.getElementById('overview-cards').innerHTML =
-    '<div class="row"><span class="k">Spid3r</span><span class="v">v' + esc(s.version) +
-      ' (language ' + esc(s.language) + ' · env: ' + esc(s.env || 'default') + ')</span></div>' +
-    '<div class="row"><span class="k">spid3r.ini</span><span class="v">' + esc(s.ini_path) + ' — ' + ini + '</span></div>' +
-    '<div class="row"><span class="k">Agent</span><span class="v">' + agent + '</span></div>' +
-    '<div class="row"><span class="k">Devices</span><span class="v">' + esc(s.devices) +
-      ' paired · ' + esc(s.pairings) + ' pending</span></div>' +
-    '<div class="row"><span class="k">Audit log</span><span class="v">' + esc(s.audit_lines) +
-      ' lines · ' + esc(s.audit_path) + '</span></div>' +
-    '<div class="row"><span class="k">State dir</span><span class="v">' + esc(s.state_dir) + '</span></div>';
+  try {
+    const s = await call('status');
+    const ini = s.ini_exists === 'true'
+      ? (s.ini_valid === 'true'
+          ? '<span class="ok">valid</span>'
+          : '<span class="bad">INVALID</span><br><code>' + esc(s.ini_errors) + '</code>')
+      : '<span class="warn">no spid3r.ini yet</span> <button class="ghost" onclick="initIni()">write default</button>' +
+        (s.ini_errors ? '<br><span class="bad">' + esc(s.ini_errors) + '</span>' : '');
+    document.getElementById('overview-cards').innerHTML =
+      '<div class="row"><span class="k">Spid3r</span><span class="v">v' + esc(s.version) +
+        ' (language ' + esc(s.language) + ' · env: ' + esc(s.env || 'default') + ')</span></div>' +
+      '<div class="row"><span class="k">spid3r.ini</span><span class="v">' + esc(s.ini_path) + ' — ' + ini + '</span></div>' +
+      '<div class="row"><span class="k">State dir</span><span class="v">' + esc(s.state_dir) + '</span></div>';
+  } catch (e) { handleErr(e); }
 }
 async function reloadIni() {
   try { const r = await call('config_reload'); toast(r.message); await refreshOverview(); }
   catch (e) { handleErr(e); }
-}
-async function runLocalOp(name) {
-  try {
-    const r = await call('ops_run', { name });
-    toast(r.message);
-    const out = document.getElementById('overview-op-out');
-    if (out) { out.classList.remove('hidden'); out.textContent = name + ': ' + (r.result || r.message); }
-    await refreshOverview(); await showAgent();
-  } catch (e) { handleErr(e); }
 }
 async function resetAllConfig() {
   if (!confirm('Reset ALL spid3r.ini keys to their schema defaults?')) return;
@@ -428,38 +305,40 @@ function restrictValue(key) { return denyFamily(key) ? 'true' : 'false'; }
 function openValue(key) { return denyFamily(key) ? 'false' : 'true'; }
 
 async function loadSafety() {
-  const s = await call('safety_overview');
-  const open = parseInt(s.open, 10), total = parseInt(s.total, 10);
-  document.getElementById('safety-banner').className =
-    'banner ' + (open === 0 ? 'all-safe' : 'some-open');
-  document.getElementById('safety-banner').innerHTML = open === 0
-    ? 'All capabilities restricted — programs run with no machine access beyond the runtime.'
-    : open + ' of ' + total + ' capabilities OPEN. Review the switches below.';
-  const list = document.getElementById('safety-list');
-  list.innerHTML = '';
-  for (const row of s.items.split('\n')) {
-    if (!row) continue;
-    const [key, state, label, consequence, value] = row.split('|');
-    const isOpen = state === 'open';
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.innerHTML =
-      '<div class="item">' +
-        '<div class="info"><b>' + esc(label) + '</b>' +
-          '<div class="desc">' + esc(consequence) + '</div>' +
-          '<div class="key">' + esc(key) + ' = ' + esc(value) + '</div></div>' +
-        '<div class="ctl">' +
-          '<span class="state-chip ' + (isOpen ? 'open' : 'safe') + '">' +
-            (isOpen ? 'OPEN' : 'RESTRICTED') + '</span>' +
-          '<label class="switch' + (isOpen ? ' dangerous' : '') + '">' +
-            '<input type="checkbox" data-safety="' + esc(key) + '"' + (isOpen ? ' checked' : '') + '>' +
-            '<span title="toggle"></span></label>' +
-        '</div></div>';
-    list.appendChild(card);
-  }
-  list.querySelectorAll('input[data-safety]').forEach(cb => {
-    cb.addEventListener('change', () => toggleSafety(cb.dataset.safety, cb.checked));
-  });
+  try {
+    const s = await call('safety_overview');
+    const open = parseInt(s.open, 10), total = parseInt(s.total, 10);
+    document.getElementById('safety-banner').className =
+      'banner ' + (open === 0 ? 'all-safe' : 'some-open');
+    document.getElementById('safety-banner').innerHTML = open === 0
+      ? 'All capabilities restricted — programs run with no machine access beyond the runtime.'
+      : open + ' of ' + total + ' capabilities OPEN. Review the switches below.';
+    const list = document.getElementById('safety-list');
+    list.innerHTML = '';
+    for (const row of s.items.split('\n')) {
+      if (!row) continue;
+      const [key, state, label, consequence, value] = row.split('|');
+      const isOpen = state === 'open';
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML =
+        '<div class="item">' +
+          '<div class="info"><b>' + esc(label) + '</b>' +
+            '<div class="desc">' + esc(consequence) + '</div>' +
+            '<div class="key">' + esc(key) + ' = ' + esc(value) + '</div></div>' +
+          '<div class="ctl">' +
+            '<span class="state-chip ' + (isOpen ? 'open' : 'safe') + '">' +
+              (isOpen ? 'OPEN' : 'RESTRICTED') + '</span>' +
+            '<label class="switch' + (isOpen ? ' dangerous' : '') + '">' +
+              '<input type="checkbox" data-safety="' + esc(key) + '"' + (isOpen ? ' checked' : '') + '>' +
+              '<span title="toggle"></span></label>' +
+          '</div></div>';
+      list.appendChild(card);
+    }
+    list.querySelectorAll('input[data-safety]').forEach(cb => {
+      cb.addEventListener('change', () => toggleSafety(cb.dataset.safety, cb.checked));
+    });
+  } catch (e) { handleErr(e); }
 }
 async function toggleSafety(key, wantOpen) {
   const val = wantOpen ? openValue(key) : restrictValue(key);
@@ -469,9 +348,6 @@ async function toggleSafety(key, wantOpen) {
   try {
     const r = await call('config_set', { key, value: val });
     toast(r.message);
-    if (key === 'agent.enabled' && wantOpen) {
-      toast('agent.enabled saved — start the listener in the Agent tab.');
-    }
     await loadSafety(); await refreshOverview();
   } catch (e) { handleErr(e); await loadSafety(); }
 }
@@ -481,83 +357,83 @@ const SECTION_TITLES = {
   spid3r: 'Core & Scheduler [spid3r]', runtime: 'Execution & Timezone [runtime]',
   net: 'Networking [net]', memory: 'Resource Limits [memory]',
   debug: 'Debugging [debug]', errors: 'Diagnostics [errors]',
-  logging: 'Logging & Audit [logging]', modules: 'Modules & Plugins [modules]',
+  logging: 'Logging [logging]', modules: 'Modules [modules]',
   security: 'Security & Sandbox [security]', packages: 'Package Manager [packages]',
   paths: 'Host Paths [paths]', cache: 'Bytecode Cache [cache]',
-  agent: 'Management Agent [agent]',
 };
 async function loadConfig() {
-  const filter = document.getElementById('cfg-filter').value.toLowerCase();
-  const s = await call('config_list');
-  const groups = {};
-  for (const row of s.keys.split('\n')) {
-    if (!row) continue;
-    const [key, kind, value, def, desc, options, reload, frozen] = row.split('|');
-    if (filter && !key.toLowerCase().includes(filter) &&
-        !desc.toLowerCase().includes(filter)) continue;
-    const sec = key.split('.')[0];
-    (groups[sec] = groups[sec] || []).push({ key, kind, value, def, desc, options, reload, frozen });
-  }
-  const root = document.getElementById('config-groups');
-  root.innerHTML = '';
-  for (const [sec, keys] of Object.entries(groups)) {
-    const title = document.createElement('div');
-    title.className = 'sec-title';
-    title.textContent = SECTION_TITLES[sec] || sec;
-    root.appendChild(title);
-    const card = document.createElement('div');
-    card.className = 'card';
-    for (const k of keys) {
-      const modified = k.value !== k.def;
-      const row = document.createElement('div');
-      row.className = 'item';
-      let editor;
-      if (k.kind === 'Bool') {
-        editor = '<label class="switch"><input type="checkbox" data-bool="' + esc(k.key) + '"' +
-          (k.value === 'true' ? ' checked' : '') + '><span></span></label>';
-      } else if (k.kind === 'Enum' && k.options) {
-        editor = '<select data-enum="' + esc(k.key) + '">' +
-          k.options.split(',').map(o =>
-            '<option' + (o === k.value ? ' selected' : '') + '>' + esc(o) + '</option>').join('') +
-          '</select>';
-      } else if (k.kind === 'Int') {
-        editor = '<input type="number" data-num="' + esc(k.key) + '" value="' + esc(k.value) + '">' +
-          '<button class="ghost" data-set="' + esc(k.key) + '">Set</button>';
-      } else {
-        editor = '<input type="text" data-text="' + esc(k.key) + '" value="' + esc(k.value) + '">' +
-          '<button class="ghost" data-set="' + esc(k.key) + '">Set</button>';
-      }
-      row.innerHTML =
-        '<div class="info"><b>' + esc(k.desc) + '</b>' +
-          '<div class="key">' + esc(k.key) +
-          (k.reload === 'live' ? ' · live' : ' · startup') +
-          (k.frozen === 'true' ? ' · host-only' : '') +
-          (modified ? ' <span class="mod-chip">modified · default: ' + esc(k.def) +
-            ' <a href="#" data-reset="' + esc(k.key) + '">reset</a></span>' : '') +
-          '</div></div>' +
-        '<div class="ctl">' + editor + '</div>';
-      card.appendChild(row);
+  try {
+    const filter = document.getElementById('cfg-filter').value.toLowerCase();
+    const s = await call('config_list');
+    const groups = {};
+    for (const row of s.keys.split('\n')) {
+      if (!row) continue;
+      const [key, kind, value, def, desc, options, reload, frozen] = row.split('|');
+      if (filter && !key.toLowerCase().includes(filter) &&
+          !desc.toLowerCase().includes(filter)) continue;
+      const sec = key.split('.')[0];
+      (groups[sec] = groups[sec] || []).push({ key, kind, value, def, desc, options, reload, frozen });
     }
-    root.appendChild(card);
-  }
-  root.querySelectorAll('input[data-bool]').forEach(cb =>
-    cb.addEventListener('change', () => setKey(cb.dataset.bool, cb.checked ? 'true' : 'false')));
-  root.querySelectorAll('select[data-enum]').forEach(sel =>
-    sel.addEventListener('change', () => setKey(sel.dataset.enum, sel.value)));
-  root.querySelectorAll('[data-set]').forEach(btn =>
-    btn.addEventListener('click', () => {
-      const key = btn.dataset.set;
-      const el = root.querySelector('[data-num="' + CSS.escape(key) + '"], [data-text="' + CSS.escape(key) + '"]');
-      if (el) setKey(key, el.value);
-    }));
-  root.querySelectorAll('[data-reset]').forEach(a =>
-    a.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      resetKey(a.dataset.reset);
-    }));
+    const root = document.getElementById('config-groups');
+    root.innerHTML = '';
+    for (const [sec, keys] of Object.entries(groups)) {
+      const title = document.createElement('div');
+      title.className = 'sec-title';
+      title.textContent = SECTION_TITLES[sec] || sec;
+      root.appendChild(title);
+      const card = document.createElement('div');
+      card.className = 'card';
+      for (const k of keys) {
+        const modified = k.value !== k.def;
+        const row = document.createElement('div');
+        row.className = 'item';
+        let editor;
+        if (k.kind === 'Bool') {
+          editor = '<label class="switch"><input type="checkbox" data-bool="' + esc(k.key) + '"' +
+            (k.value === 'true' ? ' checked' : '') + '><span></span></label>';
+        } else if (k.kind === 'Enum' && k.options) {
+          editor = '<select data-enum="' + esc(k.key) + '">' +
+            k.options.split(',').map(o =>
+              '<option' + (o === k.value ? ' selected' : '') + '>' + esc(o) + '</option>').join('') +
+            '</select>';
+        } else if (k.kind === 'Int') {
+          editor = '<input type="number" data-num="' + esc(k.key) + '" value="' + esc(k.value) + '">' +
+            '<button class="ghost" data-set="' + esc(k.key) + '">Set</button>';
+        } else {
+          editor = '<input type="text" data-text="' + esc(k.key) + '" value="' + esc(k.value) + '">' +
+            '<button class="ghost" data-set="' + esc(k.key) + '">Set</button>';
+        }
+        row.innerHTML =
+          '<div class="info"><b>' + esc(k.desc) + '</b>' +
+            '<div class="key">' + esc(k.key) +
+            (k.reload === 'live' ? ' · live' : ' · startup') +
+            (k.frozen === 'true' ? ' · host-only' : '') +
+            (modified ? ' <span class="mod-chip">modified · default: ' + esc(k.def) +
+              ' <a href="#" data-reset="' + esc(k.key) + '">reset</a></span>' : '') +
+            '</div></div>' +
+          '<div class="ctl">' + editor + '</div>';
+        card.appendChild(row);
+      }
+      root.appendChild(card);
+    }
+    root.querySelectorAll('input[data-bool]').forEach(cb =>
+      cb.addEventListener('change', () => setKey(cb.dataset.bool, cb.checked ? 'true' : 'false')));
+    root.querySelectorAll('select[data-enum]').forEach(sel =>
+      sel.addEventListener('change', () => setKey(sel.dataset.enum, sel.value)));
+    root.querySelectorAll('[data-set]').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.set;
+        const el = root.querySelector('[data-num="' + CSS.escape(key) + '"], [data-text="' + CSS.escape(key) + '"]');
+        if (el) setKey(key, el.value);
+      }));
+    root.querySelectorAll('[data-reset]').forEach(a =>
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        resetKey(a.dataset.reset);
+      }));
+  } catch (e) { handleErr(e); }
 }
 async function setKey(key, value) {
-  if (value === '') return;
   try {
     const r = await call('config_set', { key, value });
     toast(r.message);
@@ -570,50 +446,6 @@ async function resetKey(key) {
     const r = await call('config_reset', { key });
     toast(r.message); await loadConfig(); await refreshOverview();
   } catch (e) { handleErr(e); }
-}
-
-// ---------------------------------------------------------------- agent --
-async function agentStart() {
-  try { const r = await call('agent_start'); toast(r.message); await showAgent(); await refreshOverview(); }
-  catch (e) { handleErr(e); }
-}
-async function agentStop() {
-  try { const r = await call('agent_stop'); toast(r.message); await showAgent(); await refreshOverview(); }
-  catch (e) { handleErr(e); }
-}
-async function showAgent() {
-  const s = await call('agent_status');
-  document.getElementById('agent-status').innerHTML =
-    '<div class="row"><span class="k">Status</span><span class="v">' +
-    (s.listening === 'true' ? '<span class="ok">listening</span>' : '<span class="bad">stopped</span>') +
-    '</span></div>' +
-    '<div class="row"><span class="k">Address</span><span class="v">' + esc(s.addr) + '</span></div>' +
-    '<div class="row"><span class="k">Tracked PID</span><span class="v">' + (esc(s.pid) || '—') + '</span></div>';
-}
-
-// -------------------------------------------------------------- devices --
-async function loadDevices() {
-  const s = await call('devices_list');
-  const empty = document.getElementById('dev-empty');
-  const table = document.getElementById('dev-table');
-  if (!s.devices) {
-    table.style.display = 'none';
-    empty.style.display = 'block';
-    empty.innerHTML = 'no devices paired — pair one with <code>spid3r agent pair</code>';
-    return;
-  }
-  empty.style.display = 'none';
-  table.style.display = 'table';
-  const tb = table.querySelector('tbody'); tb.innerHTML = '';
-  for (const row of s.devices.split('\n')) {
-    if (!row) continue;
-    const [id, name, role, seen] = row.split('|');
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td><code>' + esc(id) + '</code></td><td>' + esc(name) + '</td><td>' + esc(role) +
-      '</td><td>' + esc(seen) + '</td>' +
-      '<td><button class="ghost" data-revoke="' + esc(id) + '">Revoke</button></td>';
-    tb.appendChild(tr);
-  }
 }
 
 // ------------------------------------------------------------- language --
@@ -664,8 +496,12 @@ async function langExec(cmd, args, noFile) {
 }
 function langRun() {
   const cmd = document.getElementById('lang-cmd').value;
-  const noFile = ['test','plugin','init','install','info','version','pack','dist','bench','magic'].includes(cmd);
-  return langExec(cmd, document.getElementById('lang-args').value.trim(), noFile && !document.getElementById('lang-file').value.trim());
+  const globalOnly = [
+    'version','help','info','init','install','tree','verify','pack','dist',
+    'add','remove','search','publish','unpack','test'
+  ].includes(cmd);
+  const optionalFile = ['bench','magic','fmt','doc'].includes(cmd) && !document.getElementById('lang-file').value.trim();
+  return langExec(cmd, document.getElementById('lang-args').value.trim(), globalOnly || optionalFile);
 }
 function langQuick(cmd, args, noFile) {
   const needsFile = !noFile && !document.getElementById('lang-file').value.trim();
@@ -683,13 +519,15 @@ async function langTerm(cmd, noFile) {
 async function langOpen() {
   const f = document.getElementById('lang-file').value.trim();
   if (!f) { toast('Type a file path first.', true); return; }
-  try { const r = await call('lang_read', { path: f }); document.getElementById('lang-src').value = r.text; toast('opened ' + r.path); }
+  const cwd = document.getElementById('lang-cwd').value.trim();
+  try { const r = await call('lang_read', { path: f, cwd }); document.getElementById('lang-src').value = r.text; toast('opened ' + r.path); }
   catch (e) { handleErr(e); }
 }
 async function langSave() {
   const f = document.getElementById('lang-file').value.trim();
   if (!f) { toast('Type a file path first.', true); return false; }
-  try { const r = await call('lang_write', { path: f, text: document.getElementById('lang-src').value }); toast(r.message); return true; }
+  const cwd = document.getElementById('lang-cwd').value.trim();
+  try { const r = await call('lang_write', { path: f, cwd, text: document.getElementById('lang-src').value }); toast(r.message); return true; }
   catch (e) { handleErr(e); return false; }
 }
 async function langSaveRun() { if (await langSave()) langExec('check', ''); }
@@ -702,113 +540,15 @@ document.getElementById('lang-src').addEventListener('keydown', (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); langSave(); }
 });
 
-async function createPairCode() {
+// ----------------------------------------------------------------- logs --
+async function loadAudit() {
   try {
-    const r = await call('pair_create', {
-      role: document.getElementById('pair-role').value,
-      name: document.getElementById('pair-name').value.trim(),
-      ttl: document.getElementById('pair-ttl').value.trim(),
-    });
-    const out = document.getElementById('pair-out');
-    out.classList.remove('hidden');
-    out.textContent = 'Pairing code (' + r.role + ', ' + r.ttl + 's):\n' + r.code +
-      '\n\nOn the remote machine run:\n  spid3r admin pair ' + r.addr + ' ' + r.code;
-    toast(r.message);
-    await refreshOverview();
+    const s = await call('logs_tail', { n: 100 });
+    document.getElementById('audit-text').textContent =
+      (s.path ? '# ' + s.path + '\n' : '') + (s.text || '(empty)');
   } catch (e) { handleErr(e); }
 }
 
-// --------------------------------------------------------------- remote --
-async function loadRemote() {
-  const s = await call('remote_list');
-  const empty = document.getElementById('rem-empty');
-  const table = document.getElementById('rem-table');
-  const sel = document.getElementById('rem-host');
-  const prev = sel.value;
-  sel.innerHTML = '';
-  if (!s.hosts) {
-    table.style.display = 'none';
-    empty.style.display = 'block';
-    empty.textContent = 'No remote hosts paired yet.';
-    return;
-  }
-  empty.style.display = 'none';
-  table.style.display = 'table';
-  const tb = table.querySelector('tbody'); tb.innerHTML = '';
-  for (const row of s.hosts.split('\n')) {
-    if (!row) continue;
-    const [name, addr, dev] = row.split('|');
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td><b>' + esc(name) + '</b></td><td>' + esc(addr) + '</td><td><code>' + esc(dev) + '</code></td>' +
-      '<td><button class="ghost" data-rem-rm="' + esc(name) + '">Remove</button></td>';
-    tb.appendChild(tr);
-    const opt = document.createElement('option');
-    opt.value = name; opt.textContent = name + ' (' + addr + ')';
-    sel.appendChild(opt);
-  }
-  if (prev) sel.value = prev;
-}
-async function remotePair() {
-  try {
-    const r = await call('remote_pair', {
-      name: document.getElementById('rem-name').value.trim(),
-      addr: document.getElementById('rem-addr').value.trim(),
-      code: document.getElementById('rem-code').value.trim(),
-    });
-    toast(r.message);
-    document.getElementById('rem-code').value = '';
-    await loadRemote();
-  } catch (e) { handleErr(e); }
-}
-async function remoteCall() {
-  const host = document.getElementById('rem-host').value;
-  const op = document.getElementById('rem-op').value;
-  const key = document.getElementById('rem-key').value.trim();
-  const value = document.getElementById('rem-val').value;
-  if (!host) { toast('Pair a remote host first.', true); return; }
-  const params = { host, op };
-  if (op === 'ops.run') params.name = key;
-  else if (op === 'config.get' || op === 'config.set') params.key = key;
-  if (op === 'config.set') params.value = value;
-  const out = document.getElementById('rem-out');
-  out.textContent = 'Calling ' + op + ' on ' + host + '…';
-  try {
-    const r = await call('remote_call', params);
-    try { out.textContent = JSON.stringify(JSON.parse(r.response), null, 2); }
-    catch (_) { out.textContent = r.response; }
-  } catch (e) { out.textContent = String(e); handleErr(e); }
-}
-
-// ---------------------------------------------------------------- audit --
-let _logMode = 'audit';
-async function loadAudit(mode) {
-  if (mode) _logMode = mode;
-  const s = await call(_logMode === 'diag' ? 'logs_tail' : 'audit_tail', { n: 100 });
-  document.getElementById('audit-text').textContent =
-    (s.path ? '# ' + s.path + '\n' : '') + (s.text || '(empty)');
-}
-
-// Delegated listeners: rows are rebuilt on every refresh, so handlers live on
-// stable parents and read the target from data attributes. No untrusted text
-// is ever interpolated into an inline handler (security review F-2).
-document.getElementById('dev-table').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-revoke]');
-  if (!btn) return;
-  if (confirm('Revoke device ' + btn.dataset.revoke + '? It loses agent access immediately.')) {
-    call('devices_revoke', { id: btn.dataset.revoke })
-      .then(r => { toast(r.message); return loadDevices().then(refreshOverview); })
-      .catch(handleErr);
-  }
-});
-document.getElementById('rem-table').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-rem-rm]');
-  if (!btn) return;
-  if (confirm('Remove paired remote host ' + btn.dataset.remRm + '?')) {
-    call('remote_remove', { name: btn.dataset.remRm })
-      .then(r => { toast(r.message); return loadRemote(); })
-      .catch(handleErr);
-  }
-});
 document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('main section').forEach(s => s.classList.add('hidden'));
@@ -818,9 +558,6 @@ document.querySelectorAll('nav button').forEach(b => b.addEventListener('click',
   if (tab === 'language') loadLanguage();
   if (tab === 'safety') loadSafety();
   if (tab === 'config') loadConfig();
-  if (tab === 'agent') showAgent();
-  if (tab === 'devices') loadDevices();
-  if (tab === 'remote') loadRemote();
   if (tab === 'audit') loadAudit();
 }));
 document.getElementById('cfg-filter').addEventListener('input', loadConfig);
@@ -829,8 +566,37 @@ refreshOverview();
 </body>
 </html>"##;
 
+/// Best effort cleanup for stale ephemeral control-panel WebView2 folders.
+#[cfg(target_os = "windows")]
+fn prune_stale_control_profiles(control_root: &std::path::Path, current_pid: &str) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(control_root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy() == current_pid {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let stale = meta.is_dir()
+            && meta
+                .modified()
+                .ok()
+                .and_then(|mtime| now.duration_since(mtime).ok())
+                .is_some_and(|age| age > MAX_AGE);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Open the control panel window and run its event loop until closed.
 pub fn run() -> Result<(), String> {
+    crate::config::schema::install_tz_validator(crate::stdlib::tz::check_timezone_setting);
     #[cfg(windows)]
     let event_loop = {
         use tao::platform::windows::EventLoopBuilderExtWindows;
@@ -849,13 +615,9 @@ pub fn run() -> Result<(), String> {
         .build(&event_loop)
         .map_err(|e| format!("cannot open the control panel window: {e}"))?;
 
-    let page_url = if cfg!(target_os = "windows") {
-        // wry's IPC handler unwraps its URL parse; `http://spid3r.app/...` is
-        // the Windows-safe form of the custom origin (see gui/window.rs B5).
-        "http://spid3r.app/control.html"
-    } else {
-        "spid3r://app/control.html"
-    };
+    // Must use the registered `spid3r://` scheme on all platforms so wry's
+    // custom protocol handler serves CONTROL_PAGE (same as `gui/window.rs`).
+    let page_url = "spid3r://app/control.html";
 
     let mut builder = wry::WebViewBuilder::new()
         .with_initialization_script(INIT_SCRIPT)
@@ -875,18 +637,23 @@ pub fn run() -> Result<(), String> {
         .with_url(page_url);
 
     // Ephemeral webview profile: the panel keeps no localStorage state (all
-    // state lives in spid3r.ini / the agent store), and a per-PID folder lets
-    // two panels run at once.
+    // state lives in spid3r.ini), and a per-PID folder lets multiple panels
+    // run cleanly without locking one shared WebView2 profile directory.
     if cfg!(target_os = "windows") {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Spid3r")
-            .join("WebView2")
-            .join("control")
-            .join(std::process::id().to_string());
-        let _ = std::fs::create_dir_all(&base);
-        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", base);
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+            let root = std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("Spid3r")
+                .join("WebView2")
+                .join("control");
+            let pid = std::process::id().to_string();
+            prune_stale_control_profiles(&root, &pid);
+            let base = root.join(pid);
+            let _ = std::fs::create_dir_all(&base);
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", base);
+        }
         builder = builder.with_incognito(true);
     }
 
@@ -912,6 +679,7 @@ pub fn run() -> Result<(), String> {
                 // Dispatch off the UI thread: toolchain actions can run for
                 // seconds and must not freeze the window.
                 let p = proxy.clone();
+                crate::value::mark_multithreaded();
                 std::thread::spawn(move || {
                     let reply = match ops::dispatch(&op, &params) {
                         Ok(data) => format!("{{\"ok\":true,\"data\":{}}}", data),
@@ -944,32 +712,17 @@ fn parse_page_message(body: &str) -> Result<(u64, String, String), String> {
 }
 
 fn extract_number(json: &str, key: &str) -> Option<u64> {
-    let needle = format!("\"{}\"", key);
-    let pos = json.find(&needle)?;
-    let after = json[pos + needle.len()..].trim_start().strip_prefix(':')?;
-    let digits: String = after
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+    ops::field(json, key)?.parse().ok()
 }
 
 fn extract_string(json: &str, key: &str) -> Option<String> {
-    // Reuse the ops field scanner by wrapping the body in a fake object whose
-    // keys are the same shape ({"op":"..."}).
     ops::field(json, key)
 }
 
-/// Grab the raw object/value text that follows `"key":` (balanced braces).
+/// Grab the raw object text that follows a top-level `"key":` (balanced braces).
 fn extract_object(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\"", key);
-    let pos = json.find(&needle)?;
-    let after = json[pos + needle.len()..].trim_start().strip_prefix(':')?;
-    let start = after.trim_start();
-    let open = start.chars().next()?;
-    if open != '{' {
-        // Not an object (e.g. `{}`): return it verbatim as an empty object.
+    let start = ops::raw_field_slice(json, key)?;
+    if !start.starts_with('{') {
         return Some("{}".to_string());
     }
     let bytes = start.as_bytes();
@@ -1000,4 +753,25 @@ fn extract_object(json: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_page_message_ignores_keys_inside_string_payloads() {
+        let msg = r#"{"params":{"path":"a.matrix","text":"\"id\":999,\"params\":{\"x\":1}"},"id":42,"op":"lang_write"}"#;
+        let (id, op, params) = parse_page_message(msg).unwrap();
+        assert_eq!(id, 42);
+        assert_eq!(op, "lang_write");
+        assert_eq!(ops::field(&params, "path").as_deref(), Some("a.matrix"));
+    }
+
+    #[test]
+    fn control_page_uses_custom_protocol_and_safe_commands() {
+        assert!(CONTROL_PAGE.contains("handleErr(e)"));
+        assert!(!CONTROL_PAGE.contains("runLocalOp"));
+        assert!(!CONTROL_PAGE.contains("showAgent"));
+    }
 }

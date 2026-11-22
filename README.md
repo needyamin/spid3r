@@ -39,7 +39,7 @@ Values use deterministic reference counting for immediate drop cleanup, paired w
 
 ![Five deployment targets](docs/diagrams/targets.svg)
 
-Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`** (interpreter, VM, REPL, LSP, debugger, agent, plugin host), and the SHA-256-pinned runtime archive (`spid3r-runtime-<ver>-<target>.tar.gz`):
+Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`** (interpreter, VM, REPL, LSP, debugger, GUI), and the SHA-256-pinned runtime archive (`spid3r-runtime-<ver>-<target>.tar.gz`):
 
 - **Core CLI (`spid3r` VM / interpreter / REPL):** zero external runtime dependencies.
 - **GUI (`spid3r gui`):** requires OS webview — WebView2 (Windows 10/11) or WebKit2GTK + GTK3 (Linux).
@@ -53,10 +53,7 @@ Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`**
 |---|---|---|
 | Embedded stdlib | immutable, compiled in | shipped |
 | Project `.matrix` files | your own source | shipped |
-| Spid3r plugins (`kind = "matrix"`) | written in Spid3r, script trust | shipped |
 | Vendored packages | checksummed, verified by `spid3r verify` | shipped |
-| WASM plugins | sandboxed (empty linker + fuel budget) | shipped |
-| Host plugins | trusted Rust code, compiled in | shipped |
 | FFI (`extern fn`) | trusted C ABI, AOT only | shipped |
 
 ![Packages: declare, vendor, verify, sign, publish, install — local & remote registries](docs/diagrams/packages.svg)
@@ -69,42 +66,16 @@ $ spid3r modules app.matrix --tree        # resolved import graph
 $ spid3r verify                           # verify vendored tree vs spider.lock
 ```
 
-![Host plugins: declare, implement, register — merged into the native table](docs/diagrams/host-plugins.svg)
-
-- **Host plugins** (`plugin.toml` + Rust trait) compile into the host at startup with full address-space trust.
-- **WASM plugins** (`plugin.toml` + `plugin.wasm`) load dynamically with zero host imports and a fuel limit (`spid3r build` rejects plugin calls cleanly at compile time).
-
-```console
-$ SPID3R_PLUGINS=examples/plugins spid3r run examples/plugins/hello-wasm/demo.matrix
-Hello, Ada! (from wasm)
-42
-```
-
-```rust
-spid3r_lang::plugin::register(Box::new(HelloPlugin::new()))?;
-```
-
-Examples: [`hello-host`](examples/plugins/hello-host) · [`hello-wasm`](examples/plugins/hello-wasm)
-
 ![Trust boundary: no gate by default, opt-in capability gate via --sandbox or Engine::deny](docs/diagrams/security.svg)
 
 - **Capability gate:** runs with user authority by default; `spid3r run --sandbox`, `spid3r exec --sandbox`, and Rust `Engine::deny` block filesystem, network, process, and env natives with catchable `sandboxed: ... denied` errors.
-
-![Runtime configuration and remote management: the spid3r.ini precedence layers, the encrypted spid3r-agent/1 wire protocol, role-checked predefined operations, the audit log, and atomic config saves](docs/diagrams/runtime-management.svg)
-
-- **Runtime config:** `spid3r.ini` precedence layers, the encrypted `spid3r-agent/1` wire protocol, role-checked ops, and atomic saves — see [Runtime management](docs/AGENT.md).
+- **Runtime config:** `spid3r.ini` precedence layers, `spid3rinfo()`, `spid3r config`, and local `spid3r control` / `spid3r-control`.
 
 ## Generics & unboxing
 
 ![Generics, monomorphization, and unboxed containers in Spid3r](docs/diagrams/generics-unboxing.svg)
 
 - **Generics & unboxing (`R10`):** multi-arg type parameters (`<K, V>`, `<T: Numeric>`), explicit call/constructor instantiation (`identity<int>(x)`, `new Box<int>(v)`), erased `<T>` back-compat, AOT function monomorphization (`spid3r_mono_*`), and unboxed `list<int>` / `list<float>` storage ([Generics design](docs/GENERICS_DESIGN.md)).
-
-## OCI containers
-
-![Spid3r OCI container engine architecture](docs/diagrams/containers-oci.svg)
-
-- **OCI containers (`R11`):** Registry v2 pull with SHA-256 verification, `.wh.` whiteout layer cache, copy-up / Linux `overlayfs` rootfs snapshotter, IPAM networking, and `--features container` Linux namespace shims ([OCI containers](docs/CONTAINERS.md)).
 
 ## Self-hosted compiler architecture
 
@@ -115,7 +86,7 @@ Examples: [`hello-host`](examples/plugins/hello-host) · [`hello-wasm`](examples
 ![Permanent ownership boundary between pure self-hosted Spid3r and retained Rust Stage 0](docs/selfhost/diagrams/rust-vs-selfhost-boundary.svg)
 
 - **Self-hosted (`selfhost/`):** 17 compiler/CLI modules across 21 `.matrix` files build `spid3r-self` and drive `tokens`, `parse`, `check`, `compile`, `build`, `test`, `fmt`, `pack`/`unpack`/`verify`/`dist`, and `verify-runtime` with zero `cargo` calls.
-- **Retained Rust Stage 0 (`src/`):** cold bootstrap seed, differential parity oracle, SHA-256-pinned runtime (`spid3r_lang`), and interactive/host tools (`tree`, `vm`, `repl`, `debug`, `lsp`, `doc`, `agent`, `gui`, `wasm32`, `plugin`).
+- **Retained Rust Stage 0 (`src/`):** cold bootstrap seed, differential parity oracle, SHA-256-pinned runtime (`spid3r_lang`), and interactive/host tools (`tree`, `vm`, `repl`, `debug`, `lsp`, `doc`, `gui`, `wasm32`).
 
 See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirement boundary details.
 
@@ -126,7 +97,7 @@ See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirem
 | **Implementation** | `102,312` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,304` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · `.matrixc` container with SHA-256 integrity |
-| **Standard library** | `29` `.matrix` modules + `257` built-in native entries (linked via `87` AOT C-ABI trampolines) |
+| **Standard library** | `26` `.matrix` modules + `254` built-in native entries (linked via `87` AOT C-ABI trampolines) |
 | **Tests** | `1,394` Rust/integration tests (`1,367` core · `13` GUI · `14` native AOT) · 3-engine differential + `134`-program frozen selfhost corpus |
 | **Self-hosting** | Stage 1 → Stage 2 → Stage 3 `spid3r_main.o` bit-identical fixed point & SHA-256 runtime pin ([docs/selfhost/](docs/selfhost/README.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
@@ -181,7 +152,6 @@ cargo install --path . --no-default-features
 | `spid3r test` | differential run across engines |
 | `spid3r lsp` | editor server (diagnostics, hover, rename, code actions) |
 | `spid3r build` | LLVM AOT native executable (`--freestanding`, `--target`, `--emit-obj`, `--enforce-budget`, `--allow-dlopen`) |
-| `spid3r container` | OCI image pull/verify, rootfs snapshotter, and container lifecycle (`pull`, `create`, `run`, `ps`, `inspect`, `rm`, `gc`) |
 | `spid3r bundle --target wasm` | offline web app |
 | `spid3r init` · `install` · `dist` | projects, dependencies, release build |
 | `spid3r add` · `remove` · `tree` · `verify` | declare, inspect, and checksum-verify dependencies |
@@ -189,8 +159,8 @@ cargo install --path . --no-default-features
 | `spid3r magic <cmd>` | run project-root `magic` framework CLI |
 | `spid3r compile` · `gui` · `exec` · `bench` | `.matrixc` bytecode, windowed app, executor, benchmarks |
 | `spid3r disasm app.matrixc` | bytecode disassembly (`exit 4` if corrupt) |
-| `spid3r plugin` · `pack` · `unpack` · `verify-runtime` | plugin inspection, `tar+sha256` packages, runtime pin verify |
-| `spid3r info` · `config` · `agent` · `admin` | build metadata, settings, remote management |
+| `spid3r pack` · `unpack` · `verify-runtime` | `tar+sha256` packages, runtime pin verify |
+| `spid3r info` · `config` · `control` | build metadata, `spid3r.ini` settings, local control surface |
 
 ### Exit codes
 
@@ -211,19 +181,17 @@ cargo install --path . --no-default-features
 |---|---|
 | [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
 | [Benchmarks](docs/html/benchmark.html) · [Selfhost baselines](benchmarks/selfhost/README.md) | VM/tree/PHP/Python tables, Phase 11 `P-1` & Stage-0 vs selfhost throughput |
-| [Plugin guide](docs/html/plugin.html) · [ABI v1](docs/PLUGIN_ABI.md) | writing host/WASM plugins and ABI rules |
 | [Playground](docs/html/playground.html) | run Spid3r in the browser |
 | [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
 | [Standard library](docs/STANDARD_LIBRARY.md) | builtins and modules |
-| [Ecosystem](docs/ECOSYSTEM.md) · [Registry](docs/REGISTRY.md) | packages, plugins, trust model, publishing |
+| [Ecosystem](docs/ECOSYSTEM.md) · [Registry](docs/REGISTRY.md) | packages, trust model, publishing |
 | [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |
 | [Native backend](docs/NATIVE.md) · [Runtime ABI](docs/selfhost/RUNTIME_ABI.md) · [FFI](docs/FFI.md) | LLVM AOT · SHA-256 runtime contract · C FFI (`extern fn`) |
-| [Generics design](docs/GENERICS_DESIGN.md) · [OCI containers](docs/CONTAINERS.md) | `DP-1` monomorphization/unboxing · OCI pull, whiteouts, `DP-7` container runtime |
+| [Generics design](docs/GENERICS_DESIGN.md) | `DP-1` monomorphization and unboxed containers |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host embedding |
 | [Environment](docs/ENVIRONMENT.md) | `SPID3R_*` environment variables |
-| [Runtime management](docs/AGENT.md) | `spid3r.ini`, `spid3rinfo()`, encrypted remote agent |
 | [Security policy](SECURITY.md) | trust model and reporting |
 | [Audit status](docs/AUDIT_STATUS.md) | known issues and status |
 | [Self-hosting docs & diagrams](docs/selfhost/README.md) · [ADR](docs/selfhost/SELFHOST.md) · [Retirement review](docs/selfhost/SELFHOST_RETIREMENT.md) | bootstrap stages, diagrams, corpus & ownership boundary |

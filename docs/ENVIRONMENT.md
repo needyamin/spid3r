@@ -24,15 +24,15 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_LOG_FILE` | `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` | Env alias of `logging.file` (canonical INI key): log path override. |
 | `SPID3R_RUN_PAYLOAD_DEBUG` | off | The launcher prints the runtime it chose and the payload path to stderr. |
 
-## Configuration, state, and the management agent
+## Configuration and state
 
 | Variable | Default | Effect |
 |---|---|---|
 | `SPID3R_INI` | — | **Authoritative** explicit path to `spid3r.ini`: the only ini candidate when set and non-empty (no fallback). See the dedicated section below. |
 | `SPID3R_CONFIG_DIR` | platform config dir | Directory that may hold `spid3r.ini`. |
-| `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Env alias of `paths.state_dir` (canonical INI key): paired devices, admin-client book, audit log. |
+| `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Env alias of `paths.state_dir` (canonical INI key): per-user mutable state directory. |
 | `SPID3R_ENV` | `default` (or `[spid3r] env`) | Env alias of `spid3r.env`: selects `[env.<name>]` overrides in the INI. Naming an overlay with no matching `[env.<name>]` section is a **silent no-op** — no warning is emitted and the plain values stay in effect. |
-| `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_AGENT_PORT`, `SPID3R_AGENT_BIND`, …). |
+| `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_NET_TIMEOUT_MS`, `SPID3R_SPID3R_ENGINE`, …). |
 | `SPID3R_RUNTIME_WALL_CLOCK_LIMIT_MS` | `0` | Alias of `runtime.wall_clock_limit_ms`: fatal wall-clock deadline for `spid3r run`, in ms; `0` = unlimited. |
 | `SPID3R_RUNTIME_MEMORY_LIMIT_MB` | `0` | Alias of `runtime.memory_limit_mb`: catchable soft cap on script-value heap, in MiB; `0` = unlimited. |
 | `SPID3R_RUNTIME_TIMEZONE` | `UTC` | Alias of `runtime.timezone`: default zone for the datetime natives (`UTC`, `+06:00`, or an IANA name). |
@@ -45,8 +45,6 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_PATHS_CACHE_DIR` | — | Generic spelling of `paths.cache_dir`. Beats the INI; the short `SPID3R_CACHE_DIR` alias wins when both are set. |
 | `SPID3R_PATHS_STATE_DIR` | — | Generic spelling of `paths.state_dir`. Beats the INI; the short `SPID3R_STATE_DIR` alias wins when both are set. |
 | `SPID3R_PATHS_SQLITE_PATH` | — | Generic spelling of `paths.sqlite_path`. Beats the INI; the short `SPID3R_SQLITE_PATH` alias wins when both are set. |
-
-See `docs/AGENT.md` for the full management-agent manual.
 
 ### `SPID3R_INI` is authoritative
 

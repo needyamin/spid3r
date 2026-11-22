@@ -49,6 +49,27 @@ this directory.
 | `spid3r.serverPath` | `"spid3r"` | How to launch the language server. Set this to an absolute path if `spid3r` is not on your `PATH`. |
 | `spid3r.trace.server` | `"off"` | Set to `"messages"` or `"verbose"` to log the JSON-RPC traffic to the Spid3r output channel. |
 
+## Pre-packaged offline `.vsix`
+
+`packaging/vscode/spid3r-formatter.vsix` (pinned by
+`packaging/vscode/spid3r-formatter.vsix.sha256`) holds the pre-built
+`ANSNEWTECH.spid3r-formatter` extension bundled automatically into the Windows
+NSIS installer (`packaging/nsis/spid3r.nsi`) and Unix release tarballs /
+`install.sh`.
+
+To refresh it from a local `spid3r-formatter` checkout:
+
+```bash
+npm ci --no-audit --no-fund
+npm run compile
+npx --no-install vsce package --no-dependencies -o spid3r-formatter.vsix
+```
+
+Then copy `spid3r-formatter.vsix` here and regenerate `spid3r-formatter.vsix.sha256`
+(`sha256sum spid3r-formatter.vsix > spid3r-formatter.vsix.sha256`). Both
+`build.rs` and `install.sh` refuse to bundle or install the `.vsix` if its
+SHA-256 digest does not match.
+
 ## Developing against it
 
 1. Open `packaging/vscode` in VS Code and press `F5` — this launches an Extension

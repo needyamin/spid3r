@@ -54,6 +54,7 @@ impl Sandbox {
     fn command(&self, args: &[&str]) -> Command {
         let mut c = bin();
         c.args(args)
+            .env_remove("SPID3R_PATH")
             .env("SPID3R_CONFIG_DIR", &self.config_dir)
             .env("SPID3R_STATE_DIR", &self.state_dir);
         // Keep the repo's own spid3r.ini (if any) out of the lookup: the
@@ -79,8 +80,8 @@ fn status_runs_without_any_configuration() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("spid3r "), "missing version line: {stdout}");
-    assert!(stdout.contains("not listening"), "{stdout}");
     assert!(stdout.contains("no spid3r.ini yet"), "{stdout}");
+    assert!(stdout.contains("state  :"), "{stdout}");
 }
 
 #[test]
@@ -118,69 +119,6 @@ fn ini_help_lists_search_order() {
 }
 
 #[test]
-fn devices_list_is_empty_and_revoke_reports_missing() {
-    let sb = sandbox("devices");
-    let out = sb
-        .command(&["control", "devices", "list"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("devices: 0"), "{stdout}");
-
-    let out2 = sb
-        .command(&["control", "devices", "revoke", "no-such-device"])
-        .output()
-        .unwrap();
-    assert_eq!(out2.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&out2.stderr);
-    assert!(stderr.contains("no such device"), "{stderr}");
-}
-
-#[test]
-fn audit_tail_on_empty_state_is_clean() {
-    let sb = sandbox("audit-empty");
-    let out = sb.command(&["control", "audit", "5"]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn audit_tail_shows_control_actions_after_an_audited_op() {
-    let sb = sandbox("audit-populated");
-    // ini_init is an audited control action.
-    let _ = sb.command(&["control", "ini", "--init"]).output().unwrap();
-    let out = sb.command(&["control", "audit", "20"]).output().unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("ini.init"), "{stdout}");
-}
-
-#[test]
-fn agent_status_when_not_running_reports_not_listening() {
-    let sb = sandbox("agent-stopped");
-    // Port 1 is never our agent; even if a probe raced, "not listening" is
-    // the only sane outcome for an unconfigured sandbox.
-    let out = sb
-        .command(&["control", "agent", "status"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("not listening") || stdout.contains("listening"),
-        "{stdout}"
-    );
-}
-
-#[test]
 fn control_help_and_unknown_subcommand_exit_codes() {
     let sb = sandbox("help");
     let out = sb.command(&["control", "help"]).output().unwrap();
@@ -201,7 +139,7 @@ fn help_is_registered_in_the_top_level_cli() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("spid3r control"), "{stdout}");
-    assert!(stdout.contains("agent start"), "{stdout}");
+    assert!(stdout.contains("spid3r control safety"), "{stdout}");
 }
 
 #[test]
@@ -214,13 +152,11 @@ fn safety_lists_capability_switches_with_states() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Default state: the two agent-related surfaces plus plugin loading are
-    // restricted/off; the four deny_* capability gates are OPEN by default.
-    assert!(stdout.contains("capabilities open: 6 of 8"), "{stdout}");
-    assert!(stdout.contains("Remote management access"), "{stdout}");
-    assert!(stdout.contains("security.allow_remote"), "{stdout}");
+    // Default state: the four deny_* capability gates are OPEN by default.
+    assert!(stdout.contains("capabilities open: 4 of 4"), "{stdout}");
+    assert!(stdout.contains("Filesystem access"), "{stdout}");
+    assert!(stdout.contains("security.deny_filesystem"), "{stdout}");
     assert!(stdout.contains("OPEN"), "{stdout}");
-    assert!(stdout.contains("SAFE"), "{stdout}");
 }
 
 #[test]
@@ -229,7 +165,7 @@ fn config_set_bootstraps_the_ini_into_the_config_dir() {
     // No ini exists yet. Saving must create one in the CONFIG dir — never
     // silently target the exe directory (config::save's old fallback).
     let out = sb
-        .command(&["control", "config", "set", "agent.enabled", "true"])
+        .command(&["control", "config", "set", "debug.enabled", "true"])
         .output()
         .unwrap();
     assert!(
@@ -247,11 +183,11 @@ fn config_set_bootstraps_the_ini_into_the_config_dir() {
 
     // The value survives a reload (a fresh process re-reads the file).
     let out2 = sb
-        .command(&["control", "config", "get", "agent.enabled"])
+        .command(&["control", "config", "get", "debug.enabled"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out2.stdout);
-    assert!(stdout.contains("agent.enabled = true"), "{stdout}");
+    assert!(stdout.contains("debug.enabled = true"), "{stdout}");
 }
 
 #[test]
@@ -259,29 +195,29 @@ fn config_set_rejects_schema_violations_and_keeps_the_old_value() {
     let sb = sandbox("config-invalid");
     // Bootstrap a good ini first.
     let _ = sb
-        .command(&["control", "config", "set", "agent.port", "9600"])
+        .command(&["control", "config", "set", "net.timeout_ms", "9600"])
         .output()
         .unwrap();
-    // agent.port is an Int; "not-a-number" must be rejected.
+    // net.timeout_ms is an Int; "not-a-number" must be rejected.
     let out = sb
-        .command(&["control", "config", "set", "agent.port", "not-a-number"])
+        .command(&["control", "config", "set", "net.timeout_ms", "not-a-number"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     // The on-disk value is untouched.
     let text = std::fs::read_to_string(ini_in(&sb)).unwrap();
-    assert!(text.contains("port = 9600"), "{text}");
+    assert!(text.contains("timeout_ms = 9600"), "{text}");
 }
 
 #[test]
 fn config_reset_restores_the_schema_default() {
     let sb = sandbox("config-reset");
     let _ = sb
-        .command(&["control", "config", "set", "agent.port", "9999"])
+        .command(&["control", "config", "set", "net.timeout_ms", "9999"])
         .output()
         .unwrap();
     let out = sb
-        .command(&["control", "config", "reset", "agent.port"])
+        .command(&["control", "config", "reset", "net.timeout_ms"])
         .output()
         .unwrap();
     assert!(
@@ -290,7 +226,7 @@ fn config_reset_restores_the_schema_default() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = std::fs::read_to_string(ini_in(&sb)).unwrap();
-    assert!(text.contains("port = 9527"), "{text}");
+    assert!(text.contains("timeout_ms = 30000"), "{text}");
 }
 
 #[test]
@@ -299,14 +235,14 @@ fn config_list_groups_known_keys() {
     let out = sb.command(&["control", "config", "list"]).output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("security.allow_remote"), "{stdout}");
-    assert!(stdout.contains("agent.enabled"), "{stdout}");
+    assert!(stdout.contains("security.deny_filesystem"), "{stdout}");
+    assert!(stdout.contains("debug.enabled"), "{stdout}");
     assert!(stdout.contains("spid3r.engine"), "{stdout}");
 }
 
 /// Regression: the --op passthrough once read the params from the wrong argv
 /// index, feeding the literal string "--params" to every op — which broke
-/// every params-carrying call (config_set/get, audit_tail) while the
+/// every params-carrying call (config_set/get) while the
 /// parameterless display ops kept working. The panel's safety toggles went
 /// through this path, so the bug silently disabled them.
 #[test]
@@ -318,7 +254,7 @@ fn op_passthrough_parses_params_after_the_flag() {
             "--op",
             "config_set",
             "--params",
-            r#"{"key":"agent.enabled","value":"true"}"#,
+            r#"{"key":"debug.enabled","value":"true"}"#,
         ])
         .output()
         .unwrap();
@@ -336,7 +272,7 @@ fn op_passthrough_parses_params_after_the_flag() {
             "--op",
             "config_get",
             "--params",
-            r#"{"key":"agent.enabled"}"#,
+            r#"{"key":"debug.enabled"}"#,
         ])
         .output()
         .unwrap();
@@ -381,7 +317,7 @@ fn every_cli_command_is_panel_decidable() {
         }
     }
     assert!(
-        commands.len() >= 30,
+        commands.len() >= 25,
         "parsed too few commands from --help ({:?})",
         commands
     );
@@ -425,7 +361,7 @@ fn every_cli_command_is_panel_decidable() {
 }
 
 #[test]
-fn control_pair_create_ops_run_logs_and_config_reload_work() {
+fn control_logs_reload_and_reset_all_work() {
     let sb = sandbox("ops-extended");
 
     // config_reload
@@ -440,11 +376,47 @@ fn control_pair_create_ops_run_logs_and_config_reload_work() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("reloaded"));
 
-    // pair_create
+    // logs_tail
+    let out = sb.command(&["control", "logs", "10"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // config_reset_all on a single section
     let out = sb
-        .command(&[
-            "control", "pair", "--role", "operator", "--name", "ci-box", "--ttl", "120",
-        ])
+        .command(&["control", "config", "set", "net.timeout_ms", "12345"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = sb
+        .command(&["control", "config", "reset-all", "net"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = sb
+        .command(&["control", "config", "get", "net.timeout_ms"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "net.timeout_ms = 30000"
+    );
+}
+
+#[test]
+fn ini_init_force_overwrites_existing_file() {
+    let sb = sandbox("ini-force");
+    let path = ini_in(&sb);
+    std::fs::write(&path, "; custom content\n[net]\ntimeout_ms = 1234\n").unwrap();
+
+    let out = sb
+        .command(&["control", "ini", "--init", "--force"])
         .output()
         .unwrap();
     assert!(
@@ -453,158 +425,132 @@ fn control_pair_create_ops_run_logs_and_config_reload_work() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("code: "), "missing code: {stdout}");
-    assert!(stdout.contains("role: operator"), "missing role: {stdout}");
-
-    // ops_run self_test
-    let out = sb
-        .command(&["control", "ops", "run", "self_test"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("passed"));
-
-    // logs_tail & remote_list (empty)
-    let out = sb.command(&["control", "logs", "10"]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let out = sb.command(&["control", "remote", "list"]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("no remote hosts paired"));
-
-    // config_reset_all on a single section
-    let out = sb
-        .command(&["control", "config", "set", "agent.name", "custom-node"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let out = sb
-        .command(&["control", "config", "reset-all", "agent"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let out = sb
-        .command(&["control", "config", "get", "agent.name"])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "agent.name =");
+    assert!(stdout.contains("default ini written"), "{stdout}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("timeout_ms = 1234"), "{text}");
+    assert!(text.contains("[spid3r]"), "{text}");
 }
 
 #[test]
-fn control_remote_pair_and_call_roundtrip_over_encrypted_agent() {
-    let sb = sandbox("remote-roundtrip");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+fn logs_tail_honors_unquoted_json_number_param() {
+    let sb = sandbox("logs-tail-num");
+    let log_file = sb.state_dir.join("panel-tail-test.log");
+    std::fs::write(&log_file, "line1\nline2\nline3\nline4\n").unwrap();
 
-    std::fs::write(
-        ini_in(&sb),
-        format!(
-            "[agent]\nenabled = true\nbind = 127.0.0.1\nport = {}\nname = ctrl-node\n",
-            port
-        ),
-    )
-    .unwrap();
+    let out = sb
+        .command(&["control", "--op", "logs_tail", "--params", r#"{"n":2}"#])
+        .env("SPID3R_LOG_FILE", &log_file)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("line3\\nline4"), "{stdout}");
+    assert!(!stdout.contains("line1"), "{stdout}");
+}
 
-    // Create pairing code via `spid3r control pair`
-    let pair_out = sb
+#[test]
+fn config_list_emits_canonical_enum_kind() {
+    let sb = sandbox("config-list-enum");
+    let out = sb
+        .command(&["control", "--op", "config_list", "--params", "{}"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("spid3r.engine|Enum|"), "{stdout}");
+    assert!(!stdout.contains("Enum(["), "{stdout}");
+}
+
+#[test]
+fn config_set_allows_clearing_optional_string_key_to_empty() {
+    let sb = sandbox("config-clear-str");
+    let set_out = sb
+        .command(&["control", "config", "set", "modules.path", "/tmp/custom"])
+        .output()
+        .unwrap();
+    assert!(set_out.status.success());
+
+    let clear_out = sb
         .command(&[
             "control",
-            "pair",
-            "--role",
-            "admin",
-            "--name",
-            "ctrl-client",
+            "--op",
+            "config_set",
+            "--params",
+            r#"{"key":"modules.path","value":""}"#,
         ])
         .output()
         .unwrap();
     assert!(
-        pair_out.status.success(),
-        "pair_create failed: {}",
-        String::from_utf8_lossy(&pair_out.stderr)
+        clear_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&clear_out.stderr)
     );
-    let code = String::from_utf8_lossy(&pair_out.stdout)
-        .lines()
-        .find_map(|l| l.strip_prefix("code: "))
-        .expect("pairing code")
-        .trim()
-        .to_string();
 
-    // Spawn the agent
-    let agent = sb
-        .command(&["agent", "start"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let get_out = sb
+        .command(&["control", "config", "get", "modules.path"])
+        .output()
         .unwrap();
-    struct Kill(std::process::Child);
-    impl Drop for Kill {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let _guard = Kill(agent);
+    assert_eq!(
+        String::from_utf8_lossy(&get_out.stdout).trim(),
+        "modules.path ="
+    );
+}
 
-    let addr = format!("127.0.0.1:{}", port);
-    for _ in 0..40 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+#[test]
+fn config_set_rejects_invalid_timezone() {
+    let sb = sandbox("config-invalid-tz");
+    let out = sb
+        .command(&[
+            "control",
+            "config",
+            "set",
+            "runtime.timezone",
+            "Not/A_Real_Zone",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown timezone"), "{stderr}");
+    assert!(!ini_in(&sb).exists(), "rejected write must not create ini");
+}
 
-    // Pair via `spid3r control remote pair`
-    let p = sb
-        .command(&["control", "remote", "pair", &addr, &code, "--name", "lab"])
+#[test]
+fn lang_read_and_write_resolve_relative_paths_against_cwd() {
+    let sb = sandbox("lang-rel-cwd");
+    let proj = sb.state_dir.join("proj");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let proj_str = proj.display().to_string().replace('\\', "\\\\");
+
+    let w_params = format!(
+        r#"{{"path":"src/app.matrix","cwd":"{}","text":"fn main() {{ return 0; }}"}}"#,
+        proj_str
+    );
+    let w_out = sb
+        .command(&["control", "--op", "lang_write", "--params", &w_params])
         .output()
         .unwrap();
     assert!(
-        p.status.success(),
-        "remote pair failed: {}",
-        String::from_utf8_lossy(&p.stderr)
+        w_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&w_out.stderr)
     );
+    assert!(proj.join("src/app.matrix").is_file());
 
-    // Call `status` via `spid3r control remote call`
-    let c = sb
-        .command(&["control", "remote", "call", "lab", "status"])
+    let r_params = format!(r#"{{"path":"src/app.matrix","cwd":"{}"}}"#, proj_str);
+    let r_out = sb
+        .command(&["control", "--op", "lang_read", "--params", &r_params])
         .output()
         .unwrap();
     assert!(
-        c.status.success(),
-        "remote call failed: {}",
-        String::from_utf8_lossy(&c.stderr)
+        r_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&r_out.stderr)
     );
-    let resp = String::from_utf8_lossy(&c.stdout);
-    assert!(
-        resp.contains("ctrl-node"),
-        "unexpected status response: {resp}"
-    );
-
-    // Remove via `spid3r control remote remove`
-    let r = sb
-        .command(&["control", "remote", "remove", "lab"])
-        .output()
-        .unwrap();
-    assert!(
-        r.status.success(),
-        "remote remove failed: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
+    let stdout = String::from_utf8_lossy(&r_out.stdout);
+    assert!(stdout.contains("fn main() { return 0; }"), "{stdout}");
 }

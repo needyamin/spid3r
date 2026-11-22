@@ -349,10 +349,10 @@ fn n_build(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
     let (boundary, items) = match (&args[0], &args[1]) {
         (Value::Str(s), Value::List(l)) if !s.is_empty() => {
-            (s.to_string(), l.lock().unwrap().items.clone())
+            (s.to_string(), l.lock().unwrap().clone_items())
         }
         (Value::List(l), Value::Str(s)) if !s.is_empty() => {
-            (s.to_string(), l.lock().unwrap().items.clone())
+            (s.to_string(), l.lock().unwrap().clone_items())
         }
         (Value::Str(s), _) if s.is_empty() => {
             return Err(format!("{}: boundary must be a non-empty string", WHO));

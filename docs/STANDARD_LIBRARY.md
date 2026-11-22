@@ -225,8 +225,8 @@ public keys (order 1/2/4/8), which is stricter than RFC 8032.
 
 | Function | Description |
 |---|---|
-| `spid3rinfo()` | Map of runtime information (version, OS, config, modules, memory). Modes: `spid3rinfo("html")`, `spid3rinfo("json")`, `spid3rinfo("text")`, `spid3rinfo("map", no_redact)`. Sensitive values are redacted by default. Local renders include configuration notes and pin-failure details; remote `info` and `dump_diagnostics` omit the configuration-notes row. See `docs/AGENT.md`. |
-| `config_get(key)` | Live `spid3r.ini` value as a string, or `null`. Sensitive-looking keys are redacted (a stable hash). The policy lists are visible to the script that is their subject: `config_get("security.basedir")`, `config_get("security.disable_natives")` and `config_get("modules.disable")` return the configured lists — only the agent's remote surfaces redact the first two. |
+| `spid3rinfo()` | Map of runtime information (version, OS, config, modules, memory). Modes: `spid3rinfo("html")`, `spid3rinfo("json")`, `spid3rinfo("text")`, `spid3rinfo("map", no_redact)`. Sensitive values are redacted by default. |
+| `config_get(key)` | Live `spid3r.ini` value as a string, or `null`. Sensitive-looking keys are redacted (a stable hash). |
 | `config_set(key, value)` | Set a known key in the live configuration (validated). Note: `security.basedir`, `security.disable_natives` and `modules.disable` are enforced from a per-process snapshot, so changing them (or `config_reload()`) does not widen or re-narrow the running policy — the next process start applies the new values. |
 | `config_reload()` | Re-read `spid3r.ini`; returns the path that was loaded (or empty). |
 
@@ -402,29 +402,7 @@ Built on core networking and crypto primitives (`tcp_listen`, `tcp_accept`, `htt
 
 ---
 
-## 2. `dataframe.matrix` — Pandas Alternative
-
-A columnar table structure backed by native `vector` (for numerical columns) and `list` (for categorical/mixed columns).
-
-| Function / Method | Signature | Description |
-|---|---|---|
-| `from_records(list_of_maps)` | `(list) -> DataFrame` | Construct a DataFrame from a list of row maps. |
-| `from_csv(path)` | `(string) -> result` | Load CSV file into a DataFrame, auto-converting numeric columns to native `vector`. |
-| `to_csv(df, path)` | `(DataFrame, string) -> result` | Export DataFrame to a CSV file. |
-| `df.select(cols)` | `(list) -> DataFrame` | Return a new DataFrame with selected columns. |
-| `df.filter(predicate_fn)` | `(fn(row) -> bool) -> DataFrame` | Filter rows matching predicate function. |
-| `df.sort_by(col, desc)` | `(string, bool) -> DataFrame` | Sort DataFrame by column in ascending or descending order. |
-| `df.group_by(key, agg_spec)` | `(string, map) -> DataFrame` | Group by key column and apply aggregation functions (`mean`, `sum`, `count`, `min`, `max`). |
-| `df.inner_join(df2, on_col)` | `(DataFrame, string) -> DataFrame` | Perform inner join on common key column. |
-| `df.drop_na(col?)` | `(string?) -> DataFrame` | Drop rows containing `null` in the specified column (or all columns if `null`). |
-| `df.fill_na(col, val)` | `(string, value) -> DataFrame` | Replace `null` entries in a column with `val`. |
-| `df.head(n)` | `(int) -> DataFrame` | Return top `n` rows. |
-| `df.describe()` | `() -> DataFrame` | Generate summary statistics (`count`, `mean`, `std`, `min`, `max`) for numeric columns. |
-| `df.print_table()` | `() -> null` | Pretty-print formatted ASCII table to stdout. |
-
----
-
-## 3. `stats.matrix` — SciPy Stats Alternative
+## 2. `stats.matrix` — Statistics
 
 Built on native `vector` reductions and mathematical kernels.
 
@@ -450,36 +428,7 @@ Built on native `vector` reductions and mathematical kernels.
 
 ---
 
-## 4. `ml.matrix` — Scikit-Learn Alternative
-
-Machine learning models and evaluation metrics built on native `matrix` (`solve`, `transpose`, `mul`, `eigen_sym`) and `vector`.
-
-| Model / Function | Signature | Description |
-|---|---|---|
-| `linear_regression_fit(X, y)` | `(matrix, vector) -> map` | Fit Ordinary Least Squares with normal equations and Ridge regularization fallback. |
-| `linear_regression_predict(model, X)` | `(map, matrix) -> vector` | Predict linear continuous targets. |
-| `logistic_regression_fit(X, y, lr?, epochs?)` | `(matrix, vector, float?, int?) -> map` | Train binary logistic regression using gradient descent. |
-| `logistic_regression_predict(model, X)` | `(map, matrix) -> vector` | Predict binary class labels ($0.0$ or $1.0$). |
-| `knn_predict(X_train, y_train, X_test, k?)` | `(matrix, vector, matrix, int?) -> vector` | $k$-Nearest Neighbors classifier using Euclidean distances. |
-| `kmeans_fit(X, k?, max_iter?)` | `(matrix, int?, int?) -> map` | $k$-Means clustering with centroid convergence and inertia calculation. |
-| `pca_fit_transform(X, n_components?)` | `(matrix, int?) -> map` | Principal Component Analysis via symmetric eigen-decomposition (`eigen_sym`). |
-
-### Evaluation Metrics
-
-| Metric | Signature | Description |
-|---|---|---|
-| `accuracy(y_true, y_pred)` | `(vec, vec) -> float` | Classification accuracy. |
-| `confusion_matrix(y_true, y_pred)` | `(vec, vec) -> map` | Returns `tp`, `fp`, `tn`, `fn`. |
-| `precision(y_true, y_pred)` | `(vec, vec) -> float` | Positive predictive value ($TP / (TP + FP)$). |
-| `recall(y_true, y_pred)` | `(vec, vec) -> float` | Sensitivity ($TP / (TP + FN)$). |
-| `f1_score(y_true, y_pred)` | `(vec, vec) -> float` | Harmonic mean of precision and recall. |
-| `mse(y_true, y_pred)` | `(vec, vec) -> float` | Mean squared error. |
-| `rmse(y_true, y_pred)` | `(vec, vec) -> float` | Root mean squared error. |
-| `r2_score(y_true, y_pred)` | `(vec, vec) -> float` | Coefficient of determination $R^2 \in (-\infty, 1.0]$. |
-
----
-
-## 5. `smtp.matrix` — Mail (RFC 5321 + RFC 5322)
+## 3. `smtp.matrix` — Mail (RFC 5321 + RFC 5322)
 
 An ESMTP client and a message builder. Transport is `tcp_*`; **there is no TLS stream native**, so this
 client is cleartext-only and says so instead of downgrading silently.
@@ -511,29 +460,9 @@ explanation when the channel is cleartext.
 Non-anonymous logins require `allow_plaintext_auth: true`, and are refused outright when the server advertises
 `AUTH TLS` (the upgrade cannot be taken).
 
-## 7. `ssh.matrix` — SSH/SFTP via the system OpenSSH client
-
-Not a protocol implementation on purpose: key exchange, host-key signatures, AEAD ciphers and userauth are a
-project, and a half-finished SSH client is a security hole. This module builds a validated argv and runs
-`ssh` / `sftp` with `exec_capture` — no shell, fixed option whitelist, `BatchMode=yes`, host keys verified by
-default.
-
-| Function | Description |
-|---|---|
-| `ssh_exec(host, command, opts?)` | Run a remote command; `ok({code, stdout, stderr})` (255 = transport/auth failure). |
-| `sftp_get(host, remote, local, opts?)` / `sftp_put(host, local, remote, opts?)` | Batch-mode transfers. |
-| `sftp_batch(host, commands, opts?)` | Run a list of sftp batch commands (or one multi-line string); stops at the first failure. |
-| `sftp_mkdir` / `sftp_remove` / `sftp_list` | Directory operations. |
-| `ssh_argv(host, command, opts?)` / `sftp_argv(host, opts?)` | The exact argv, public because argument construction *is* the security boundary (and is unit-tested). |
-| `ssh_version()` | `ok("OpenSSH_9.6p1 ...")` or `err` when OpenSSH is absent. |
-
-opts: `user`, `port` (22), `key`, `known_hosts`, `connect_timeout` (10), `strict_host_key`
-(`"yes"` default / `"accept-new"` / `"no"`), `compression`, `verbose`. A host may not start with `-` or
-contain `@`, and `ProxyCommand` cannot be expressed at all — unknown option keys are ignored, never forwarded.
-
 ---
 
-## 8. `tz.matrix` — IANA time zones
+## 5. `tz.matrix` — IANA time zones
 
 | Function | Description |
 |---|---|
@@ -842,11 +771,6 @@ In addition to SQLite (`db_open`), Spid3r includes zero-dependency native TCP da
 - `pg_query(handle, sql) -> ok([row_map, ...])`
 - `pg_exec(handle, sql) -> ok(null)`
 - `pg_close(handle) -> bool`
-
-### Redis Client (`redis_*`)
-- `redis_connect(addr, password=null) -> ok(handle)`
-- `redis_command(handle, ...args) -> ok(response)` (RESP2 protocol parser supporting Simple Strings, Errors, Integers, Bulk Strings, and Arrays)
-- `redis_close(handle) -> bool`
 
 ## Coverage — `spid3r run --coverage`
 

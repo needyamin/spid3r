@@ -16,46 +16,104 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
     let mut cur_row: Vec<String> = Vec::new();
     let mut cur_field = String::new();
     let mut in_quotes = false;
-    let mut chars = text.chars().peekable();
 
-    while let Some(ch) = chars.next() {
-        if in_quotes {
-            if ch == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    cur_field.push('"');
+    if delimiter.is_ascii() {
+        let bytes = text.as_bytes();
+        let delim = delimiter as u8;
+        let mut pos = 0usize;
+        while pos < bytes.len() {
+            if in_quotes {
+                if let Some(rel) = super::swar::find_byte(&bytes[pos..], b'"') {
+                    cur_field.push_str(&text[pos..pos + rel]);
+                    pos += rel + 1;
+                    if bytes.get(pos) == Some(&b'"') {
+                        cur_field.push('"');
+                        pos += 1;
+                    } else {
+                        in_quotes = false;
+                    }
                 } else {
-                    in_quotes = false;
+                    cur_field.push_str(&text[pos..]);
+                    pos = bytes.len();
                 }
+            } else if let Some(rel) = super::swar::find_csv_delim(&bytes[pos..], delim) {
+                if rel > 0 {
+                    cur_field.push_str(&text[pos..pos + rel]);
+                    pos += rel;
+                }
+                let ch = bytes[pos];
+                pos += 1;
+                if ch == b'"' {
+                    in_quotes = true;
+                } else if ch == delim {
+                    cur_row.push(cur_field);
+                    cur_field = String::new();
+                } else if ch == b'\r' {
+                    if bytes.get(pos) == Some(&b'\n') {
+                        pos += 1;
+                    }
+                    if cur_row.is_empty() && cur_field.is_empty() {
+                        continue;
+                    }
+                    cur_row.push(cur_field);
+                    raw_rows.push(cur_row);
+                    cur_row = Vec::new();
+                    cur_field = String::new();
+                } else {
+                    if cur_row.is_empty() && cur_field.is_empty() {
+                        continue;
+                    }
+                    cur_row.push(cur_field);
+                    raw_rows.push(cur_row);
+                    cur_row = Vec::new();
+                    cur_field = String::new();
+                }
+            } else {
+                cur_field.push_str(&text[pos..]);
+                pos = bytes.len();
+            }
+        }
+    } else {
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if in_quotes {
+                if ch == '"' {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        cur_field.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    cur_field.push(ch);
+                }
+            } else if ch == '"' {
+                in_quotes = true;
+            } else if ch == delimiter {
+                cur_row.push(cur_field);
+                cur_field = String::new();
+            } else if ch == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                if cur_row.is_empty() && cur_field.is_empty() {
+                    continue;
+                }
+                cur_row.push(cur_field);
+                raw_rows.push(cur_row);
+                cur_row = Vec::new();
+                cur_field = String::new();
+            } else if ch == '\n' {
+                if cur_row.is_empty() && cur_field.is_empty() {
+                    continue;
+                }
+                cur_row.push(cur_field);
+                raw_rows.push(cur_row);
+                cur_row = Vec::new();
+                cur_field = String::new();
             } else {
                 cur_field.push(ch);
             }
-        } else if ch == '"' {
-            in_quotes = true;
-        } else if ch == delimiter {
-            cur_row.push(cur_field);
-            cur_field = String::new();
-        } else if ch == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            if cur_row.is_empty() && cur_field.is_empty() {
-                continue;
-            }
-            cur_row.push(cur_field);
-            raw_rows.push(cur_row);
-            cur_row = Vec::new();
-            cur_field = String::new();
-        } else if ch == '\n' {
-            if cur_row.is_empty() && cur_field.is_empty() {
-                continue;
-            }
-            cur_row.push(cur_field);
-            raw_rows.push(cur_row);
-            cur_row = Vec::new();
-            cur_field = String::new();
-        } else {
-            cur_field.push(ch);
         }
     }
 
@@ -95,9 +153,9 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
         (MapKey::Str("rows".into()), make_list(rows_val)),
     ];
 
-    Ok(Value::Result(Ok(Box::new(Value::Map(new_ref(
-        MapData::from_entries(entries),
-    ))))))
+    Ok(Value::ok(Value::Map(new_ref(MapData::from_entries(
+        entries,
+    )))))
 }
 
 pub fn infer_csv_value(field: &str) -> Value {
@@ -146,7 +204,7 @@ pub fn write_csv_file(path: &str, headers: &[Value], rows: &[Value]) -> Result<V
     // Rows
     for row_val in rows {
         let row_items = match row_val {
-            Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+            Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
             Value::Tuple(t) => t.lock().unwrap().clone(),
             other => {
                 return Err(format!(
@@ -164,10 +222,10 @@ pub fn write_csv_file(path: &str, headers: &[Value], rows: &[Value]) -> Result<V
     }
 
     match std::fs::write(path, out) {
-        Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
-        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+        Ok(()) => Ok(Value::ok(Value::Null)),
+        Err(e) => Ok(Value::err(Value::Str(
             format!("cannot write csv to '{}': {}", path, e).into(),
-        ))))),
+        ))),
     }
 }
 
@@ -179,8 +237,8 @@ mod tests {
     fn test_parse_csv_basic() {
         let csv = "name,age,score,active\nAlice,30,95.5,true\nBob,25,null,false\n\"Charlie, Jr.\",40,NA,true\n";
         let res = parse_csv_text(csv, ',', true).unwrap();
-        if let Value::Result(Ok(m)) = res {
-            if let Value::Map(map_ref) = *m {
+        if let Value::Result(inner) = res {
+            if let Ok(Value::Map(map_ref)) = inner.as_ref() {
                 let map = map_ref.lock().unwrap();
                 assert_eq!(map.entries.len(), 2);
             } else {
