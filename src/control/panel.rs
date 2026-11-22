@@ -17,6 +17,7 @@
 //! controls when the user shrinks or DPI-scales the window.
 
 use std::borrow::Cow;
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -619,7 +620,7 @@ pub fn run() -> Result<(), String> {
     // custom protocol handler serves CONTROL_PAGE (same as `gui/window.rs`).
     let page_url = "spid3r://app/control.html";
 
-    let mut builder = wry::WebViewBuilder::new()
+    let builder = wry::WebViewBuilder::new()
         .with_initialization_script(INIT_SCRIPT)
         .with_ipc_handler({
             let proxy = proxy.clone();
@@ -639,8 +640,8 @@ pub fn run() -> Result<(), String> {
     // Ephemeral webview profile: the panel keeps no localStorage state (all
     // state lives in spid3r.ini), and a per-PID folder lets multiple panels
     // run cleanly without locking one shared WebView2 profile directory.
-    if cfg!(target_os = "windows") {
-        #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
+    let builder = {
         if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
             let root = std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
@@ -654,8 +655,8 @@ pub fn run() -> Result<(), String> {
             let _ = std::fs::create_dir_all(&base);
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", base);
         }
-        builder = builder.with_incognito(true);
-    }
+        builder.with_incognito(true)
+    };
 
     let webview = builder.build(&window).map_err(|e| {
         format!("cannot start the webview (is the WebView2 runtime installed?): {e}")
