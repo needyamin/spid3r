@@ -245,6 +245,7 @@ pub struct DecodedChunk {
     pub int_consts: Vec<i64>,
     pub str_templates: Vec<StrTemplate>,
     pub str_keys: Vec<(crate::value::collections::KeyStr, u64)>,
+    pub is_pure_leaf: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1228,12 +1229,55 @@ impl DecodedChunk {
         // (all single ops and CallGlobal1 next instructions were already mapped).
         let _ = HashMap::<usize, usize>::new;
 
+        let is_pure_leaf = !insts.is_empty()
+            && insts.iter().all(|ins| {
+                matches!(
+                    ins.op,
+                    DecodedOp::AddLocalConst
+                        | DecodedOp::SubLocalConst
+                        | DecodedOp::IncCmpJumpLocal
+                        | DecodedOp::IncMulCmpJumpLocal
+                        | DecodedOp::CmpJumpLocal2
+                        | DecodedOp::CmpJumpLocalConst
+                        | DecodedOp::MulCmpJumpLocal3
+                        | DecodedOp::ModEqZeroJump
+                        | DecodedOp::BinOpLocal2Set
+                        | DecodedOp::ReturnFalse
+                        | DecodedOp::ReturnTrue
+                        | DecodedOp::ReturnLocal
+                        | DecodedOp::Return
+                        | DecodedOp::GetLocal
+                        | DecodedOp::SetLocal
+                        | DecodedOp::SetLocalPop
+                        | DecodedOp::Const
+                        | DecodedOp::IntConst
+                        | DecodedOp::ConstSetLocal
+                        | DecodedOp::Jump
+                        | DecodedOp::JumpIfFalse
+                        | DecodedOp::JumpIfTrue
+                        | DecodedOp::Loop
+                        | DecodedOp::Add
+                        | DecodedOp::Sub
+                        | DecodedOp::Mul
+                        | DecodedOp::Div
+                        | DecodedOp::Mod
+                        | DecodedOp::Equal
+                        | DecodedOp::NotEqual
+                        | DecodedOp::Less
+                        | DecodedOp::LessEq
+                        | DecodedOp::Greater
+                        | DecodedOp::GreaterEq
+                        | DecodedOp::Pop
+                )
+            });
+
         Some(Arc::new(DecodedChunk {
             insts,
             ip_to_pc,
             int_consts,
             str_templates,
             str_keys,
+            is_pure_leaf,
         }))
     }
 }
@@ -1491,5 +1535,79 @@ fn main() {
         let r_noopt = vm_noopt.run_compiled(Arc::new(raw_f)).unwrap();
         assert_eq!(r_opt, r_noopt);
         assert_eq!(r_opt, 10 + 30 + 3);
+    }
+
+    #[test]
+    fn pure_leaf_classification_and_vm_edge_parity() {
+        let src = r#"
+fn is_prime_pure(n: int) -> bool {
+    if n < 2 { return false; }
+    let d = 2;
+    while d * d <= n {
+        if n % d == 0 { return false; }
+        d += 1;
+    }
+    return true;
+}
+
+fn noisy_helper(x: int) -> int {
+    if is_prime_pure(x) { return 1; }
+    return 0;
+}
+
+fn check_div_zero(x: int) -> int {
+    return 10 / x;
+}
+
+fn main() {
+    let acc = 0;
+    let i = -3;
+    while i < 40 {
+        if is_prime_pure(i) { acc += i; }
+        i += 1;
+    }
+    let errs = 0;
+    try {
+        println(check_div_zero(0));
+    } catch (e) {
+        errs += 1;
+    }
+    return acc + noisy_helper(7) * 100 + errs;
+}
+"#;
+        let prog = parser::parse_file(src, Arc::from("leaf.matrix")).unwrap();
+        semantic::check_file(&prog, true, "leaf.matrix").unwrap();
+        let (opt_f, _) = compile_program(&prog, "leaf.matrix", &[]).unwrap();
+        let (raw_f, _) = compile_program_unoptimized(&prog, "leaf.matrix", &[]).unwrap();
+
+        let pure_fn = opt_f
+            .chunk
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("is_prime_pure"))
+            .unwrap();
+        let div_fn = opt_f
+            .chunk
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("check_div_zero"))
+            .unwrap();
+        let noisy_fn = opt_f
+            .chunk
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("noisy_helper"))
+            .unwrap();
+        assert!(DecodedChunk::compile(&pure_fn.chunk).unwrap().is_pure_leaf);
+        assert!(DecodedChunk::compile(&div_fn.chunk).unwrap().is_pure_leaf);
+        assert!(!DecodedChunk::compile(&noisy_fn.chunk).unwrap().is_pure_leaf);
+
+        let mut vm_opt = Vm::new(Arc::from("leaf.matrix"), Vec::new());
+        let mut vm_noopt = Vm::new(Arc::from("leaf.matrix"), Vec::new());
+        vm_noopt.set_opt_enabled(false);
+        let r_opt = vm_opt.run_compiled(Arc::new(opt_f)).unwrap();
+        let r_noopt = vm_noopt.run_compiled(Arc::new(raw_f)).unwrap();
+        assert_eq!(r_opt, r_noopt);
+        assert_eq!(r_opt, 197 + 100 + 1);
     }
 }

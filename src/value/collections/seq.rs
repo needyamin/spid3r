@@ -111,6 +111,11 @@ impl VecData {
     }
 
     #[inline]
+    pub fn push_untracked(&mut self, v: Value) {
+        self.items.push(v);
+    }
+
+    #[inline]
     pub fn push_item(&mut self, v: Value) {
         self.gen = self.gen.wrapping_add(1);
         if let Some(ref mut d) = self.dense_i64 {
@@ -905,6 +910,16 @@ fn map_tag(hash: u64) -> u8 {
     (hash >> 56) as u8
 }
 
+/// Contiguous open-addressed cache of short-key (`<= 15`-byte) integer-valued
+/// `MapData` entries matching `ValueV2`'s SSO representation for fast AOT reads.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DenseSsoI64Slot {
+    pub tag: u64,
+    pub payload: u64,
+    pub val: i64,
+}
+
 /// Insertion-ordered map. Keys are null, bool, int, or string; floats are
 /// rejected. Missing keys are errors, not silent nulls.
 ///
@@ -923,6 +938,8 @@ pub struct MapData {
     /// Open-addressed linear-probing index `(hash >> 32, entry_idx + 1)` (`0` = empty).
     /// Capacity is always 0 or a power of two (8 bytes per slot).
     slots: Vec<(u32, u32)>,
+    /// Lazily populated SSO+i64 open-addressed mirror invalidated by `bump_generation`.
+    dense_sso_i64: Option<Vec<DenseSsoI64Slot>>,
     /// True when this map is a **module namespace** — the value bound to an
     /// import alias (`import "m" as mu`). Such a map is a read-only view of
     /// the module's exports: it cannot be mutated, and an exported name
@@ -950,6 +967,7 @@ impl Default for MapData {
 
 impl Drop for MapData {
     fn drop(&mut self) {
+        self.dense_sso_i64 = None;
         if self.entries.iter().all(|(_, v)| is_non_recursive_scalar(v)) {
             return;
         }
@@ -968,6 +986,7 @@ impl MapData {
             entries,
             small_tags: [0; SMALL_MAP_MAX],
             slots: Vec::new(),
+            dense_sso_i64: None,
             namespace: false,
             gc_tracked: true,
             frozen: None,
@@ -994,6 +1013,7 @@ impl MapData {
             entries,
             small_tags,
             slots: Vec::new(),
+            dense_sso_i64: None,
             namespace: false,
             gc_tracked: false,
             frozen: None,
@@ -1017,6 +1037,7 @@ impl MapData {
             entries,
             small_tags,
             slots: Vec::new(),
+            dense_sso_i64: None,
             namespace: false,
             gc_tracked: true,
             frozen: None,
@@ -1031,6 +1052,65 @@ impl MapData {
             true
         } else {
             false
+        }
+    }
+
+    /// Insert or update a parsed string-keyed entry while populating a freshly checked-out map.
+    #[inline]
+    pub fn set_parsed_str_entry(&mut self, key: super::KeyStr, tag: u8, value: Value) {
+        let len = self.entries.len();
+        if len <= SMALL_MAP_MAX {
+            for i in 0..len {
+                if self.small_tags[i] == tag {
+                    if let super::MapKey::Str(existing) = &self.entries[i].0 {
+                        if existing == &key {
+                            self.entries[i].1 = value;
+                            return;
+                        }
+                    }
+                }
+            }
+            if len < SMALL_MAP_MAX {
+                self.small_tags[len] = tag;
+            }
+            self.entries.push((super::MapKey::Str(key), value));
+            return;
+        }
+        let mk = super::MapKey::Str(key);
+        if let Some(pos) = self.entries.iter().position(|(k, _)| k == &mk) {
+            self.entries[pos].1 = value;
+        } else {
+            self.entries.push((mk, value));
+        }
+    }
+
+    /// Fast path for `set_parsed_str_entry` using a per-object 64-bit `(tag & 63)` bloom mask
+    /// to skip scanning `small_tags` when keys have distinct tag bits.
+    #[inline]
+    pub fn set_parsed_str_entry_masked(
+        &mut self,
+        key: super::KeyStr,
+        tag: u8,
+        value: Value,
+        seen_mask: &mut u64,
+    ) {
+        let len = self.entries.len();
+        let bit = 1u64 << (tag & 63);
+        if len < SMALL_MAP_MAX && (*seen_mask & bit) == 0 {
+            *seen_mask |= bit;
+            self.small_tags[len] = tag;
+            self.entries.push((super::MapKey::Str(key), value));
+            return;
+        }
+        self.set_parsed_str_entry(key, tag, value);
+    }
+
+    /// Finalize open-addressed index when a parsed map exceeded `SMALL_MAP_MAX`.
+    #[inline]
+    pub fn finalize_parsed(&mut self) {
+        self.dense_sso_i64 = None;
+        if self.entries.len() > SMALL_MAP_MAX {
+            self.rebuild_slots();
         }
     }
 
@@ -1067,6 +1147,59 @@ impl MapData {
     #[inline]
     fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.dense_sso_i64 = None;
+    }
+
+    /// Build or return an open-addressed table for `<= 15`-byte string keys -> `i64`
+    /// values, returning `(slots_ptr, mask)`. Returns `None` if any entry has a
+    /// non-string key, key length `> 15`, or non-int value.
+    pub fn ensure_dense_sso_i64(&mut self) -> Option<(*const DenseSsoI64Slot, usize)> {
+        if self.dense_sso_i64.is_none() {
+            for (k, v) in &self.entries {
+                let super::MapKey::Str(ks) = k else {
+                    return None;
+                };
+                if ks.as_bytes().len() > 15 || !matches!(v, Value::Int(_)) {
+                    return None;
+                }
+            }
+            let cap = (self.entries.len().saturating_mul(2))
+                .next_power_of_two()
+                .max(8);
+            let mask = cap - 1;
+            let mut slots = vec![
+                DenseSsoI64Slot {
+                    tag: 0,
+                    payload: 0,
+                    val: 0,
+                };
+                cap
+            ];
+            for (k, v) in &self.entries {
+                let (super::MapKey::Str(ks), Value::Int(n)) = (k, v) else {
+                    unreachable!("validated all entries above");
+                };
+                let v2 = crate::value::ValueV2::from_sso_bytes(ks.as_bytes());
+                let h = (v2.tag ^ v2.payload).wrapping_mul(0x517c_c1b7_2722_0a95);
+                let mut pos = (((h >> 32) ^ h) as usize) & mask;
+                loop {
+                    let s = &mut slots[pos];
+                    if s.tag == 0 || (s.tag == v2.tag && s.payload == v2.payload) {
+                        *s = DenseSsoI64Slot {
+                            tag: v2.tag,
+                            payload: v2.payload,
+                            val: *n,
+                        };
+                        break;
+                    }
+                    pos = (pos + 1) & mask;
+                }
+            }
+            self.dense_sso_i64 = Some(slots);
+        }
+        self.dense_sso_i64
+            .as_ref()
+            .map(|v| (v.as_ptr(), v.len() - 1))
     }
 
     /// Build a **module namespace**: the exported names of an imported module.
@@ -1142,6 +1275,104 @@ impl MapData {
         }
     }
 
+    /// Zero-allocation lookup for raw UTF-8 key bytes returning a direct value borrow.
+    #[inline(always)]
+    pub fn get_str_bytes_with_hash(&self, s: &[u8], h: u64) -> Option<&Value> {
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            let n = self.entries.len().min(SMALL_MAP_MAX);
+            if n == 0 {
+                return None;
+            }
+            let splat = (tag as u64).wrapping_mul(0x0101_0101_0101_0101);
+            let lo = u64::from_le_bytes([
+                self.small_tags[0],
+                self.small_tags[1],
+                self.small_tags[2],
+                self.small_tags[3],
+                self.small_tags[4],
+                self.small_tags[5],
+                self.small_tags[6],
+                self.small_tags[7],
+            ]);
+            let x = lo ^ splat;
+            let mut mask = x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080;
+            if n < 8 {
+                mask &= (1u64 << (n * 8)) - 1;
+            }
+            while mask != 0 {
+                let i = (mask.trailing_zeros() >> 3) as usize;
+                if let Some((super::MapKey::Str(k), val)) = self.entries.get(i) {
+                    if k.eq_bytes(s) {
+                        return Some(val);
+                    }
+                }
+                mask &= mask - 1;
+            }
+            if n > 8 {
+                let hi = u64::from_le_bytes([
+                    self.small_tags[8],
+                    self.small_tags[9],
+                    self.small_tags[10],
+                    self.small_tags[11],
+                    self.small_tags[12],
+                    self.small_tags[13],
+                    self.small_tags[14],
+                    self.small_tags[15],
+                ]);
+                let x2 = hi ^ splat;
+                let mut mask2 =
+                    x2.wrapping_sub(0x0101_0101_0101_0101) & !x2 & 0x8080_8080_8080_8080;
+                if n < 16 {
+                    mask2 &= (1u64 << ((n - 8) * 8)) - 1;
+                }
+                while mask2 != 0 {
+                    let i = 8 + ((mask2.trailing_zeros() >> 3) as usize);
+                    if let Some((super::MapKey::Str(k), val)) = self.entries.get(i) {
+                        if k.eq_bytes(s) {
+                            return Some(val);
+                        }
+                    }
+                    mask2 &= mask2 - 1;
+                }
+            }
+            return None;
+        }
+        let h32 = (h >> 32) as u32;
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                return None;
+            }
+            if sh == h32 {
+                let idx = idx1.wrapping_sub(1) as usize;
+                if let Some((super::MapKey::Str(k), val)) = self.entries.get(idx) {
+                    if k.eq_bytes(s) {
+                        return Some(val);
+                    }
+                }
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+
+    #[inline]
+    pub fn get_str_with_hash(&self, s: &str, h: u64) -> Option<&Value> {
+        self.get_str_bytes_with_hash(s.as_bytes(), h)
+    }
+
+    #[inline]
+    pub fn get_str_bytes(&self, s: &[u8]) -> Option<&Value> {
+        self.get_str_bytes_with_hash(s, super::fxhash::fx_hash_bytes(s))
+    }
+
+    #[inline]
+    pub fn get_str(&self, s: &str) -> Option<&Value> {
+        self.get_str_bytes(s.as_bytes())
+    }
+
     /// Zero-allocation lookup for string keys using a caller-provided hash.
     #[inline]
     pub fn find_str_with_hash(&self, s: &str, h: u64) -> Option<usize> {
@@ -1215,6 +1446,7 @@ impl MapData {
             }
         }
         self.slots.clear();
+        self.dense_sso_i64 = None;
         self.generation = 0;
         true
     }
@@ -1416,8 +1648,8 @@ pub fn map_values_out(entries: &[(super::MapKey, Value)]) -> Value {
     )))
 }
 
-const MAP_POOL_CAP: usize = 1024;
-const LIST_POOL_CAP: usize = 256;
+pub(crate) const MAP_POOL_CAP: usize = 4096;
+pub(crate) const LIST_POOL_CAP: usize = 512;
 
 thread_local! {
     static MAP_POOL: std::cell::RefCell<Vec<crate::value::Ref<MapData>>> =
@@ -1426,11 +1658,149 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Borrow both thread-local untracked container pools once for a parse call.
+#[inline]
+pub fn with_container_pools<R>(
+    f: impl FnOnce(&mut Vec<crate::value::Ref<MapData>>, &mut Vec<crate::value::Ref<VecData>>) -> R,
+) -> R {
+    MAP_POOL.with(|mcell| {
+        LIST_POOL.with(|lcell| {
+            let mut fb_m = Vec::new();
+            let mut fb_l = Vec::new();
+            let mut mg = mcell.try_borrow_mut();
+            let mut lg = lcell.try_borrow_mut();
+            let mp = match &mut mg {
+                Ok(v) => &mut **v,
+                Err(_) => &mut fb_m,
+            };
+            let lp = match &mut lg {
+                Ok(v) => &mut **v,
+                Err(_) => &mut fb_l,
+            };
+            f(mp, lp)
+        })
+    })
+}
+
+/// Pop a uniquely-owned untracked `MapData` `Arc` directly from `pool` (or allocate one).
+#[inline]
+pub fn pop_pooled_map_arc(
+    pool: &mut Vec<crate::value::Ref<MapData>>,
+) -> crate::value::Ref<MapData> {
+    pool.pop().unwrap_or_else(|| {
+        crate::value::new_untracked_ref(MapData::from_entries_untracked(
+            Vec::with_capacity(4),
+            [0; SMALL_MAP_MAX],
+        ))
+    })
+}
+
+/// Discard partial entries on a failed pooled-map parse and return `arc` to `pool` if eligible.
+pub fn recycle_aborted_map_arc(
+    pool: &mut Vec<crate::value::Ref<MapData>>,
+    mut arc: crate::value::Ref<MapData>,
+) {
+    let mut can_push = false;
+    if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+        let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+        let mut work = Vec::new();
+        if !d.entries.iter().all(|(_, v)| is_non_recursive_scalar(v)) {
+            for (_, v) in d.entries.drain(..) {
+                if !is_non_recursive_scalar(&v) {
+                    work.push(v);
+                }
+            }
+        } else {
+            d.entries.clear();
+        }
+        if !work.is_empty() {
+            super::drop_iteratively(work);
+        }
+        d.slots.clear();
+        d.dense_sso_i64 = None;
+        d.namespace = false;
+        d.gc_tracked = false;
+        d.frozen = None;
+        d.generation = 0;
+        can_push = d.entries.capacity() <= 32 && pool.len() < effective_map_pool_cap();
+        if can_push {
+            fm.reset_owner_tid();
+        }
+    }
+    if can_push {
+        pool.push(arc);
+    }
+}
+
+/// Pop a uniquely-owned untracked `VecData` `Arc` directly from `pool` (or allocate one).
+#[inline]
+pub fn pop_pooled_list_arc(
+    pool: &mut Vec<crate::value::Ref<VecData>>,
+) -> crate::value::Ref<VecData> {
+    pool.pop().unwrap_or_else(|| {
+        crate::value::new_untracked_ref(VecData::from_items_untracked(Vec::with_capacity(8)))
+    })
+}
+
+/// Discard partial items on a failed pooled-list parse and return `arc` to `pool` if eligible.
+pub fn recycle_aborted_list_arc(
+    pool: &mut Vec<crate::value::Ref<VecData>>,
+    mut arc: crate::value::Ref<VecData>,
+) {
+    let mut can_push = false;
+    if let Some(fm) = std::sync::Arc::get_mut(&mut arc) {
+        let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+        let mut work = Vec::new();
+        if !d.items.iter().all(is_non_recursive_scalar) {
+            for v in d.items.drain(..) {
+                if !is_non_recursive_scalar(&v) {
+                    work.push(v);
+                }
+            }
+        } else {
+            d.items.clear();
+        }
+        if !work.is_empty() {
+            super::drop_iteratively(work);
+        }
+        d.gen = 0;
+        d.dense_i64 = None;
+        d.dense_f64 = None;
+        d.gc_tracked = false;
+        can_push = d.items.capacity() <= 4096 && pool.len() < effective_list_pool_cap();
+        if can_push {
+            fm.reset_owner_tid();
+        }
+    }
+    if can_push {
+        pool.push(arc);
+    }
+}
+
+#[inline]
+fn effective_map_pool_cap() -> usize {
+    if crate::value::is_multithreaded() {
+        64
+    } else {
+        MAP_POOL_CAP
+    }
+}
+
+#[inline]
+fn effective_list_pool_cap() -> usize {
+    if crate::value::is_multithreaded() {
+        32
+    } else {
+        LIST_POOL_CAP
+    }
+}
+
 #[inline]
 pub fn push_pooled_map(arc: crate::value::Ref<MapData>) {
+    let cap = effective_map_pool_cap();
     MAP_POOL.with(|cell| {
         if let Ok(mut pool) = cell.try_borrow_mut() {
-            if pool.len() < MAP_POOL_CAP {
+            if pool.len() < cap {
                 pool.push(arc);
             }
         }
@@ -1439,9 +1809,10 @@ pub fn push_pooled_map(arc: crate::value::Ref<MapData>) {
 
 #[inline]
 pub fn push_pooled_list(arc: crate::value::Ref<VecData>) {
+    let cap = effective_list_pool_cap();
     LIST_POOL.with(|cell| {
         if let Ok(mut pool) = cell.try_borrow_mut() {
-            if pool.len() < LIST_POOL_CAP {
+            if pool.len() < cap {
                 pool.push(arc);
             }
         }
@@ -1481,6 +1852,7 @@ pub fn commit_pooled_map(
         d.entries = entries;
         d.small_tags = small_tags;
         d.slots.clear();
+        d.dense_sso_i64 = None;
         d.namespace = false;
         d.gc_tracked = false;
         d.frozen = None;
@@ -1519,6 +1891,7 @@ pub fn return_pooled_map(
             let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
             d.entries = entries;
             d.slots.clear();
+            d.dense_sso_i64 = None;
             d.namespace = false;
             d.gc_tracked = false;
             d.frozen = None;
@@ -2385,5 +2758,95 @@ mod tests {
         m.remove_at(&super::super::MapKey::Str("key_long_20".into()), 20);
         assert!(m.find_str("key_long_20").is_none());
         assert_eq!(m.find_str_with_hash("k999", 0), None);
+    }
+
+    #[test]
+    fn mapdata_swar_small_lookup_and_dense_sso_i64_view() {
+        let mut m = MapData::from_entries(Vec::new());
+        let mut expected_sum = 0i64;
+        for i in 0..16i64 {
+            let k = format!("k{i}");
+            let v = i * 10;
+            expected_sum += v;
+            m.set_key(super::super::MapKey::Str(k.into()), Value::Int(v));
+        }
+        for i in 0..16i64 {
+            let k = format!("k{i}");
+            assert_eq!(m.find_str(&k), Some(i as usize));
+        }
+        assert_eq!(m.find_str("k16"), None);
+        assert_eq!(m.find_str("missing"), None);
+
+        let (ptr, mask) = m.ensure_dense_sso_i64().expect("dense sso i64 view");
+        assert!((mask + 1).is_power_of_two());
+        // SAFETY: `ensure_dense_sso_i64` returns a slice of `mask + 1` initialized slots valid until `m` mutates.
+        let slots = unsafe { std::slice::from_raw_parts(ptr, mask + 1) };
+        let non_empty: Vec<&DenseSsoI64Slot> = slots.iter().filter(|s| s.tag != 0).collect();
+        assert_eq!(non_empty.len(), 16);
+        assert_eq!(non_empty.iter().map(|s| s.val).sum::<i64>(), expected_sum);
+
+        // Mutating an existing key invalidates and rebuilds the dense mirror.
+        m.set_key(super::super::MapKey::Str("k0".into()), Value::Int(999));
+        let (ptr2, mask2) = m.ensure_dense_sso_i64().expect("rebuilt dense view");
+        // SAFETY: `ensure_dense_sso_i64` returns a slice of `mask2 + 1` initialized slots valid until `m` mutates.
+        let slots2 = unsafe { std::slice::from_raw_parts(ptr2, mask2 + 1) };
+        let non_empty2: Vec<&DenseSsoI64Slot> = slots2.iter().filter(|s| s.tag != 0).collect();
+        assert_eq!(non_empty2.len(), 16);
+        assert_eq!(
+            non_empty2.iter().map(|s| s.val).sum::<i64>(),
+            expected_sum + 999
+        );
+
+        // Growing above SMALL_MAP_MAX (16) keeps both `find_str` and dense SSO+i64 valid.
+        for i in 16..32i64 {
+            let k = format!("k{i}");
+            m.set_key(super::super::MapKey::Str(k.into()), Value::Int(i));
+        }
+        for i in 0..32i64 {
+            assert!(m.find_str(&format!("k{i}")).is_some());
+        }
+        let (ptr3, mask3) = m.ensure_dense_sso_i64().expect("dense view at 32 entries");
+        // SAFETY: `ensure_dense_sso_i64` returns a slice of `mask3 + 1` initialized slots valid until `m` mutates.
+        let slots3 = unsafe { std::slice::from_raw_parts(ptr3, mask3 + 1) };
+        assert_eq!(slots3.iter().filter(|s| s.tag != 0).count(), 32);
+
+        // Non-integer values or >15-byte keys disqualify the dense SSO+i64 mirror.
+        m.set_key(
+            super::super::MapKey::Str("bad".into()),
+            Value::Str("nope".into()),
+        );
+        assert!(m.ensure_dense_sso_i64().is_none());
+
+        let mut long_key_map = MapData::from_entries(Vec::new());
+        long_key_map.set_key(
+            super::super::MapKey::Str("0123456789abcdef".into()),
+            Value::Int(1),
+        );
+        assert!(long_key_map.ensure_dense_sso_i64().is_none());
+
+        // Pooled map helpers must clear any cached `dense_sso_i64` mirror.
+        let (arc, mut entries) = checkout_pooled_map();
+        entries.push((super::super::MapKey::Str("a".into()), Value::Int(42)));
+        let Value::Map(committed) = commit_pooled_map(arc, entries, [0; SMALL_MAP_MAX]) else {
+            panic!("expected Value::Map");
+        };
+        assert!(crate::value::lock_ref(&committed)
+            .ensure_dense_sso_i64()
+            .is_some());
+        return_pooled_map(committed, Vec::new());
+        let (rechecked, _) = checkout_pooled_map();
+        assert!(crate::value::lock_ref(&rechecked).dense_sso_i64.is_none());
+
+        let arc2 = crate::value::new_untracked_ref(MapData::from_entries_untracked(
+            vec![(super::super::MapKey::Str("x".into()), Value::Int(7))],
+            [0; SMALL_MAP_MAX],
+        ));
+        assert!(crate::value::lock_ref(&arc2)
+            .ensure_dense_sso_i64()
+            .is_some());
+        let mut pool = Vec::new();
+        recycle_aborted_map_arc(&mut pool, arc2);
+        let popped = pool.pop().expect("pooled map");
+        assert!(crate::value::lock_ref(&popped).dense_sso_i64.is_none());
     }
 }

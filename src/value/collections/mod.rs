@@ -8,8 +8,10 @@ pub mod misc;
 pub mod nodes;
 pub mod seq;
 
-pub use fxhash::{fx_hash_bytes, fx_hash_map_key, fx_hash_str, FxHashMap, FxHashSet, FxHasher};
-pub use intern::{intern_key, intern_key_with_hash, KeyStr};
+pub use fxhash::{
+    fx_hash_bytes, fx_hash_map_key, fx_hash_sso_tag_le, fx_hash_str, FxHashMap, FxHashSet, FxHasher,
+};
+pub use intern::{bytes_eq_short, intern_key, intern_key_with_hash, KeyStr};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ pub use misc::{
     TrieData, VectorData,
 };
 pub use nodes::{BinTreeData, BstData, ListData};
-pub use seq::{DequeData, MapData, QueueData, SetData, StackData, VecData};
+pub use seq::{DenseSsoI64Slot, DequeData, MapData, QueueData, SetData, StackData, VecData};
 
 type DatabaseMethodFn = fn(
     &std::sync::Arc<std::sync::Mutex<crate::stdlib::db::DbData>>,
@@ -62,7 +64,12 @@ pub fn install_database_method_hook(f: DatabaseMethodFn) {
 /// Shared cells (`strong_count > 1`) fall back to the normal drop: their
 /// recursion depth is bounded by how much aliasing the program created, not by
 /// how long the chain is.
-pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
+pub(crate) fn take_children_pooled(
+    v: Value,
+    out: &mut Vec<Value>,
+    map_pool: &mut Vec<crate::value::Ref<MapData>>,
+    list_pool: &mut Vec<crate::value::Ref<VecData>>,
+) {
     macro_rules! flat {
         ($arc:expr, $field:ident) => {{
             if let Ok(data) = Arc::try_unwrap($arc) {
@@ -84,17 +91,23 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
     }
     match v {
         Value::List(mut a) => {
-            let mut pooled = false;
-            if let Some(fm) = Arc::get_mut(&mut a) {
-                let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
-                if d.clear_for_pool(out) {
-                    fm.reset_owner_tid();
-                    pooled = true;
+            if list_pool.len() < seq::LIST_POOL_CAP {
+                let mut pooled = false;
+                if let Some(fm) = Arc::get_mut(&mut a) {
+                    let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+                    if d.clear_for_pool(out) {
+                        if !crate::value::is_single_thread_process() {
+                            fm.reset_owner_tid();
+                        }
+                        pooled = true;
+                    }
+                }
+                if pooled {
+                    list_pool.push(a);
+                    return;
                 }
             }
-            if pooled {
-                seq::push_pooled_list(a);
-            } else if let Ok(data) = Arc::try_unwrap(a) {
+            if let Ok(data) = Arc::try_unwrap(a) {
                 let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
                 out.extend(d.take_items());
             }
@@ -112,17 +125,23 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
         Value::Heap(a) => flat!(a, items),
         Value::Ring(a) => flat!(a, items),
         Value::Map(mut a) => {
-            let mut pooled = false;
-            if let Some(fm) = Arc::get_mut(&mut a) {
-                let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
-                if d.clear_for_pool(out) {
-                    fm.reset_owner_tid();
-                    pooled = true;
+            if map_pool.len() < seq::MAP_POOL_CAP {
+                let mut pooled = false;
+                if let Some(fm) = Arc::get_mut(&mut a) {
+                    let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+                    if d.clear_for_pool(out) {
+                        if !crate::value::is_single_thread_process() {
+                            fm.reset_owner_tid();
+                        }
+                        pooled = true;
+                    }
+                }
+                if pooled {
+                    map_pool.push(a);
+                    return;
                 }
             }
-            if pooled {
-                seq::push_pooled_map(a);
-            } else if let Ok(data) = Arc::try_unwrap(a) {
+            if let Ok(data) = Arc::try_unwrap(a) {
                 let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
                 out.extend(std::mem::take(&mut d.entries).into_iter().map(|(_, v)| v));
             }
@@ -177,21 +196,25 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
 /// Drop `items` without recursing through nested containers.
 pub(crate) fn drop_iteratively(items: Vec<Value>) {
     let mut work = items;
-    while let Some(v) = work.pop() {
-        take_children(v, &mut work);
-    }
+    seq::with_container_pools(|map_pool, list_pool| {
+        while let Some(v) = work.pop() {
+            take_children_pooled(v, &mut work, map_pool, list_pool);
+        }
+    });
 }
 
 /// Drop `v`, recycling any uniquely-owned untracked `List` or `Map` nodes back into
-/// the thread-local pools and walking deep nested containers iteratively.
+/// the thread-local pools using a single borrowed pool guard and iterative teardown.
 pub fn recycle_or_drop(v: Value) {
     match v {
         Value::List(_) | Value::Map(_) => {
             let mut work = Vec::new();
-            take_children(v, &mut work);
-            if !work.is_empty() {
-                drop_iteratively(work);
-            }
+            seq::with_container_pools(|map_pool, list_pool| {
+                take_children_pooled(v, &mut work, map_pool, list_pool);
+                while let Some(item) = work.pop() {
+                    take_children_pooled(item, &mut work, map_pool, list_pool);
+                }
+            });
         }
         other => drop(other),
     }

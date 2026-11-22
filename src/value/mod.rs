@@ -305,12 +305,19 @@ thread_local! {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[inline]
+#[inline(always)]
 fn current_tid() -> u32 {
     let tid = CUR_TID.get();
     if tid != 0 {
         return tid;
     }
+    assign_tid_slow()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn assign_tid_slow() -> u32 {
     let mut cur = NEXT_TID.load(Ordering::Relaxed);
     let assigned = loop {
         if cur == u32::MAX {
@@ -329,6 +336,15 @@ fn current_tid() -> u32 {
 #[inline(always)]
 const fn current_tid() -> u32 {
     1
+}
+
+struct StUnlock<'a>(&'a AtomicBool);
+
+impl Drop for StUnlock<'_> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Container lock that avoids OS/atomic read-modify-write synchronization while
@@ -362,6 +378,67 @@ impl<T> FastMutex<T> {
             st_locked: AtomicBool::new(false),
             data: UnsafeCell::new(value),
         }
+    }
+
+    /// Lock-free `&T` borrow when standalone single-thread AOT mode is active and
+    /// `!st_locked`. Returns `None` otherwise so hot FFI trampolines can keep a
+    /// zero-closure leaf fast path and outline the general lock path.
+    #[inline(always)]
+    pub fn try_borrow_single_thread(&self) -> Option<&T> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if SINGLE_THREAD_PROCESS.load(Ordering::Relaxed) && !self.st_locked.load(Ordering::Relaxed)
+        {
+            // SAFETY: `SINGLE_THREAD_PROCESS` is only enabled by standalone AOT
+            // `spid3r_rt_start*` before any thread exists and cleared by
+            // `mark_multithreaded()` before spawning any thread; `!st_locked`
+            // guarantees no active mutable borrow on this single thread.
+            return Some(unsafe { &*self.data.get() });
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !self.st_locked.load(Ordering::Relaxed) {
+            // SAFETY: wasm32 target is single-threaded and `!st_locked` guarantees
+            // no overlapping mutable borrow.
+            return Some(unsafe { &*self.data.get() });
+        }
+        None
+    }
+
+    #[inline(always)]
+    pub fn with_ref<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        #[cfg(not(target_arch = "wasm32"))]
+        if SINGLE_THREAD_PROCESS.load(Ordering::Relaxed) && !self.st_locked.load(Ordering::Relaxed)
+        {
+            // SAFETY: `SINGLE_THREAD_PROCESS` is only enabled by standalone AOT
+            // `spid3r_rt_start*` before any thread exists and cleared by
+            // `mark_multithreaded()` before spawning any thread; `!st_locked`
+            // guarantees no active mutable borrow on this single thread.
+            return f(unsafe { &*self.data.get() });
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !self.st_locked.load(Ordering::Relaxed) {
+            // SAFETY: wasm32 target is single-threaded and `!st_locked` guarantees
+            // no overlapping mutable borrow.
+            return f(unsafe { &*self.data.get() });
+        }
+        self.with_ref_slow(f)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn with_ref_slow<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        if !is_multithreaded()
+            && self.owner_tid == current_tid()
+            && self.owner_tid != u32::MAX
+            && !self.st_locked.load(Ordering::Relaxed)
+        {
+            self.st_locked.store(true, Ordering::Relaxed);
+            let _unlock = StUnlock(&self.st_locked);
+            // SAFETY: `!is_multithreaded()` and `owner_tid == current_tid()` guarantee
+            // single-thread access, and `!st_locked` ensures no overlapping active borrow.
+            return f(unsafe { &*self.data.get() });
+        }
+        let guard = self.lock_slow().unwrap_or_else(|e| e.into_inner());
+        f(&*guard)
     }
 
     #[inline(always)]
@@ -411,6 +488,17 @@ impl<T> FastMutex<T> {
 
     #[inline(always)]
     pub fn try_lock(&self) -> TryLockResult<FastMutexGuard<'_, T>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if SINGLE_THREAD_PROCESS.load(Ordering::Relaxed) {
+            if self.st_locked.load(Ordering::Relaxed) {
+                return Err(TryLockError::WouldBlock);
+            }
+            self.st_locked.store(true, Ordering::Relaxed);
+            return Ok(FastMutexGuard {
+                cell: self,
+                mt_guard: None,
+            });
+        }
         if !is_multithreaded() && self.owner_tid == current_tid() && self.owner_tid != u32::MAX {
             if self.st_locked.load(Ordering::Relaxed) {
                 return Err(TryLockError::WouldBlock);
@@ -524,10 +612,44 @@ pub type Ref<T> = Arc<FastMutex<T>>;
 static MULTITHREADED_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Set to `true` at AOT binary entry (`spid3r_rt_start*`) while no background
+/// threads exist, and cleared permanently by `mark_multithreaded()` before any
+/// thread is spawned. Enables lock-free leaf reads without `current_tid()` / `StUnlock`.
+#[cfg(not(target_arch = "wasm32"))]
+static SINGLE_THREAD_PROCESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable the standalone AOT single-thread fast path if no background threads exist.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub fn enter_single_thread_process() {
+    if !is_multithreaded() {
+        SINGLE_THREAD_PROCESS.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn enter_single_thread_process() {}
+
+/// Returns `true` while standalone AOT single-thread mode is active.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
+pub fn is_single_thread_process() -> bool {
+    SINGLE_THREAD_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub const fn is_single_thread_process() -> bool {
+    true
+}
+
 /// Permanently mark the process as multithreaded.
 #[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub fn mark_multithreaded() {
+    SINGLE_THREAD_PROCESS.store(false, std::sync::atomic::Ordering::Release);
     MULTITHREADED_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
     crate::value::gc::flush_local_registry();
 }
@@ -556,6 +678,13 @@ pub const fn is_multithreaded() -> bool {
 #[inline(always)]
 pub fn lock_ref<T>(r: &Ref<T>) -> FastMutexGuard<'_, T> {
     r.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read a `Ref<T>` (`Arc<FastMutex<T>>`) in place without constructing a guard on the
+/// single-threaded fast path (non-reentrant read-only callers only).
+#[inline(always)]
+pub fn with_ref<T, R>(r: &Ref<T>, f: impl FnOnce(&T) -> R) -> R {
+    r.with_ref(f)
 }
 
 pub fn new_ref<T: gc::GcTrace + Send + 'static>(v: T) -> Ref<T> {
@@ -769,7 +898,7 @@ pub fn as_map_key(v: &Value) -> Result<MapKey, String> {
         Value::Bool(b) => Ok(MapKey::Bool(*b)),
         Value::Int(i) => Ok(MapKey::Int(*i)),
         Value::Str(s) => Ok(MapKey::Str(
-            crate::value::collections::intern::KeyStr::Thin(s.clone()),
+            crate::value::collections::intern::KeyStr::from_thin_str_ref(s),
         )),
         other => Err(format!(
             "{} is not a valid key; keys must be null, bool, int, or string",
@@ -1642,7 +1771,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
     if let Some(eq) = scalar_equal(a, b) {
         return eq;
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = collections::FxHashSet::default();
     values_equal_inner(a, b, &mut seen)
 }
 
@@ -1678,11 +1807,7 @@ fn int_float_eq(x: i64, y: f64) -> bool {
     x == (y as i64)
 }
 
-fn values_equal_inner(
-    a: &Value,
-    b: &Value,
-    seen: &mut std::collections::HashSet<(u64, u64)>,
-) -> bool {
+fn values_equal_inner(a: &Value, b: &Value, seen: &mut collections::FxHashSet<(u64, u64)>) -> bool {
     use Value::*;
     // Identity fast path: a reference value is equal to itself. Without this,
     // `xs == xs` locked the same non-reentrant Mutex twice and deadlocked.
@@ -1955,7 +2080,21 @@ pub fn checked_neg(a: i64) -> Result<i64, String> {
 
 /// Debug display used by `print`, error messages, and `string()`.
 pub fn display_value(v: &Value) -> String {
-    let mut seen = std::collections::HashSet::new();
+    match v {
+        Value::Str(s) => return s.to_string(),
+        Value::Int(i) => return i.to_string(),
+        Value::Bool(b) => return if *b { "true" } else { "false" }.to_string(),
+        Value::Null => return "null".to_string(),
+        Value::Float(f) => {
+            return if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e15 {
+                format!("{:.1}", f)
+            } else {
+                format!("{}", f)
+            };
+        }
+        _ => {}
+    }
+    let mut seen = collections::FxHashSet::default();
     display_value_inner(v, &mut seen)
 }
 
@@ -1979,17 +2118,17 @@ pub fn display_value(v: &Value) -> String {
 fn format_instance_ordered(
     cname: &str,
     order: &[&str],
-    fields: &std::collections::HashMap<String, Value>,
-    seen: &mut std::collections::HashSet<u64>,
+    fields: &[(String, Value)],
+    seen: &mut collections::FxHashSet<u64>,
 ) -> String {
     if fields.is_empty() {
         return format!("{} {{}}", cname);
     }
     let mut parts: Vec<String> = Vec::with_capacity(fields.len());
-    let mut rendered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut rendered: collections::FxHashSet<&str> = collections::FxHashSet::default();
     for name in order {
         if rendered.insert(name) {
-            if let Some(v) = fields.get(*name) {
+            if let Some((_, v)) = fields.iter().find(|(k, _)| k == name) {
                 parts.push(format!("{}: {}", name, display_value_inner(v, seen)));
             }
         }
@@ -1997,6 +2136,7 @@ fn format_instance_ordered(
     if parts.len() < fields.len() {
         let mut extra: Vec<(&String, &Value)> = fields
             .iter()
+            .map(|(k, v)| (k, v))
             .filter(|(k, _)| !order.contains(&k.as_str()))
             .collect();
         extra.sort_by(|a, b| a.0.cmp(b.0));
@@ -2016,7 +2156,7 @@ fn format_instance_slots(
     cname: &str,
     names: &[String],
     slots: &[Value],
-    seen: &mut std::collections::HashSet<u64>,
+    seen: &mut collections::FxHashSet<u64>,
 ) -> String {
     if slots.is_empty() {
         return format!("{} {{}}", cname);
@@ -2031,7 +2171,7 @@ fn format_instance_slots(
     format!("{} {{{}}}", cname, parts.join(", "))
 }
 
-fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> String {
+fn display_value_inner(v: &Value, seen: &mut collections::FxHashSet<u64>) -> String {
     if let Some(id) = ref_id(v) {
         if !seen.insert(id) {
             return match v {
@@ -2302,9 +2442,15 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         Value::Class(c) => format!("<class {}>", c.name),
         Value::VClass(c) => format!("<vclass {}>", c.name),
         Value::Instance(i) => {
-            let (class, fields) = {
+            let (class, fields): (Arc<ClassData>, Vec<(String, Value)>) = {
                 let i = i.lock().unwrap();
-                (i.class.clone(), i.fields.clone())
+                (
+                    i.class.clone(),
+                    i.fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
             };
             let mut chain: Vec<Arc<ClassData>> = Vec::new();
             let mut cur = Some(class.clone());
@@ -2343,9 +2489,15 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         },
         Value::CClass(c) => format!("<class {}>", c.name),
         Value::CInstance(i) => {
-            let (cname, fields) = {
+            let (cname, fields): (String, Vec<(String, Value)>) = {
                 let i = i.lock().unwrap();
-                (i.class.name.clone(), i.fields.clone())
+                (
+                    i.class.name.clone(),
+                    i.fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
             };
             if fields.is_empty() {
                 format!("{} {{}}", cname)
@@ -2376,7 +2528,7 @@ fn display_prio(p: f64) -> String {
 /// Deep copy. Primitives copy; reference types are rebuilt so mutating the
 /// clone never touches the original.
 pub fn deep_clone(v: &Value) -> Value {
-    let mut memo = std::collections::HashMap::new();
+    let mut memo = collections::FxHashMap::default();
     deep_clone_inner(v, &mut memo)
 }
 
@@ -2393,7 +2545,7 @@ pub fn deep_clone(v: &Value) -> Value {
 /// lets a self-reference resolve to the half-built clone. It also means a value
 /// reachable by two paths is shared in the copy rather than duplicated, which
 /// is what `copy.deepcopy`-style semantics call for.
-fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>) -> Value {
+fn deep_clone_inner(v: &Value, memo: &mut collections::FxHashMap<u64, Value>) -> Value {
     use crate::value::collections as c;
     if let Some(id) = ref_id(v) {
         if let Some(done) = memo.get(&id) {

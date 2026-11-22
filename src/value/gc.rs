@@ -88,7 +88,26 @@ pub fn flush_local_registry() {
 fn prune_registry_locked(reg: &mut Vec<Entry>) {
     if reg.len() > PRUNE_AT.load(Ordering::Relaxed) {
         reg.retain(|e| e.weak.strong_count() > 0);
+        if reg.capacity() > 16384 && reg.capacity() > reg.len().saturating_mul(4) {
+            let target = reg.len().saturating_mul(2).max(8192);
+            reg.shrink_to(target);
+        }
         PRUNE_AT.store(reg.len().saturating_mul(2).max(8192), Ordering::Relaxed);
+    }
+}
+
+/// Best-effort non-blocking prune and capacity shrink of dead weak entries
+/// in `REGISTRY` after thread-local AOT sweeps release short-lived containers.
+pub fn maybe_prune_dead_entries() {
+    if let Ok(mut reg) = REGISTRY.try_lock() {
+        if reg.len() >= 4096 || (reg.capacity() > 16384 && reg.len() < reg.capacity() / 4) {
+            reg.retain(|e| e.weak.strong_count() > 0);
+            if reg.capacity() > 16384 && reg.capacity() > reg.len().saturating_mul(4) {
+                let target = reg.len().saturating_mul(2).max(8192);
+                reg.shrink_to(target);
+            }
+            PRUNE_AT.store(reg.len().saturating_mul(2).max(8192), Ordering::Relaxed);
+        }
     }
 }
 

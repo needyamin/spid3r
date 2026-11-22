@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img">
 <title>Spid3r GitHub Actions workflows: CI, release, fuzz</title>
-<desc>Three automation lanes. ci.yml runs a 6-job matrix (core differential, GUI, WASM, native AOT, Phase 0 measurement gates, self-host parity gate). release.yml builds four Linux/macOS tarballs, a Windows NSIS installer, then verifies and publishes the GitHub release. fuzz.yml runs six cargo-fuzz targets (lexer, parser, bytecode, ini_parser, serialize, http_ws) on a weekly schedule with crash artifacts and a 2 GB memory bound.</desc>
+<desc>Three automation lanes. ci.yml runs a 6-job matrix (core differential, GUI, WASM + doc gates, native AOT + Linux self-host release check, Phase 0 measurement gates, self-host parity gate over the 136-program frozen corpus). release.yml builds four Stage 1-2-3 self-hosted Linux/macOS tarballs (with spid3r-self, spid3r, spid3r-formatter.vsix, and pinned runtime staticlib) plus a Windows NSIS installer (with spid3r-self, spid3r, spid3r-control, slim native staticlib, and LLVM-C.dll), then verifies and publishes on v* tags. fuzz.yml runs six cargo-fuzz targets (lexer, parser, bytecode, ini_parser, serialize, http_ws) on a weekly schedule with crash artifacts and a 2048 MB RSS cap.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -33,12 +33,12 @@
 <rect x="36" y="256" width="356" height="44" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 <rect x="46" y="270" width="10" height="10" rx="3" fill="#06B6D4"/>
 <text x="66" y="278" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F172A">WASM Runtime</text>
-<text x="382" y="278" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">wasm32 · playground presets</text>
+<text x="382" y="278" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">wasm32 · presets · doc gates</text>
 
 <rect x="36" y="308" width="356" height="44" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 <rect x="46" y="322" width="10" height="10" rx="3" fill="#EC4899"/>
 <text x="66" y="330" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F172A">Native AOT (LLVM 23)</text>
-<text x="382" y="330" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">differential · SHA-256 artifact</text>
+<text x="382" y="330" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">diff · SHA-256 · selfhost rel</text>
 
 <rect x="36" y="360" width="356" height="44" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 <rect x="46" y="374" width="10" height="10" rx="3" fill="#F59E0B"/>
@@ -66,13 +66,13 @@
 <text x="456" y="197" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">x86_64-linux-gnu · aarch64-linux-gnu</text>
 <rect x="446" y="212" width="278" height="22" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
 <text x="456" y="223" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">aarch64-darwin · x86_64-darwin</text>
-<text x="446" y="256" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">ships spid3r-self + spid3r + runtime</text>
-<text x="446" y="272" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">SHA-256-pinned staticlib</text>
+<text x="446" y="256" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">ships spid3r-self + spid3r + .vsix</text>
+<text x="446" y="272" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">Stage 1→2→3 fixed point · pinned runtime</text>
 
 <rect x="432" y="292" width="306" height="106" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 <text x="446" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F172A">2 · Windows NSIS installer</text>
-<text x="446" y="336" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">full build · self-hosted compiler</text>
-<text x="446" y="352" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">bundles LLVM-C.dll · smoke test</text>
+<text x="446" y="336" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">spid3r-self + spid3r + spid3r-control</text>
+<text x="446" y="352" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">slim native staticlib · LLVM-C.dll</text>
 <rect x="446" y="364" width="278" height="26" rx="4" fill="#FEF3C7" stroke="#FDE68A" stroke-width="1"/>
 <text x="585" y="377" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">Spid3r-Setup-1.1.1.exe</text>
 
@@ -80,9 +80,9 @@
 
 <rect x="432" y="420" width="306" height="98" rx="8" fill="#FFFFFF" stroke="#10B981" stroke-width="1.5"/>
 <text x="446" y="442" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="700" fill="#065F46">3 · Verify &amp; publish release</text>
-<text x="446" y="464" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">checks spid3r-self in every asset</text>
+<text x="446" y="464" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">checks spid3r-self &amp; .vsix in tarballs</text>
 <text x="446" y="480" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">verifies sha256sums.txt</text>
-<text x="446" y="496" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">attaches tarballs + installer on tag</text>
+<text x="446" y="496" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">attaches tarballs + installer on v* tag</text>
 
 <!-- ============ COLUMN 3: FUZZ ============ -->
 <rect x="766" y="74" width="170" height="462" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>

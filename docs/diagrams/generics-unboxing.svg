@@ -1,46 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 320" width="880" height="320" role="img">
 <title>Generics, monomorphization, and unboxed containers in Spid3r</title>
-<desc>Generic functions with constraint bounds and typed containers flow through the parser and semantic checker. Tree, bytecode VM and WASM execute polymorphic Values with exact parity; the LLVM 23 AOT backend monomorphizes with unboxed scalars and non-escaping list specialization, falling back to boxed Values otherwise.</desc>
+<desc>Generic functions with constraint bounds and typed containers flow through the parser and semantic checker. Tree, bytecode VM and WASM execute compact 16-byte Values (ThinArcStr and lock-free FastMutex) with exact parity; the LLVM 23 AOT backend monomorphizes functions with unboxed scalars, unboxed list specialization (12 ulist trampolines), hoisted 2D row handles (ptr, len, gen) and dense SSO map views with bounds-check elimination, falling back to 16-byte ValueV2 or boxed Values otherwise.</desc>
 <defs>
 <marker id="arr-g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 </marker>
 </defs>
-<rect x="0" y="0" width="880" height="300" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="0" y="0" width="880" height="320" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
 <text x="440" y="30" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#0F172A">Generics, Constraints &amp; Unboxed Containers (R10 · DP-1)</text>
 
 <!-- Source -->
-<rect x="28" y="60" width="200" height="90" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
-<text x="128" y="84" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#0F172A">Source (.matrix)</text>
-<text x="128" y="110" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">fn add&lt;T: Numeric&gt;(a: T, b: T)</text>
-<text x="128" y="130" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">let xs: list&lt;int&gt; = [1, 2]</text>
+<rect x="28" y="56" width="200" height="92" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="128" y="80" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#0F172A">Source (.matrix)</text>
+<text x="128" y="106" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">fn add&lt;T: Numeric&gt;(a: T, b: T)</text>
+<text x="128" y="128" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">let xs: list&lt;int&gt; = [1, 2]</text>
 
-<path d="M228 105 L262 105" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-g)"/>
+<path d="M228 102 L262 102" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-g)"/>
 
 <!-- Parser + Checker -->
-<rect x="268" y="60" width="220" height="90" rx="8" fill="#EEF2FF" stroke="#6366F1" stroke-width="1"/>
-<text x="378" y="84" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#312E81">Parser + semantic checker</text>
-<text x="378" y="110" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#4338CA">bounds: Numeric · Comparable · Iface</text>
-<text x="378" y="130" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#4338CA">call/new type-arg substitution</text>
+<rect x="268" y="56" width="220" height="92" rx="8" fill="#EEF2FF" stroke="#6366F1" stroke-width="1"/>
+<text x="378" y="80" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#312E81">Parser + semantic checker</text>
+<text x="378" y="106" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#4338CA">bounds: Numeric · Comparable · Iface</text>
+<text x="378" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#4338CA">call/new type-arg substitution</text>
 
 <path d="M488 84 L522 84" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-g)"/>
-<path d="M488 126 L506 126 L506 206 L522 206" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-g)"/>
+<path d="M488 124 L506 124 L506 214 L522 214" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-g)"/>
 
 <!-- Tree / VM / WASM -->
-<rect x="528" y="56" width="324" height="66" rx="8" fill="#F8FAFC" stroke="#64748B" stroke-width="1"/>
-<text x="690" y="80" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#0F172A">Tree · Bytecode VM · WASM</text>
-<text x="690" y="102" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#475569">polymorphic Value execution · exact parity</text>
+<rect x="528" y="52" width="324" height="74" rx="8" fill="#F8FAFC" stroke="#64748B" stroke-width="1"/>
+<text x="690" y="74" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#0F172A">Tree · Bytecode VM · WASM</text>
+<text x="690" y="95" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">16-byte Value (ThinArcStr) · FastMutex</text>
+<text x="690" y="113" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">polymorphic execution · exact parity</text>
 
 <!-- AOT -->
-<rect x="528" y="140" width="324" height="100" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2"/>
+<rect x="528" y="140" width="324" height="150" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2"/>
 <text x="690" y="164" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#134E4A">LLVM 23 AOT specialization</text>
 <text x="690" y="188" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#0F766E">spid3r_mono_add__int(i64, i64) -&gt; i64</text>
-<text x="690" y="210" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#115E59">unboxed scalars · list&lt;int&gt; → Vec&lt;i64&gt;</text>
+<text x="690" y="212" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#115E59">unboxed scalars · list&lt;int&gt;/&lt;float&gt; (12 ulist fns)</text>
+<text x="690" y="234" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#115E59">hoisted 2D row handles (ptr, len, gen) + BCE</text>
+<text x="690" y="256" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#115E59">dense SSO map views (spid3r_map_view_sso_i64)</text>
+<text x="690" y="276" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#0F766E">split staticlib: spid3r_reg_core + 10 opt-in groups</text>
 
 <!-- Safety note -->
-<rect x="28" y="180" width="460" height="88" rx="8" fill="#FFFBEB" stroke="#F59E0B" stroke-width="1"/>
-<text x="258" y="206" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#92400E">Safety &amp; fallback (DP-1)</text>
-<text x="258" y="232" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#B45309">escaping containers or &gt;64 specializations → boxed Value</text>
-<text x="258" y="252" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#B45309">same semantics as Tree/VM · selfhost sources stay generic-free</text>
+<rect x="28" y="176" width="460" height="114" rx="8" fill="#FFFBEB" stroke="#F59E0B" stroke-width="1"/>
+<text x="258" y="200" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#92400E">Safety &amp; fallback (DP-1)</text>
+<text x="258" y="224" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#B45309">escaping containers or &gt;64 specializations → boxed Value</text>
+<text x="258" y="246" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#B45309">ValueV2 (16 B) inline scalars + SSO strings across C ABI</text>
+<text x="258" y="268" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#B45309">same semantics as Tree/VM · selfhost sources stay generic-free</text>
 </svg>

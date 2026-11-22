@@ -1417,7 +1417,7 @@
           <a href="#syntax" class="sb-link"><span>Syntax &amp; Comments</span></a>
           <a href="#variables" class="sb-link"><span>Variables &amp; Constants</span></a>
           <a href="#types" class="sb-link"><span>Data Types &amp; Literals</span></a>
-          <a href="#casting" class="sb-link"><span>Type Casting (`as`)</span></a>
+          <a href="#casting" class="sb-link"><span>Type Casting (<code>as</code>)</span></a>
           <a href="#keywords" class="sb-link"><span>40 Reserved Keywords</span><span class="sb-tag">Full List</span></a>
           <a href="#operators" class="sb-link"><span>Operators &amp; Precedence</span></a>
           <a href="#strings" class="sb-link"><span>Strings &amp; Interpolation</span></a>
@@ -1437,11 +1437,11 @@
         </div>
         <div class="sb-links">
           <a href="#oop" class="sb-link"><span>Classes &amp; Instances</span></a>
-          <a href="#oop-constructors" class="sb-link"><span>Constructors (`fn new`)</span></a>
+          <a href="#oop-constructors" class="sb-link"><span>Constructors (<code>fn new</code>)</span></a>
           <a href="#oop-visibility" class="sb-link"><span>Public vs Private</span></a>
-          <a href="#oop-inheritance" class="sb-link"><span>Inheritance (`extends`)</span></a>
-          <a href="#oop-super" class="sb-link"><span>`super` Delegation</span></a>
-          <a href="#oop-interfaces" class="sb-link"><span>Interfaces (`implements`)</span></a>
+          <a href="#oop-inheritance" class="sb-link"><span>Inheritance (<code>extends</code>)</span></a>
+          <a href="#oop-super" class="sb-link"><span><code>super</code> Delegation</span></a>
+          <a href="#oop-interfaces" class="sb-link"><span>Interfaces (<code>implements</code>)</span></a>
           <a href="#oop-abstract" class="sb-link"><span>Abstract Classes</span></a>
           <a href="#oop-generics" class="sb-link"><span>Generics &amp; Constraints</span><span class="sb-tag">R10</span></a>
         </div>
@@ -1457,7 +1457,7 @@
           <a href="#maps" class="sb-link"><span>Maps &amp; Hash Tables</span></a>
           <a href="#sets" class="sb-link"><span>Sets &amp; Bags</span></a>
           <a href="#tuples" class="sb-link"><span>Tuples</span></a>
-          <a href="#bytes" class="sb-link"><span>Binary `bytes`</span></a>
+          <a href="#bytes" class="sb-link"><span>Binary <code>bytes</code></span></a>
           <a href="#stacks-queues" class="sb-link"><span>Stacks &amp; Queues</span></a>
           <a href="#heaps" class="sb-link"><span>Heaps &amp; Priority Queues</span></a>
           <a href="#trees" class="sb-link"><span>Binary Trees &amp; Tries</span></a>
@@ -1471,10 +1471,10 @@
           <span class="sb-arrow">▼</span>
         </div>
         <div class="sb-links">
-          <a href="#linalg" class="sb-link"><span>Vector (`vector`)</span></a>
-          <a href="#matrix" class="sb-link"><span>Matrix (`matrix`)</span></a>
+          <a href="#linalg" class="sb-link"><span>Vector (<code>vector</code>)</span></a>
+          <a href="#matrix" class="sb-link"><span>Matrix (<code>matrix</code>)</span></a>
           <a href="#matrix-ops" class="sb-link"><span>LU Solver &amp; Inversion</span></a>
-          <a href="#numpy" class="sb-link"><span>NumPy `.npy` I/O</span></a>
+          <a href="#numpy" class="sb-link"><span>NumPy <code>.npy</code> I/O</span></a>
         </div>
       </div>
 
@@ -1484,11 +1484,11 @@
           <span class="sb-arrow">▼</span>
         </div>
         <div class="sb-links">
-          <a href="#concurrency" class="sb-link"><span>Task Spawning (`spawn`)</span></a>
+          <a href="#concurrency" class="sb-link"><span>Task Spawning (<code>spawn</code>)</span></a>
           <a href="#async-await" class="sb-link"><span>Async / Await</span></a>
-          <a href="#channels" class="sb-link"><span>Channels (`channel`)</span></a>
+          <a href="#channels" class="sb-link"><span>Channels (<code>channel</code>)</span></a>
           <a href="#mutex" class="sb-link"><span>Mutex &amp; Shared Refs</span></a>
-          <a href="#atomic-int" class="sb-link"><span>Atomic Int (`atomic_int`)</span></a>
+          <a href="#atomic-int" class="sb-link"><span>Atomic Int (<code>atomic_int</code>)</span></a>
         </div>
       </div>
 
@@ -1573,7 +1573,8 @@
         <h2 class="chapter-title"><span class="ch-num">01.</span> Introduction to Spid3r</h2>
         <p class="chapter-lead">
           <strong>Spid3r</strong> is a modern, high-performance, memory-safe, embeddable general-purpose programming
-          language built from scratch in Rust with <strong>zero external dependencies</strong>.
+          language with a <strong>zero-dependency core toolchain</strong> (<code>--no-default-features</code>), a
+          self-hosted LLVM 23 AOT compiler, and a WebAssembly runtime.
         </p>
         <p>
           It combines clean, expressive C/JavaScript-style syntax with the safety guarantees of managed memory, the
@@ -1594,17 +1595,24 @@
 
         <div class="callout tip">
           <div class="callout-header">💡 Key Design Tenets</div>          <ul>
-            <li><strong>Zero External Dependencies:</strong> The entire compiler, bytecode virtual machine, AST
-              interpreter, standard library (including cryptographic primitives, regex engines, date-time calendars, and
-              compression algorithms) is written in pure, self-contained Rust.</li>
-            <li><strong>Dual Execution Engines:</strong> Run programs with the high-speed <code>--engine vm</code>
-              (bytecode register/stack virtual machine) or the pure reference <code>--engine tree</code> (AST tree-walk
-              interpreter) with 100% byte-for-byte behavioral parity (program stdout, exit codes, and side effects).
-            </li>
-            <li><strong>Zero-Leak Tracing Garbage Collection:</strong> Deterministic mark-and-sweep cycle collector with
-              interior-mutable cell headers and weak references.</li>
-            <li><strong>Native WebAssembly Core:</strong> Zero-overhead compilation target exportable as a 100%
-              self-contained linear-memory engine running in web browsers, Node.js, Deno, and Edge Workers.</li>
+            <li><strong>Zero-Dependency Core Toolchain:</strong> The core compiler, bytecode virtual machine, AST
+              interpreter, and standard library (26 embedded modules and 254 built-in natives) compile with zero
+              external dependencies via <code>--no-default-features</code>. Three optional Cargo features add
+              <code>native</code> (LLVM 23 AOT), <code>gui</code> (<code>wry</code>/<code>tao</code>), and
+              <code>tls</code> (OS-backed <code>native-tls</code>).</li>
+            <li><strong>Three Native Execution Engines + WebAssembly:</strong> Run programs on the default pre-decoded
+              <code>--engine vm</code> (bytecode VM with general fused superinstructions), the pure reference
+              <code>--engine tree</code> (AST tree-walk oracle), the LLVM 23 ahead-of-time native compiler
+              (<code>spid3r build</code> / self-hosted <code>spid3r-self</code>), or <code>wasm32</code> in the browser
+              — all pinned to identical stdout, error phase, and exit code.</li>
+            <li><strong>Compact 16-Byte <code>Value</code> &amp; Bounded Memory:</strong> Deterministic reference
+              counting with 8-byte <code>ThinArcStr</code>, lock-free single-threaded <code>FastMutex</code>, a
+              mark-and-sweep cycle collector (30 <code>GcTrace</code> implementations with automatic registry pruning),
+              and bounded <code>ValueV2</code>/<code>AOT_HEAP</code> reclamation with precise frame roots and loop
+              safepoints on native AOT builds.</li>
+            <li><strong>Native WebAssembly Core:</strong> Zero-dependency <code>wasm32-unknown-unknown</code> build
+              exportable as a self-contained linear-memory engine running in web browsers, Node.js, Deno, and Edge
+              Workers.</li>
           </ul>
         </div>
 
@@ -1672,7 +1680,8 @@
               style="background: var(--bg-code); padding: 12px 16px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; color: var(--fg-primary); margin-bottom: 18px; border: 1px solid var(--border-line);">
               <span style="color: var(--fg-muted);"># Install zero-dependency core toolchain</span><br>
               cargo install --path . --no-default-features<br><br>
-              <span style="color: var(--fg-muted);"># Or build with Desktop GUI window support (Tao/Wry)</span><br>
+              <span style="color: var(--fg-muted);"># Or enable optional features: gui, native (LLVM 23 AOT), tls</span><br>
+              cargo install --path . --no-default-features --features native,tls<br>
               cargo install --path . --no-default-features --features gui
             </div>
 
@@ -1688,8 +1697,10 @@
             <div
               style="background: var(--bg-code); padding: 12px 16px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; color: var(--w3-green); border: 1px solid var(--border-line);">
               $ spid3r version<br>
-              <span style="color: var(--fg-secondary);"><span data-spid3r-version="cli"></span><br>
-                Rust host, no runtime dependencies.</span>
+              <span style="color: var(--fg-secondary);">SPID3R PROGRAMMING LANGUAGE<br>
+                Version &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span data-spid3r-version="plain">1.1.1</span> &nbsp;·&nbsp; Language <span data-spid3r-version="lang">1.1.1</span><br>
+                Compiler &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Self-hosted (LLVM 23 AOT) &nbsp;·&nbsp; Host Rust (Stage 0)<br>
+                Runtime &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;No external dependencies</span>
             </div>
           </div>
         </div>
@@ -1798,18 +1809,24 @@
               <tr>
                 <td><strong>5. Execution Backends</strong></td>
                 <td><code>src/vm/</code>, <code>src/interpreter/</code> &amp; <code>src/native/</code></td>
-                <td><strong>Bytecode VM:</strong> 60-opcode VM with optimizer and per-opcode + per-function self-time
-                  profiler.<br><strong>Tree Interpreter:</strong> Reference AST oracle for differential parity.<br>
-                  <strong>Native AOT (LLVM 23):</strong> Scalar unboxing, direct field GEPs, and call-scoped bump-slab
-                  arena reclamation.</td>
+                <td><strong>Bytecode VM (default):</strong> 60-opcode bytecode with compile-time optimizer, pre-decoded
+                  16-byte fixed-width instruction stream (<code>src/vm/decode.rs</code>), pure-leaf fast call dispatch,
+                  general fused superinstructions, and per-opcode + per-function self-time profiler.<br>
+                  <strong>Tree Interpreter:</strong> Reference AST oracle for differential parity.<br>
+                  <strong>Native AOT (LLVM 23):</strong> 16-byte <code>ValueV2</code> inline scalars &amp; SSO strings,
+                  hoisted 2D row handles <code>(ptr, len, gen)</code> and dense SSO map views with bounds-check
+                  elimination (BCE), direct field GEPs, split staticlib registration (<code>spid3r_reg_core</code> + 10
+                  opt-in groups), and precise-root <code>AOT_HEAP</code> safepoint reclamation.</td>
                 <td>Live execution, captured stdout, exit status</td>
               </tr>
               <tr>
                 <td><strong>6. Memory Management</strong></td>
-                <td><code>src/value/gc.rs</code> &amp; <code>src/value/mod.rs</code></td>
-                <td>Tracing mark-and-sweep garbage collection with cell tracking, weak references, and zero-leak cyclic
-                  object reclamation.</td>
-                <td>Reclaimed heap cells</td>
+                <td><code>src/value/gc.rs</code>, <code>src/value/mod.rs</code> &amp; <code>src/native/rt.rs</code></td>
+                <td>Compact 16-byte <code>Value</code> (8-byte <code>ThinArcStr</code>, boxed <code>Result</code>),
+                  lock-free single-threaded <code>FastMutex</code>, deterministic reference counting + mark-and-sweep
+                  cycle collector (30 <code>GcTrace</code> impls, non-blocking <code>REGISTRY</code> dead-entry pruning),
+                  and bounded worker-pool / <code>AOT_HEAP</code> sweeping on native builds.</td>
+                <td>Reclaimed heap cells &amp; bounded RSS</td>
               </tr>
             </tbody>
           </table>
@@ -1839,15 +1856,16 @@
             <tbody>
               <tr>
                 <td><code>spid3r run &lt;file.matrix&gt;</code></td>
-                <td><code>spid3r run --engine vm main.matrix</code></td>
-                <td>Compile and execute program. Flags: <code>--engine tree|vm</code>, <code>--prof</code> (prints
+                <td><code>spid3r run main.matrix</code></td>
+                <td>Compile and execute program (defaults to the bytecode VM via <code>spid3r.engine = vm</code>). Flags:
+                  <code>--engine vm|tree</code>, <code>--prof</code> (prints
                   per-opcode execution counts plus per-function self-time and inclusive instruction attribution in
                   <code>==== function profile (self-time) ====</code>), <code>--budget N</code> (stop after roughly N steps with the
                   fatal error <code>execution budget exhausted</code> — for untrusted code), <code>--max-steps N</code>
                   (documented alias of <code>--budget</code>; specify only one of the two), <code>--max-call-depth N</code>
                   (cap the call stack depth — VM and tree engines, default 1000, propagated to tasks and modules),
                   <code>--coverage</code> (record line coverage), <code>--no-opt</code> (disable the compile-time
-                  bytecode optimizer <em>and</em> the VM runtime fused-superinstruction peeks; per-VM inline caches
+                  bytecode optimizer <em>and</em> the VM pre-decoded fused superinstructions; per-VM inline caches
                   remain enabled),
                   <code>--sandbox</code> (deny filesystem, network, process and environment access; denied calls raise
                   a catchable <code>sandboxed: … access denied</code> error).</td>
@@ -1876,12 +1894,18 @@
               <tr>
                 <td><code>spid3r build &lt;file.matrix&gt;</code></td>
                 <td><code>spid3r build app.matrix --release</code></td>
-                <td>Compile into a standalone native machine-code executable for your operating system. Flags:
+                <td>Compile into a standalone native machine-code executable for your operating system (split-staticlib
+                  linking pulls in <code>spid3r_reg_core</code> plus only referenced subsystem groups). Flags:
                   <code>--release</code>, <code>-o &lt;path&gt;</code>, <code>--target &lt;triple&gt;</code>,
+                  <code>--target-cpu &lt;x86-64|x86-64-v2|x86-64-v3|native&gt;</code> (<code>--release</code> defaults
+                  to <code>x86-64-v3</code> on AVX2/BMI2/FMA hosts),
                   <code>--icon app.ico</code>, <code>--subsystem console|windows</code>,
                   <code>--link-lib &lt;name|path&gt;</code>, <code>--allow-gui</code>,
                   <code>--embed &lt;path&gt;</code>, <code>--bytecode &lt;file.matrixc&gt;</code>,
-                  <code>--bundle-runtime</code>, <code>--product-name</code>, <code>--version</code>.
+                  <code>--bundle-runtime</code>, <code>--enforce-budget &lt;N&gt;</code>,
+                  <code>--allow-dlopen</code>, <code>--freestanding</code>, <code>--emit-obj</code>,
+                  <code>--entry &lt;sym&gt;</code>, <code>--sysroot &lt;dir&gt;</code>,
+                  <code>--product-name</code>, <code>--version</code>.
                 </td>
               </tr>
               <tr>
@@ -2177,7 +2201,7 @@
 
         <figure class="diagram">
           <img src="../diagrams/ecosystem.svg"
-            alt="A Spid3r program receives code through four core routes: the 26 embedded standard library modules, project source files, vendored packages, and native FFI (extern fn) in AOT builds.">
+            alt="A Spid3r program receives code through four core routes: the 26 embedded standard library modules and 254 built-in natives, project source files, vendored packages, and native FFI (extern fn) in AOT builds.">
           <figcaption>Four core routes in, each labelled with its trust tier. Rust hosts embed via
             <code>spid3r_lang::embed::Engine</code> and CLI helpers dispatch via <code>spidr-&lt;name&gt;</code> on
             <code>PATH</code>.</figcaption>
@@ -2350,9 +2374,11 @@
 
         <h3 class="section-h3" id="native-compilation">Native Machine-Code Compilation (AOT)</h3>
         <p>
-          Spid3r includes an Ahead-Of-Time (AOT) native compiler powered by LLVM. With <code>spid3r build</code>, any
-          <code>.matrix</code> script can be compiled directly into a standalone machine-code executable that runs
-          natively without any external runtime dependencies:
+          Spid3r includes an Ahead-Of-Time (AOT) native compiler powered by LLVM 23 (available via both Stage 0
+          <code>spid3r build</code> and the self-hosted <code>spid3r-self build</code>). Release builds link a split
+          runtime staticlib (<code>spid3r_rt_start_slim</code> + <code>spid3r_reg_core</code> plus only the opt-in
+          subsystem groups your program calls, dead-stripping unused stdlib and scheduler code) and default to
+          <code>--target-cpu x86-64-v3</code> on AVX2/BMI2/FMA hosts:
         </p>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
@@ -3330,9 +3356,11 @@
           </div>
           <div class="w3-code-body" data-lang="spid3r">// 1. C-Style For with break and continue:
             let sum_evens = 0;
-            for let i = 0; i <= 10; i +=1 { if (i % 2 !=0) { continue; } // skip odds if (i> 8) { break; } // early stop
+            for let i = 0; i <= 10; i += 1 {
+              if (i % 2 != 0) { continue; } // skip odds
+              if (i > 8) { break; } // early stop
               sum_evens += i;
-              }
+            }
               println("Sum of evens up to 8: " + string(sum_evens));
 
               // 2. While loop:
@@ -3391,10 +3419,16 @@
             </div>
           </div>
           <div class="w3-code-body" data-lang="spid3r">// Function with default parameter:
-            fn power(base: int, exp: int = 2) -> int {
-            let res = 1;
-            for let i = 0; i < exp; i +=1 { res *=base; } return res; } println("power(3): " + string(power(3)));      // 3^2 = 9
-println(" power(2, 4): " + string(power(2, 4))); // 2^4 = 16
+fn power(base: int, exp: int = 2) -> int {
+    let res = 1;
+    for let i = 0; i < exp; i += 1 {
+        res *= base;
+    }
+    return res;
+}
+
+println("power(3): " + string(power(3)));       // 3^2 = 9
+println("power(2, 4): " + string(power(2, 4))); // 2^4 = 16
 
 // Lexical closure that captures outer variable:
 fn make_accumulator(start: int) {
@@ -3406,8 +3440,8 @@ fn make_accumulator(start: int) {
 }
 
 let acc = make_accumulator(100);
-println(" acc(20): " + string(acc(20))); // 120
-println(" acc(15): " + string(acc(15))); // 135
+println("acc(20): " + string(acc(20))); // 120
+println("acc(15): " + string(acc(15))); // 135
 
 // Functional higher-order methods with concise arrow closures (.map, .filter, .reduce):
 let nums = [1, 2, 3, 4, 5, 6];
@@ -3415,12 +3449,12 @@ let squared_evens = nums
     .filter(x => x % 2 == 0)
     .map(x => x * x);
 
-println(" Squared evens: " + string(squared_evens)); // [4, 16, 36]
+println("Squared evens: " + string(squared_evens)); // [4, 16, 36]
 
 let sum_all = nums.reduce(0, (acc, n) => acc + n);
-println(" Sum via reduce: " + string(sum_all));      // 21
+println("Sum via reduce: " + string(sum_all));      // 21
 </div>
-          <div class=" w3-card-footer">
+          <div class="w3-card-footer">
               <button class="w3-btn-try" onclick="openInBrowserRuntime('ex-functions')">⚡ Try it Yourself
                 &raquo;</button>
               <button class="w3-btn-drawer" onclick="openDrawerFromCard('ex-functions')">💻 Console Drawer</button>
@@ -3747,22 +3781,19 @@ println(" Sum via reduce: " + string(sum_all));      // 21
         </ul>
 
         <details class="deep">
-          <summary>Generics design spec (R10.1 / DP-1) — Value v2, monomorphization &amp; unboxed containers</summary>
+          <summary>Generics &amp; unboxing internals (R10 · DP-1) — 16-byte Value / ValueV2, monomorphization &amp; loop hoisting</summary>
           <div class="deep-body">
         <p>
-          <strong>Status:</strong> approved — contract for parser/checker instantiation and the AOT monomorphizer +
-          unboxed containers. The RED LINE was amended to permit a <em>Value v2</em> representation alongside AOT
-          monomorphization: a compact 64-bit tagged value (NaN-boxed or low-tag <code>u64</code> inline scalars for
-          small <code>Int</code>, <code>Float</code>, <code>Bool</code>, <code>Null</code>, tagged pointers for heap
-          objects) that removes <code>Box&lt;Value&gt;</code> allocations for scalars; typed container annotations
-          lowering to unboxed backing buffers (<code>Vec&lt;i64&gt;</code>, <code>Vec&lt;f64&gt;</code>, typed hash
-          map) without per-element boxing or <code>Mutex</code> locking on unshared paths, with identical language
-          semantics; and safety guardrails that confine all <code>unsafe</code> pointer/tag operations to
-          <code>src/native/rt.rs</code> (and <code>src/value/</code> if inline-tagged <code>Value</code> v2 uses
-          <code>NonNull</code>/<code>usize</code> bitpacking), each with a written <code>// SAFETY:</code> invariant,
-          with the runtime ABI version bumping cleanly if trampoline signatures change. This targets the 8–18×
-          container gap on <code>json</code>/<code>map</code> versus Node/Rust caused by boxing +
-          <code>Arc&lt;Mutex&lt;…&gt;&gt;</code> overhead.
+          <strong>Shipped implementation (DP-1 Option A):</strong> Runtime <code>Value</code> is pinned to
+          <strong>16 bytes</strong> (<code>size_of::&lt;Value&gt;() == 16</code> in <code>src/value/mod.rs</code>) via
+          8-byte <code>ThinArcStr</code> pointers, boxed <code>Result</code>, and lock-free single-threaded
+          <code>FastMutex</code> containers (upgrading to synchronized locking only after the first
+          <code>spawn</code>). Across the native AOT C-ABI boundary, values pass as 16-byte
+          <code>ValueV2 { tag: u64, payload: u64 }</code> structs carrying inline <code>Null</code>, <code>Bool</code>,
+          <code>Int</code>, <code>Float</code>, and short SSO strings with zero heap allocation, thread-local rope
+          slices (<code>TAG_ROPE</code>), or reclaimable <code>TAG_HEAP</code> pointers tracked by
+          <code>AOT_HEAP</code>. All pointer/tag <code>unsafe</code> blocks remain audited with written
+          <code>// SAFETY:</code> invariants inside <code>src/native/rt.rs</code> and <code>src/value/mod.rs</code>.
         </p>
         <p>
           <strong>Erased-syntax backward compatibility.</strong> Existing programs use erased generic syntax with
@@ -3774,16 +3805,13 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           parameters keeps type-checking and executing identically across Tree, VM, WASM and AOT.
         </p>
         <p>
-          <strong>Parser &amp; AST.</strong> <code>TypeExpr.arg: Option&lt;Box&lt;TypeExpr&gt;&gt;</code> becomes
-          <code>args: Vec&lt;TypeExpr&gt;</code> so multi-parameter types
-          (<code>map&lt;string, int&gt;</code>, <code>result&lt;int, string&gt;</code>,
-          <code>Pair&lt;int, bool&gt;</code>) are represented directly; a
-          <code>TypeParam { name, bound, span }</code> replaces the bare name list, with a <code>.names()</code>
-          helper for a minimal diff. <code>parse_type_params()</code> parses comma-separated parameters with
-          optional bounds (<code>&lt;T&gt;</code>, <code>&lt;T: Comparable&gt;</code>, <code>&lt;K, V&gt;</code>),
-          <code>parse_single_type()</code> parses <code>&lt;T1, T2, …&gt;</code>, and explicit arguments on calls and
-          constructors are disambiguated from less-than by lookahead (<code>&lt;</code> followed by a type list then
-          <code>&gt;(</code>).
+          <strong>Parser &amp; AST.</strong> <code>TypeExpr</code> carries <code>args: Vec&lt;TypeExpr&gt;</code> so
+          multi-parameter types (<code>map&lt;string, int&gt;</code>, <code>result&lt;int, string&gt;</code>,
+          <code>Pair&lt;int, bool&gt;</code>) are represented directly;
+          <code>TypeParam { name, bound, span }</code> records optional bounds
+          (<code>&lt;T&gt;</code>, <code>&lt;T: Comparable&gt;</code>, <code>&lt;K, V&gt;</code>), and explicit type
+          arguments on calls and constructors are disambiguated from less-than by lookahead (<code>&lt;</code>
+          followed by a type list then <code>&gt;(</code>).
         </p>
         <p>
           <strong>Checker instantiation &amp; constraints.</strong> Declared <code>TypeParam</code>s bind with their
@@ -3792,20 +3820,21 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           emits a <code>Phase::Semantic</code> diagnostic on mismatch or wrong arity. A deduplicated
           <code>InstantiationSet</code> records <code>MonoFnKey { name, type_args }</code>,
           <code>MonoClassKey { name, type_args }</code> and typed container annotations propagated to local,
-          parameter and return type tables. Tree and VM execute generics polymorphically on <code>Value</code> with
-          zero behavioral divergence from AOT monomorphized code.
+          parameter and return type tables. Tree and VM execute generics polymorphically on 16-byte <code>Value</code>
+          with zero behavioral divergence from AOT monomorphized code.
         </p>
         <p>
-          <strong>AOT monomorphization &amp; unboxed containers.</strong> For each <code>MonoFnKey</code> whose type
-          args are scalar/known, emit a specialized <code>spid3r_mono_&lt;fn&gt;__&lt;mangled&gt;</code> taking and
-          returning unboxed LLVM types (<code>i64</code>, <code>double</code>, <code>i1</code>, typed pointer) where
-          safe, with bounded depth (e.g. 64 specializations) and automatic fallback to the generic
-          <code>*mut Value</code> entry on overflow or <code>Any</code>/heterogeneous types. Typed-buffer handles or
-          specialized <code>ListI64</code>/<code>ListF64</code>/<code>MapStrI64</code> trampolines are used only when
-          the checker proves the value never escapes to untyped <code>Value</code> contexts (auto-boxing on escape);
-          <code>xs[i]</code>, <code>.push(v)</code>, <code>.len()</code> and <code>for x in xs</code> lower to direct
-          unboxed loads/stores. Gates: HLC corpus codegen parity ≤ 1.25×, a Tier-B improvement on <code>json</code>
-          and <code>map</code>, and unchanged selfhost native parity (selfhost sources use no generics).
+          <strong>AOT monomorphization, unboxed containers &amp; loop hoisting.</strong> For each
+          <code>MonoFnKey</code> whose type args are scalar/known, LLVM 23 emits a specialized
+          <code>spid3r_mono_&lt;fn&gt;__&lt;mangled&gt;</code> taking and returning unboxed LLVM scalars
+          (<code>i64</code>, <code>double</code>, <code>i1</code>) where safe, capped at 64 specializations with
+          automatic fallback to the generic entry on overflow or <code>Any</code>/heterogeneous types. Non-escaping
+          <code>list&lt;int&gt;</code> / <code>list&lt;float&gt;</code> containers lower to 12 unboxed
+          <code>spid3r_ulist_i64_*</code> / <code>spid3r_ulist_f64_*</code> trampolines (auto-boxing on escape).
+          In hot inner loops (<code>src/native/ir.rs</code>), the AOT backend also hoists loop-invariant 2D numeric
+          row handles <code>(ptr, len, gen)</code> via <code>spid3r_list_view_i64</code> /
+          <code>spid3r_list_view_f64</code> and dense SSO map views via <code>spid3r_map_view_sso_i64</code> with
+          bounds-check elimination (BCE) and scalar register promotion.
         </p>
         <div class="table-wrap">
           <table>
@@ -3813,34 +3842,34 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <th>Surface</th>
                 <th>Impact</th>
-                <th>Action</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td><code>selfhost/corpus/</code> (136 programs)</td>
                 <td>0 existing programs use <code>&lt;T&gt;</code></td>
-                <td>Frozen corpus parity unchanged; add generic instantiation cases under the SH-4 ledger entry</td>
+                <td>Frozen corpus parity verified (<code>136/136</code> semantic, <code>123/123</code> compile)</td>
               </tr>
               <tr>
-                <td><code>selfhost/*.matrix</code> (17 modules)</td>
+                <td><code>selfhost/*.matrix</code> (17 modules / 21 files)</td>
                 <td>0 modules use generics</td>
-                <td>All selfhost parity scripts stay green without syntax changes</td>
+                <td>Stage 1 &rarr; Stage 2 &rarr; Stage 3 bit-identical fixed point preserved</td>
               </tr>
               <tr>
                 <td><code>tests/constructs.rs</code> (<code>GENERICS</code>)</td>
                 <td>uses erased <code>Box&lt;T&gt;</code>, <code>first&lt;T&gt;</code>, <code>identity&lt;T&gt;</code>, <code>head&lt;T&gt;</code></td>
-                <td>Must keep passing identically in Tree, VM and AOT</td>
+                <td>Verified identical across Tree, VM and AOT</td>
               </tr>
               <tr>
                 <td><code>tests/engine_matrix.rs</code></td>
-                <td>needs new instantiation &amp; constraint rows</td>
-                <td>Add tree == vm == native parity rows</td>
+                <td>generic instantiation &amp; constraint parity rows</td>
+                <td>Pinned under <code>tree == vm == native</code> differential gates</td>
               </tr>
               <tr>
-                <td><code>RUNTIME_ABI.md</code></td>
-                <td>new <code>spid3r_list_i64_*</code> / <code>spid3r_map_str_i64_*</code> trampolines</td>
-                <td>Update trampoline counts &amp; ABI docs when the AOT stage lands</td>
+                <td><code>src/native/rt.rs</code> (<code>117</code> trampolines)</td>
+                <td><code>spid3r_ulist_i64_*</code>, <code>spid3r_ulist_f64_*</code>, <code>spid3r_list_view_*</code>, <code>spid3r_map_view_sso_i64</code>, <code>spid3r_reg_*</code></td>
+                <td>Shipped in SHA-256-pinned <code>spid3r_lang</code> runtime staticlib</td>
               </tr>
             </tbody>
           </table>
@@ -3886,7 +3915,10 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td><code>get</code>, <code>set</code>, <code>m[k]</code>, <code>remove</code>, <code>has</code>,
                   <code>keys</code>, <code>values</code>, <code>items</code>, <code>len</code>, <code>clear</code>
                 </td>
-                <td>O(1) average lookup/insert/<code>remove(k)</code> via <code>FxHash</code> index table (tombstone compaction + insertion order preserved)</td>
+                <td>O(1) average lookup/insert/<code>remove(k)</code>: 16-byte inline hash-tag table (8-byte SWAR
+                  probing) for small maps (&le; 16 entries), <code>FxHash</code> open-addressed index with tombstone
+                  compaction for larger maps, lock-free single-threaded <code>FastMutex</code>, insertion order
+                  preserved</td>
               </tr>
               <tr id="sets">
                 <td><strong>Set</strong></td>
@@ -4337,10 +4369,12 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
       <section class="chapter" id="concurrency">
         <h2 class="chapter-title"><span class="ch-num">13.</span> Concurrency, Tasks &amp; Message Channels</h2>
         <p class="chapter-lead">
-          Spid3r runs tasks on an M:N scheduler: a pool of OS threads (sized to the machine, growing on demand up to
-          <code>SPID3R_MAX_WORKERS</code>, default 256) pulling from one shared ready queue, with no global interpreter
-          lock — two CPU-bound tasks really do run at the same time. Spawn background tasks, communicate over buffered
-          channels, and synchronize with mutexes.
+          Spid3r runs tasks on an M:N scheduler: a lazily initialized pool of OS threads (starting on the first
+          <code>spawn</code>, growing on demand up to <code>SPID3R_MAX_WORKERS</code>, default 256) pulling from one
+          shared ready queue, with no global interpreter lock — two CPU-bound tasks really do run at the same time.
+          Single-threaded scripts stay on the lock-free <code>FastMutex</code> container fast path (and AOT binaries
+          without <code>spawn</code> dead-strip the scheduler pool cleanly); spawned workers sweep and trim thread-local
+          <code>AOT_HEAP</code> state on exit to keep long-running concurrent servers memory-bounded.
         </p>
 
         <h3 class="section-h3" id="async-await">Tasks, Join, and Async-Await</h3>
@@ -4585,7 +4619,7 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                 <td><code>poll_create</code> / <code>poll_add</code> / <code>poll_wait</code></td>
                 <td><code>poll_create()</code> / <code>poll_wait(ep, ms)</code> / <code>after_ms(ms)</code> / <code>timer_check(id)</code> / <code>timer_cancel(id)</code></td>
                 <td>OS readiness polling over <code>epoll</code> (Linux), <code>kqueue</code> (macOS/BSD), or
-                  <code>wepoll</code> (Windows), paired with monotonic millisecond timers (also <code>poll_mod</code>,
+                  <code>WSAPoll</code> (Windows), paired with monotonic millisecond timers (also <code>poll_mod</code>,
                   <code>poll_del</code>, <code>poll_close</code>).</td>
               </tr>
               <tr>
@@ -4779,22 +4813,27 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
         </div>
 
         <div class="callout warn">
-          <div class="callout-header">⚠️ Cryptography Trust Statement (<code>R12.1</code>)</div>
+          <div class="callout-header">⚠️ Cryptography &amp; TLS Trust Statement (<code>R12.1</code>)</div>
           <p>
-            Spid3r's cryptographic primitives (<code>sha256</code>, <code>sha512</code>, <code>hmac_sha256</code>,
-            <code>pbkdf2_sha256</code>, <code>ed25519_*</code>, <code>bcrypt_*</code>, <code>argon2</code>) and
-            TLS 1.3 client in <code>src/stdlib/net.rs</code> are self-contained pure-Rust implementations with zero
-            external dependencies, and have <strong>not yet undergone an independent third-party cryptographic
-            audit</strong>. The primitives are verified by internal RFC test vectors and negative/malleability tests
-            — Ed25519 uses a constant-time <code>cswap</code> Montgomery ladder with canonical <code>S &lt; L</code>
-            and small-order-key rejection — but are <strong>not formally proven side-channel hardened</strong>, and
-            <code>R12.1</code> remains open pending an external review report. For high-stakes production workloads
-            or side-channel-hostile environments, terminate TLS or run secret-key operations behind an audited
-            reverse proxy or HSM. Cryptographic randomness comes only from <code>random_bytes(n)</code> (OS CSPRNG:
-            <code>/dev/urandom</code>, <code>RtlGenRandom</code>); <code>random_int</code>/<code>random_float</code>/<code>random_normal</code>
-            are clock-seeded xorshift and never suitable for tokens. <code>jwt_verify</code> is constant-time with a
-            60-second <code>exp</code>/<code>nbf</code> skew but checks <code>HS256</code> only and does not pin
-            <code>alg</code> to a policy — do not feed it tokens from an issuer you do not control.
+            Encrypted transport (<code>https://</code> in <code>http_fetch</code>, plus <code>tls_listen</code> /
+            <code>tls_accept</code> in <code>src/stdlib/net.rs</code>) is provided by the vetted
+            <strong><code>native-tls</code></strong> crate behind the optional <code>tls</code> Cargo feature —
+            delegating TLS handshakes and certificate validation to the OS TLS stack (Schannel on Windows, OpenSSL on
+            Linux, Security.framework on macOS) and the OS certificate store, never hand-rolled TLS. By contrast, the
+            built-in hashing, KDF, and signature primitives (<code>sha256</code>, <code>sha512</code>,
+            <code>hmac_sha256</code>, <code>pbkdf2_sha256</code>, <code>ed25519_*</code>, <code>bcrypt_*</code>,
+            <code>argon2</code>) are self-contained pure-Rust implementations with zero external dependencies and have
+            <strong>not yet undergone an independent third-party cryptographic audit</strong>. They are verified by
+            internal RFC test vectors and negative/malleability tests — Ed25519 uses a constant-time <code>cswap</code>
+            Montgomery ladder with canonical <code>S &lt; L</code> and small-order-key rejection — but are <strong>not
+            formally proven side-channel hardened</strong>, and <code>R12.1</code> remains open pending an external
+            review report. For high-stakes production workloads or side-channel-hostile environments, run secret-key
+            operations behind an audited proxy or HSM. Cryptographic randomness comes only from
+            <code>random_bytes(n)</code> (OS CSPRNG: <code>/dev/urandom</code>, <code>RtlGenRandom</code>);
+            <code>random_int</code>/<code>random_float</code>/<code>random_normal</code> are clock-seeded xorshift and
+            never suitable for tokens. <code>jwt_verify</code> is constant-time with a 60-second
+            <code>exp</code>/<code>nbf</code> skew but checks <code>HS256</code> only and does not pin <code>alg</code>
+            to a policy — do not feed it tokens from an issuer you do not control.
           </p>
         </div>
 
@@ -4814,14 +4853,16 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                 <td><code>json_parse</code></td>
                 <td><code>json_parse(json_str)</code></td>
                 <td>RFC 8259</td>
-                <td>Parses JSON text into Spid3r maps, lists, numbers, booleans, and null. Supports <code>\uXXXX</code>
-                  surrogate pairs.</td>
+                <td>Parses JSON text into Spid3r maps, lists, numbers, booleans, and null using 8-byte SWAR delimiter
+                  scanning, repeated object-key interning, single-pass fast integer parsing, and full
+                  <code>\uXXXX</code> surrogate-pair decoding.</td>
               </tr>
               <tr>
                 <td><code>json_write</code></td>
                 <td><code>json_write(val)</code></td>
                 <td>RFC 8259</td>
-                <td>Serializes any Spid3r structure into a compact JSON string.</td>
+                <td>Serializes any Spid3r structure into a compact JSON string with SWAR escape scanning and fast
+                  digit-pair integer formatting.</td>
               </tr>
               <tr>
                 <td><code>parse_csv</code></td>
@@ -5001,7 +5042,7 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
               <tr>
                 <td><code>assert.matrix</code></td>
                 <td><code>import "assert" as a;</code></td>
-                <td>Minimal test assertions (`ok`, `eq`, `fail`) for scripts and tests.</td>
+                <td>Minimal test assertions (<code>ok</code>, <code>eq</code>, <code>fail</code>) for scripts and tests.</td>
               </tr>
               <tr>
                 <td><code>mock.matrix</code></td>
@@ -5023,23 +5064,23 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
               <tr>
                 <td><code>multipart.matrix</code></td>
                 <td><code>import "multipart" as mp;</code></td>
-                <td>`multipart/form-data` parsing for file uploads.</td>
+                <td><code>multipart/form-data</code> parsing for file uploads.</td>
               </tr>
               <tr>
                 <td><code>event.matrix</code></td>
                 <td><code>import "event" as ev;</code></td>
-                <td>Event loop backed by OS readiness primitives (<code>epoll</code>/<code>kqueue</code>/<code>wepoll</code>
+                <td>Event loop backed by OS readiness primitives (<code>epoll</code>/<code>kqueue</code>/<code>WSAPoll</code>
                   plus non-blocking timers).</td>
               </tr>
               <tr>
                 <td><code>gen.matrix</code></td>
                 <td><code>import "gen" as gen;</code></td>
-                <td>Generators built on the scheduler (`yield`-style lazy sequences).</td>
+                <td>Generators built on the scheduler (<code>yield</code>-style lazy sequences).</td>
               </tr>
               <tr>
                 <td><code>bigint.matrix</code></td>
                 <td><code>import "bigint" as bi;</code></td>
-                <td>Arbitrary-precision integers (also behind the `123n` literal).</td>
+                <td>Arbitrary-precision integers (also behind the <code>123n</code> literal).</td>
               </tr>
               <tr>
                 <td><code>complex.matrix</code></td>
@@ -5604,8 +5645,8 @@ errors.level = warn
           ini, log, state), <strong>Features</strong> (<code>gui</code>, <code>native (LLVM AOT)</code>,
           <code>tls</code>, <code>spid3rinfo</code>),
           <strong>Modules</strong> (embedded stdlib), <strong>Configuration</strong>, <strong>Environment</strong>,
-          <strong>Memory (interpreter)</strong>, and <strong>AOT Memory</strong> (bump-slab arena allocation &amp; slab
-          counters). On <code>wasm32</code> (the playground build) the Environment
+          <strong>Memory (interpreter)</strong>, and <strong>AOT Memory</strong> (<code>ValueV2</code>
+          <code>TAG_HEAP</code> call-allocation counters and <code>ARENA_SLAB_LEN</code> threshold). On <code>wasm32</code> (the playground build) the Environment
           section is omitted — there is no OS process or environment there. Keys containing or ending in
           <code>password</code>, <code>passwd</code>, <code>pwd</code>, <code>passphrase</code>,
           <code>token</code>, <code>secret</code>, <code>shared</code>, <code>credential</code>,
@@ -5646,7 +5687,7 @@ errors.level = warn
         <details class="deep">
           <summary>Operator deep dive — run-time &amp; HTTP limits, diagnostics, cross-platform paths</summary>
           <div class="deep-body">
-        <h4 id="agent-config-limits" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+        <h4 id="operator-config-limits" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
           Operator Reference: Limits, Diagnostics and Cross-Platform Details</h4>
         <p>
           <strong>Run-time limits.</strong> <code>runtime.wall_clock_limit_ms</code> arms a wall-clock deadline for
@@ -5674,7 +5715,10 @@ errors.level = warn
           (<code>timeout_ms</code>, <code>max_body_bytes</code>, <code>max_headers</code>,
           <code>idle_timeout_ms</code>, plus <code>workers</code> for multi-worker accept loops on unbounded non-TLS
           listeners); an explicit option beats the INI default, and all four are re-read per accepted connection so
-          <code>config reload</code> applies to later connections.
+          <code>config reload</code> applies to later connections. Under sustained keep-alive HTTP load, native AOT
+          servers stay memory-bounded via 64-iteration safepoint polling on call/allocation loops, worker-exit
+          <code>AOT_HEAP</code> sweeps, <code>64</code>/<code>32</code> multithreaded container pool caps, and
+          non-blocking GC registry pruning.
         </p>
         <p>
           <strong>Diagnostics and script policy.</strong> <code>errors.level</code>
@@ -5797,9 +5841,10 @@ errors.level = warn
           Rebuilding <code>selfhost/</code> or running compiler and dev-CLI commands with <code>spid3r-self</code>
           requires zero <code>cargo</code> or <code>rustc</code> calls. Rust Stage 0 (<code>src/</code>) stays in
           place permanently as the cold bootstrap seed, differential oracle (<code>src/oracle.rs</code>), pinned
-          runtime staticlib (87 <code>spid3r_*</code> trampolines + 254 stdlib natives), and host for non-AOT
-          engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>, <code>debug</code>, <code>lsp</code>,
-          <code>spid3r-control</code>, <code>gui</code>, <code>wasm32</code>).
+          runtime staticlib (117 <code>spid3r_*</code> C-ABI trampolines — including split <code>spid3r_reg_*</code>
+          registration, unboxed <code>spid3r_ulist_*</code>/row/SSO-map views, and frame/safepoint GC hooks — plus 254
+          stdlib natives), and host for non-AOT engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>,
+          <code>debug</code>, <code>lsp</code>, <code>spid3r-control</code>, <code>gui</code>, <code>wasm32</code>).
         </p>
 
         <figure class="diagram">
@@ -5819,17 +5864,20 @@ errors.level = warn
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
-            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (87 trampolines, 254 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned spid3r_lang runtime staticlib ABI (254 natives; original 87-trampoline baseline shown, expanded to 117 C-ABI trampolines in src/native/rt.rs), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
           <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
-            coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI.</figcaption>
+            coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI (the diagram
+            shows the original 87-trampoline baseline; <code>src/native/rt.rs</code> now exports 117 C-ABI
+            trampolines alongside 254 stdlib natives).</figcaption>
         </figure>
 
         <figure class="diagram">
           <img src="../diagrams/generics-unboxing.svg"
-            alt="Generics, constraint bounds, AOT monomorphization, and unboxed list&lt;int&gt; / list&lt;float&gt; specialization in Spid3r.">
+            alt="Generics, constraint bounds, AOT monomorphization, unboxed list&lt;int&gt; / list&lt;float&gt; specialization, hoisted 2D row handles, and dense SSO map views in Spid3r.">
           <figcaption>Generics &amp; unboxing (R10 · DP-1): multi-arg type parameters, constraint checking,
-            AOT function specialization (<code>spid3r_mono_*</code>), and unboxed <code>list&lt;int&gt;</code> /
-            <code>list&lt;float&gt;</code> storage.</figcaption>
+            AOT function specialization (<code>spid3r_mono_*</code>), unboxed <code>list&lt;int&gt;</code> /
+            <code>list&lt;float&gt;</code> storage, hoisted 2D row handles <code>(ptr, len, gen)</code> + BCE, and
+            dense SSO map views (<code>spid3r_map_view_sso_i64</code>).</figcaption>
         </figure>
 
         <table>
@@ -5842,25 +5890,32 @@ errors.level = warn
           </thead>
           <tbody>
             <tr>
-              <td>Tree interpreter</td>
-              <td><code>spid3r run</code> (default)</td>
-              <td>Walks the AST directly. The reference semantics: every other engine is expected to match it.</td>
-            </tr>
-            <tr>
               <td>Bytecode VM</td>
-              <td><code>spid3r run --engine vm</code>, <code>spid3r exec app.matrixc</code>,
+              <td><code>spid3r run</code> (default, via <code>spid3r.engine = vm</code>),
+                <code>spid3r run --engine vm</code>, <code>spid3r exec app.matrixc</code>,
                 <code>spid3r gui --engine vm</code>
               </td>
-              <td>Compiles to bytecode, optimizes it, and runs a dispatch loop. This is the engine inside
-                <code>.matrixc</code> artifacts and inside the WebAssembly build.
+              <td>Compiles to 60-opcode bytecode, optimizes it, and pre-decodes uninstrumented chunks into a 16-byte
+                fixed-width instruction stream (<code>src/vm/decode.rs</code>) with general fused superinstructions and
+                pure-leaf fast call dispatch. This is the engine inside <code>.matrixc</code> artifacts and inside the
+                WebAssembly build.
               </td>
+            </tr>
+            <tr>
+              <td>Tree interpreter</td>
+              <td><code>spid3r run --engine tree</code> (or <code>spid3r.engine = tree</code>),
+                <code>spid3r_lang::embed::Engine</code></td>
+              <td>Walks the AST directly. The reference semantic oracle: every other engine is differentially tested to
+                match it.</td>
             </tr>
             <tr>
               <td>Native (AOT)</td>
               <td><code>spid3r build</code> (Stage 0) / <code>spid3r-self build</code> (selfhost)</td>
-              <td>LLVM 23 compiles to machine code (linked against SHA-256-pinned <code>spid3r_lang</code>). Two
-                documented trades: the GUI bridge is not linked, and the execution budget is not enforced (a counter
-                in generated code is not free).</td>
+              <td>LLVM 23 compiles to machine code linked against split SHA-256-pinned <code>spid3r_lang</code>
+                (<code>spid3r_rt_start_slim</code> + <code>spid3r_reg_core</code> + referenced subsystem groups,
+                <code>--target-cpu x86-64-v3</code> default for <code>--release</code> on AVX2/BMI2/FMA hosts). Two
+                documented trades: the GUI bridge is not linked, and the execution budget is off by default for zero
+                counter overhead (opt in at compile time with <code>--enforce-budget &lt;N&gt;</code>).</td>
             </tr>
           </tbody>
         </table>
@@ -5939,6 +5994,17 @@ errors.level = warn
           <code>--no-opt</code> as well (<code>Vm::set_opt_enabled</code> gates the VM peeks); per-VM inline caches
           are memoization and stay on. In both cases no opcode is hidden.
         </p>
+        <p>
+          <strong>Pre-decoded instruction stream &amp; benchmark integrity (<code>src/vm/decode.rs</code>).</strong>
+          On disk, <code>.matrixc</code> chunks remain compact byte streams using the 60 stable <code>OpCode</code>
+          discriminants so <code>--prof</code>, <code>--coverage</code>, debugger stepping, <code>--no-opt</code>, and
+          <code>selfhost/vmc.matrix</code> parity stay untouched. On first execution of an uninstrumented chunk,
+          <code>DecodedChunk::compile</code> translates the validated bytecode once into 16-byte fixed-width
+          <code>DecodedInst</code> records with direct jump targets, general multi-opcode superinstructions, and
+          pure-leaf fast call dispatch (<code>exec_pure_leaf_1</code>). All optimizations are strictly general-purpose;
+          <code>tests/vm_integrity_guard.rs</code> enforces that no workload-specific bytecode fingerprints exist in the
+          VM.
+        </p>
 
         <h3 class="section-h3" id="vm-budget">The Execution Budget</h3>
         <p>
@@ -5946,8 +6012,10 @@ errors.level = warn
           tree engine charges a step per statement and per loop iteration, the VM charges in batches at its
           instruction poll, and spawned tasks draw from the same allowance as the code that spawned them. When
           it runs out, the error is <strong>fatal</strong> — it bypasses <code>try</code>/<code>catch</code> in
-          both engines, so a script cannot swallow the stop and keep running. The native backend does not
-          enforce it at all, which is why embedders running untrusted code use the tree or VM engine.
+          both engines, so a script cannot swallow the stop and keep running. On the native AOT backend, budget
+          enforcement is off by default (for zero counter overhead) and opt-in at compile time via
+          <code>spid3r build --enforce-budget &lt;N&gt;</code>; embedders running untrusted code with dynamic
+          capability filtering use the tree or VM engine.
         </p>
         <p>
           The budget bounds <em>time</em>; a separate policy bounds <em>authority</em>. An embedding host can deny
@@ -5964,27 +6032,31 @@ errors.level = warn
 
         <figure class="diagram">
           <img src="../diagrams/security.svg"
-            alt="A script reaches the operating system only through built-in natives, which can be filtered opt-in via --sandbox on script engines or Engine::deny when embedding.">
+            alt="A script reaches the operating system only through built-in natives, which can be filtered opt-in on script engines (tree/vm) via --sandbox, spid3r.ini [security], or Engine::deny; Native AOT binaries run with full user authority.">
           <figcaption>By default a program runs with user authority; opt-in capability gates filter built-in natives
-            via <code>spid3r run --sandbox</code>, <code>spid3r exec --sandbox</code>,
-            or <code>Engine::deny</code> (not applied to Native AOT binaries). For OS isolation, run untrusted code as a
-            separate user or in a container.</figcaption>
+            on script engines via <code>spid3r run --sandbox</code>, <code>spid3r exec --sandbox</code>,
+            <code>spid3r.ini</code> <code>[security]</code> switches, or <code>Engine::deny</code> (not applied to
+            Native AOT binaries). For OS isolation, run untrusted code as a separate user or in a container.</figcaption>
         </figure>
 
-        <h3 class="section-h3" id="gc">Garbage Collection: Cycles</h3>
+        <h3 class="section-h3" id="gc">Garbage Collection: Cycles &amp; Bounded AOT Reclamation</h3>
         <p>
-          Values are reference-counted. That handles the common case for free: the moment the last reference to
-          an acyclic list drops, its memory is gone, with no collector involved. What reference counting cannot
-          do is reclaim a <em>cycle</em> — two values pointing at each other, or a value that contains itself —
-          because every member of the cycle keeps the next one's count above zero. Those cells would leak until
-          the process exits.
+          Values are reference-counted using a compact <strong>16-byte <code>Value</code></strong> layout
+          (8-byte <code>ThinArcStr</code> pointers, boxed <code>Result</code>, and lock-free single-threaded
+          <code>FastMutex</code> prior to the first <code>spawn</code>). That handles the common case for free: the
+          moment the last reference to an acyclic list drops, its memory is gone, with no collector involved. What
+          reference counting cannot do is reclaim a <em>cycle</em> — two values pointing at each other, or a value that
+          contains itself — because every member of the cycle keeps the next one's count above zero. Those cells would
+          leak until the process exits.
         </p>
 
         <figure class="diagram">
           <img src="../diagrams/memory.svg"
-            alt="Left: two owners share a value whose reference count is two; when both drop the count reaches zero and the value is freed immediately. Right: two values point at each other so each count stays at one and neither is freed; the cycle collector reclaims them.">
-          <figcaption>Reference counting frees the acyclic case with no collector involved. Only the cycle on the
-            right needs the mark-sweep pass.</figcaption>
+            alt="Top left: compact 16-byte reference-counted Values (ThinArcStr, lock-free FastMutex) free acyclic garbage immediately. Top right: cyclic graphs are reclaimed by the mark-sweep cycle collector (30 GcTrace impls) with automatic REGISTRY pruning. Bottom: Native AOT uses 16-byte ValueV2 inline scalars/SSO strings, thread-local AOT_HEAP with precise frame roots and loop safepoints, and bounded multithreaded container pools with worker-exit sweeps.">
+          <figcaption>Three-tier memory reclamation: immediate reference counting on compact 16-byte
+            <code>Value</code>s, cycle collection across 30 <code>GcTrace</code> types with non-blocking
+            <code>REGISTRY</code> pruning, and bounded <code>ValueV2</code>/<code>AOT_HEAP</code> sweeping on native
+            AOT builds.</figcaption>
         </figure>
 
         <p>
@@ -6047,26 +6119,57 @@ errors.level = warn
             </tr>
             <tr>
               <td>Coverage</td>
-              <td>27 <code>GcTrace</code> implementations: every container type, class and function objects, class
-                instances on both engines, and the environment itself. Containers register through the single
-                allocation choke point <code>value::new_ref</code>, so a new one is tracked by construction.</td>
+              <td>30 <code>GcTrace</code> implementations: every container type, <code>Value</code>, class and function
+                objects (<code>FunctionData</code>, <code>ClassData</code>, <code>VmFunc</code>, <code>VmClass</code>),
+                class instances across all engines (<code>InstanceData</code>, <code>VmInstanceData</code>,
+                <code>CompiledInstanceData</code>), and <code>EnvironmentData</code>. Containers register through the
+                single allocation choke point <code>value::new_ref</code>, so new types are tracked by construction.</td>
             </tr>
             <tr>
-              <td>Cost</td>
-              <td>The next threshold is the surviving cell count (never below 1024), and the registry-prune
-                watermark starts at 8192 and doubles. A linear build therefore costs O(log N) collections instead
-                of O(N) at a fixed threshold; a test pins the linear behaviour.</td>
+              <td>Cost &amp; Registry Pruning</td>
+              <td>The next threshold is the surviving cell count (never below 1024), and the registry-prune watermark
+                starts at 8192 and doubles (O(log N) collections for linear builds). Additionally,
+                <code>gc::maybe_prune_dead_entries()</code> performs non-blocking dead-entry pruning and shrinks
+                <code>REGISTRY</code> capacity whenever it exceeds 16384 with &lt;25% occupancy, preventing unbounded
+                weak-table growth on long-running servers.</td>
             </tr>
             <tr>
               <td>On the native backend</td>
-              <td>The AOT runtime allocates via a thread-local bump-slab arena (<code>ARENA_SLAB_LEN = 4096</code>) with
-                call-scoped reclamation (<code>spid3r_arena_enter</code> / <code>spid3r_arena_leave</code> and
-                <code>spid3r_return_leave</code> evacuating return values cleanly); <code>gc_collect()</code>,
-                <code>gc_live_cells()</code>, and <code>spid3rinfo()["AOT Memory"]</code> report engine-internal arena
-                and slab counters.</td>
+              <td>Generated AOT code passes 16-byte <code>ValueV2 { tag, payload }</code> values keeping scalars and
+                short SSO strings inline (zero heap allocation). Reclaimable <code>TAG_HEAP</code> boxes live in
+                thread-local <code>AOT_HEAP</code> tracked by precise stack-frame roots
+                (<code>spid3r_frame_enter</code> / <code>spid3r_frame_exit</code>) and loop-backedge safepoint polls
+                (<code>spid3r_cancel_check</code> &rarr; <code>spid3r_gc_safepoint</code>, polled every
+                <strong>64</strong> iterations on call/allocation-heavy loops via
+                <code>block_contains_call_or_alloc</code> and every <strong>2048</strong> iterations on pure compute
+                loops). Reclaimed containers return to
+                bounded thread-local pools (capped at <code>64</code>/<code>32</code> in multithreaded mode), worker
+                tasks sweep and trim <code>AOT_HEAP</code> on exit, and <code>spid3rinfo()["AOT Memory"]</code> reports
+                <code>TAG_HEAP</code> call-allocation counters alongside the <code>ARENA_SLAB_LEN = 4096</code>
+                threshold.</td>
             </tr>
           </tbody>
         </table>
+
+        <div class="callout tip">
+          <div class="callout-header">📊 Measured Footprint &amp; Endurance Snapshot (Windows x86_64 · MSVC + LLVM 23.1.0)</div>
+          <p>
+            Directly observed from repository verification harnesses (see <a href="benchmark.html">Benchmarks</a> and
+            <a href="../STABILITY_REPORT.md">STABILITY_REPORT.md</a> for full methodology, caveats, and open gates):
+          </p>
+          <ul>
+            <li><strong>Slim AOT Binary Footprint (<code>spid3r build --release</code>):</strong>
+              <code>empty.exe</code> <code>0.68 MiB</code> (<code>712,192 B</code>; 11-run median working set
+              <code>3.965 MiB</code>), <code>hello.exe</code> <code>1.17 MiB</code> (<code>1,221,632 B</code>; median
+              working set <code>4.45 MiB</code>), and <code>spid3r-http/server.exe</code> <code>3.25 MiB</code>
+              (<code>3,406,336 B</code>).</li>
+            <li><strong>Bounded HTTP Keep-Alive Endurance (210 s Windows soak, <code>C = 5..100</code>):</strong>
+              <code>1,306,279</code> requests at <code>5,948.39 RPS</code> overall with <code>0.0%</code> errors
+              (<code>p50 = 2.55 ms</code>, <code>p95 = 10.18 ms</code>, <code>p99 = 16.15 ms</code>), peaking at
+              <code>38.85 MiB</code> WS under <code>C = 75–100</code> and cooling back to <code>21.67 MiB</code> WS /
+              <code>17.44 MiB</code> private bytes with zero linear growth across batches.</li>
+          </ul>
+        </div>
 
         <h3 class="section-h3" id="wasm-arch">WebAssembly: The Same VM in a Browser</h3>
         <p>
@@ -6137,11 +6240,12 @@ errors.level = warn
           <li><strong>Variadic FFI, Callbacks &amp; POD Structs:</strong> <code>extern fn</code> supports C
             variadics, <code>ffi_callback(fn, "fn(...)-&gt;...")</code> generates C-ABI trampolines for passing
             Spid3r functions to C APIs, and POD structs marshal by value across the FFI boundary.</li>
-          <li><strong>Runtime <code>dlopen</code> Gate &amp; Freestanding Mode:</strong> In
-            <code>BuildOptions</code>, dynamic loading primitives (<code>dl_open</code>, <code>dl_sym</code>,
-            <code>dl_close</code>, <code>dl_call</code>) are gated off by default unless
-            <code>allow_dlopen</code> is enabled, and <code>freestanding</code> emits host-independent IR without
-            linking the standard runtime.</li>
+          <li><strong>Runtime <code>dlopen</code> Gate &amp; Freestanding Mode:</strong> Dynamic loading primitives
+            (<code>dl_open</code>, <code>dl_sym</code>, <code>dl_close</code>, <code>dl_call</code>) are gated off by
+            default unless <code>--allow-dlopen</code> (<code>BuildOptions.allow_dlopen</code>) is enabled, and
+            <code>--freestanding</code> (with optional <code>--emit-obj</code>, <code>--entry &lt;sym&gt;</code>, and
+            <code>--sysroot &lt;dir&gt;</code>) emits host-independent IR/objects without linking the standard
+            runtime.</li>
         </ul>
       </section>
 
@@ -6155,8 +6259,8 @@ errors.level = warn
       <a href="playground.html">Interactive WASM Playground</a>
     </div>
     <p>
-      Spid3r Programming Language — Built with zero external dependencies compiled to native machine code &amp;
-      WebAssembly.
+      Spid3r Programming Language — Zero-dependency core toolchain (<code>--no-default-features</code>) with self-hosted
+      LLVM 23 native AOT &amp; WebAssembly targets.
     </p>
     <p style="margin-top: 6px; font-size: 12px; color: var(--fg-muted);">
       Developed and maintained by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer"
@@ -6295,7 +6399,7 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|vector|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
           '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|as|self|super|match|enum|interface|abstract|yield|and|or|not)\\b)',
           '(?<lit>\\b(?:true|false|null|some|none|ok|err)\\b)',
-          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|file_open|file_read|file_read_line|file_write|file_seek|file_tell|file_flush|file_fsync|file_lock|file_unlock|file_close|signal_requested|shutdown_requested|uds_listen|uds_connect|poll_create|poll_add|poll_mod|poll_del|poll_wait|poll_close|after_ms|timer_check|timer_cancel|http_fetch|http_write_response_chunk|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|file_open|file_read|file_read_line|file_write|file_seek|file_tell|file_flush|file_fsync|file_lock|file_unlock|file_close|signal_requested|shutdown_requested|uds_listen|uds_connect|poll_create|poll_add|poll_mod|poll_del|poll_wait|poll_close|after_ms|timer_check|timer_cancel|http_fetch|http_write_response_chunk|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|atomic_int|spid3rinfo|config_get|config_set|config_reload)\\b)',
           '(?<op>==|!=|<=|>=|=>|->|\\+\\+|--|\\+=|-=|\\*=|\\/=|%=|&&|\\|\\||\\?\\.|\\?\\?|[+\\-*\\/%!=<>~&|^?:])'
         ].join('|'),
         'g'

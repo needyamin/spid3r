@@ -1397,12 +1397,22 @@ fn n_env(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// dispatch time; `run` replaces it with the real script arguments. Library/
 /// REPL use without a CLI keeps the empty default.
 static SCRIPT_ARGS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+static SCRIPT_ARGS_LAZY_ENV: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_script_args(args: Vec<String>) {
+    SCRIPT_ARGS_LAZY_ENV.store(false, std::sync::atomic::Ordering::Release);
     *SCRIPT_ARGS.write().unwrap() = args;
 }
 
+pub fn enable_lazy_env_script_args() {
+    SCRIPT_ARGS_LAZY_ENV.store(true, std::sync::atomic::Ordering::Release);
+}
+
 fn n_args(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    if SCRIPT_ARGS_LAZY_ENV.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        *SCRIPT_ARGS.write().unwrap() = std::env::args().skip(1).collect();
+    }
     let items: Vec<Value> = SCRIPT_ARGS
         .read()
         .unwrap()
@@ -3355,8 +3365,8 @@ fn n_random_int(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 #[inline]
 fn json_write_capacity(v: &Value) -> usize {
     let n = match v {
-        Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().len(),
-        Value::Map(d) => d.lock().unwrap().entries.len(),
+        Value::List(d) | Value::VecDyn(d) => crate::value::with_ref(d, |g| g.len()),
+        Value::Map(m) => crate::value::with_ref(m, |g| g.entries.len()),
         _ => 0,
     };
     n.saturating_mul(64).min(1 << 20)
@@ -3380,15 +3390,19 @@ fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
+/// Serialize `v` directly into caller-owned reusable byte buffer `out`.
+pub fn json_write_into_bytes(v: &Value, out: &mut Vec<u8>) -> Result<(), String> {
+    out.clear();
+    out.reserve(json_write_capacity(v));
+    write_json(v, out, 0)
+}
+
 /// Serialize `v` directly into a reusable thread-local `Vec<u8>` buffer and
 /// allocate the returned `ThinArcStr` once without an intermediate `String`.
 pub fn json_write_arc(v: &Value) -> Result<crate::value::ThinArcStr, String> {
     JSON_WRITE_BUF.with(|cell| {
         if let Ok(mut buf) = cell.try_borrow_mut() {
-            buf.clear();
-            let cap = json_write_capacity(v);
-            buf.reserve(cap);
-            write_json(v, &mut buf, 0)?;
+            json_write_into_bytes(v, &mut buf)?;
             let s = std::str::from_utf8(&buf)
                 .map_err(|_| "json_write: invalid UTF-8 output".to_string())?;
             Ok(crate::value::ThinArcStr::from(s))
@@ -3436,14 +3450,14 @@ pub fn json_parse_text(s: &str) -> Result<Value, String> {
 // (`json_char_oracle::json_reference_parse`) and compared case-by-case in
 // `json_byte_parity_tests`.
 
-const JSON_STR_CACHE_LEN: usize = 2048;
+const JSON_STR_CACHE_LEN: usize = 1024;
 
 thread_local! {
     static JSON_STR_CACHE: std::cell::RefCell<Vec<(u64, Option<crate::value::ThinArcStr>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-struct JsonParser<'a, 'c> {
+struct JsonParser<'a, 'c, 'p> {
     /// The input, kept for diagnostics: an "unexpected …" message names the
     /// decoded `char` exactly as the character-based parser did.
     s: &'a str,
@@ -3458,6 +3472,9 @@ struct JsonParser<'a, 'c> {
     key_intern_len: usize,
     /// Cross-parse 2-way set-associative cache for short strings (`<= 15` bytes).
     str_cache: &'c mut [(u64, Option<crate::value::ThinArcStr>)],
+    /// Borrowed once per parse from thread-local untracked pools.
+    map_pool: &'p mut Vec<crate::value::Ref<crate::value::collections::MapData>>,
+    list_pool: &'p mut Vec<crate::value::Ref<crate::value::collections::VecData>>,
 }
 
 /// One shared entry point behind the `json_parse` builtin and the host-side
@@ -3475,25 +3492,29 @@ fn json_parse_str(s: &str) -> Result<Value, String> {
             }
             Err(_) => &mut fallback[..],
         };
-        let mut parser = JsonParser {
-            s,
-            b: s.as_bytes(),
-            pos: 0,
-            depth: 0,
-            key_intern: std::array::from_fn(|_| ("", None, 0)),
-            key_intern_len: 0,
-            str_cache: cache_slice,
-        };
-        let v = parser.parse_value()?;
-        parser.skip_ws();
-        if parser.pos != parser.b.len() {
-            return Err("json_parse: trailing characters after the value".to_string());
-        }
-        Ok(v)
+        crate::value::collections::seq::with_container_pools(|map_pool, list_pool| {
+            let mut parser = JsonParser {
+                s,
+                b: s.as_bytes(),
+                pos: 0,
+                depth: 0,
+                key_intern: [const { ("", None, 0) }; 16],
+                key_intern_len: 0,
+                str_cache: cache_slice,
+                map_pool,
+                list_pool,
+            };
+            let v = parser.parse_value()?;
+            parser.skip_ws();
+            if parser.pos != parser.b.len() {
+                return Err("json_parse: trailing characters after the value".to_string());
+            }
+            Ok(v)
+        })
     })
 }
 
-impl JsonParser<'_, '_> {
+impl JsonParser<'_, '_, '_> {
     #[inline]
     fn intern_short(&mut self, raw: &str, h: u64) -> crate::value::ThinArcStr {
         if self.str_cache.len() == JSON_STR_CACHE_LEN {
@@ -3501,7 +3522,7 @@ impl JsonParser<'_, '_> {
             let idx = (h as usize) & mask;
             if self.str_cache[idx].0 == h {
                 if let Some(arc) = &self.str_cache[idx].1 {
-                    if arc.as_ref() == raw {
+                    if crate::value::collections::bytes_eq_short(arc.as_bytes(), raw.as_bytes()) {
                         return arc.clone();
                     }
                 }
@@ -3509,7 +3530,7 @@ impl JsonParser<'_, '_> {
             let idx2 = (idx + 1) & mask;
             if self.str_cache[idx2].0 == h {
                 if let Some(arc) = &self.str_cache[idx2].1 {
-                    if arc.as_ref() == raw {
+                    if crate::value::collections::bytes_eq_short(arc.as_bytes(), raw.as_bytes()) {
                         return arc.clone();
                     }
                 }
@@ -3559,24 +3580,20 @@ impl JsonParser<'_, '_> {
                 JSON_MAX_DEPTH
             ));
         }
-        let r = self.parse_value_inner();
-        self.depth -= 1;
-        r
-    }
-
-    fn parse_value_inner(&mut self) -> Result<Value, String> {
         self.skip_ws();
-        match self.peek() {
+        let r = match self.peek() {
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
-            Some(b'"') => Ok(Value::Str(self.parse_string_value()?)),
+            Some(b'"') => self.parse_string_value().map(Value::Str),
             Some(b't') => self.expect_word("true", Value::Bool(true)),
             Some(b'f') => self.expect_word("false", Value::Bool(false)),
             Some(b'n') => self.expect_word("null", Value::Null),
             Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
             None => Err("json_parse: unexpected end of input".to_string()),
             Some(_) => Err(format!("json_parse: {}", self.unexpected_at())),
-        }
+        };
+        self.depth -= 1;
+        r
     }
     fn expect_word(&mut self, word: &str, v: Value) -> Result<Value, String> {
         for expected in word.bytes() {
@@ -3750,15 +3767,28 @@ impl JsonParser<'_, '_> {
     }
 
     #[inline]
-    fn parse_object_key(&mut self) -> Result<(crate::value::collections::KeyStr, u8), String> {
+    fn parse_object_key(
+        &mut self,
+        hint_idx: usize,
+    ) -> Result<(crate::value::collections::KeyStr, u8), String> {
         let (start, hit, is_close) = self.scan_unescaped_or_escape_start()?;
         if is_close {
             self.pos = hit + 1;
             // `self.s` is valid UTF-8 and `"` is single-byte ASCII, so
             // `start..hit` is always on char boundaries.
             let raw = &self.s[start..hit];
-            for slot in &self.key_intern[..self.key_intern_len] {
-                if slot.0 == raw {
+            if hint_idx < self.key_intern_len {
+                let slot = &self.key_intern[hint_idx];
+                if crate::value::collections::bytes_eq_short(slot.0.as_bytes(), raw.as_bytes()) {
+                    if let Some(key) = &slot.1 {
+                        return Ok((key.clone(), slot.2));
+                    }
+                }
+            }
+            for (idx, slot) in self.key_intern[..self.key_intern_len].iter().enumerate() {
+                if idx != hint_idx
+                    && crate::value::collections::bytes_eq_short(slot.0.as_bytes(), raw.as_bytes())
+                {
                     if let Some(key) = &slot.1 {
                         return Ok((key.clone(), slot.2));
                     }
@@ -3888,118 +3918,239 @@ impl JsonParser<'_, '_> {
         Ok(v)
     }
 
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn try_fast_object_key(
+        &mut self,
+        hint_idx: usize,
+    ) -> Option<(crate::value::collections::KeyStr, u8)> {
+        if hint_idx < self.key_intern_len && self.pos < self.b.len() && self.b[self.pos] == b'"' {
+            let slot = &self.key_intern[hint_idx];
+            let expected = slot.0.as_bytes();
+            let elen = expected.len();
+            let p = self.pos + 1;
+            if p + elen < self.b.len()
+                && self.b[p + elen] == b'"'
+                && crate::value::collections::bytes_eq_short(&self.b[p..p + elen], expected)
+            {
+                if let Some(k) = &slot.1 {
+                    self.pos = p + elen + 1;
+                    return Some((k.clone(), slot.2));
+                }
+            }
+        }
+        None
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn json_err_unexpected(&self, suffix: &str) -> String {
+        format!("json_parse: {}{}", self.unexpected_at(), suffix)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn json_err_depth(&self) -> String {
+        format!("json_parse: nesting deeper than {} levels", JSON_MAX_DEPTH)
+    }
+
     fn parse_array(&mut self) -> Result<Value, String> {
         self.pos += 1;
         self.skip_ws();
+        let mut arc = crate::value::collections::seq::pop_pooled_list_arc(self.list_pool);
+        if std::sync::Arc::get_mut(&mut arc).is_none() {
+            arc = crate::value::new_untracked_ref(
+                crate::value::collections::VecData::from_items_untracked(Vec::with_capacity(8)),
+            );
+        }
         if self.peek() == Some(b']') {
             self.pos += 1;
-            let (arc, mut items) = crate::value::collections::seq::checkout_pooled_list();
-            items.clear();
-            return Ok(crate::value::collections::seq::commit_pooled_list(
-                arc, items,
-            ));
+            return Ok(Value::List(arc));
         }
-        let (arc, mut items) = crate::value::collections::seq::checkout_pooled_list();
-        items.clear();
-        match self.parse_array_items(&mut items) {
-            Ok(()) => Ok(crate::value::collections::seq::commit_pooled_list(
-                arc, items,
-            )),
-            Err(e) => {
-                crate::value::collections::seq::return_pooled_list(arc, items);
-                Err(e)
-            }
-        }
-    }
-
-    fn parse_array_items(&mut self, items: &mut Vec<Value>) -> Result<(), String> {
-        loop {
-            items.push(self.parse_value()?);
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => self.pos += 1,
-                Some(b']') => {
-                    self.pos += 1;
-                    return Ok(());
+        let mut err: Option<String> = None;
+        {
+            let fm = std::sync::Arc::get_mut(&mut arc).expect("fresh or pooled list Arc");
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let item = match self.parse_value() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                d.push_untracked(item);
+                if self.pos < self.b.len() {
+                    let next = self.b[self.pos];
+                    if next == b',' {
+                        self.pos += 1;
+                        continue;
+                    }
+                    if next == b']' {
+                        self.pos += 1;
+                        break;
+                    }
                 }
-                _ => return Err(format!("json_parse: {} in array", self.unexpected_at())),
+                self.skip_ws();
+                match self.peek() {
+                    Some(b',') => self.pos += 1,
+                    Some(b']') => {
+                        self.pos += 1;
+                        break;
+                    }
+                    _ => {
+                        err = Some(self.json_err_unexpected(" in array"));
+                        break;
+                    }
+                }
             }
         }
+        if let Some(e) = err {
+            crate::value::collections::seq::recycle_aborted_list_arc(self.list_pool, arc);
+            return Err(e);
+        }
+        Ok(Value::List(arc))
     }
 
     fn parse_object(&mut self) -> Result<Value, String> {
         self.pos += 1;
         self.skip_ws();
+        let mut arc = crate::value::collections::seq::pop_pooled_map_arc(self.map_pool);
+        if std::sync::Arc::get_mut(&mut arc).is_none() {
+            arc = crate::value::new_untracked_ref(
+                crate::value::collections::MapData::from_entries_untracked(
+                    Vec::with_capacity(4),
+                    [0; 16],
+                ),
+            );
+        }
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            let (arc, mut entries) = crate::value::collections::seq::checkout_pooled_map();
-            entries.clear();
-            return Ok(crate::value::collections::seq::commit_pooled_map(
-                arc, entries, [0u8; 16],
-            ));
+            return Ok(Value::Map(arc));
         }
-        let (arc, mut entries) = crate::value::collections::seq::checkout_pooled_map();
-        entries.clear();
-        let mut small_tags = [0u8; 16];
-        match self.parse_object_entries(&mut entries, &mut small_tags) {
-            Ok(()) => Ok(crate::value::collections::seq::commit_pooled_map(
-                arc, entries, small_tags,
-            )),
-            Err(e) => {
-                crate::value::collections::seq::return_pooled_map(arc, entries);
-                Err(e)
-            }
-        }
-    }
-
-    fn parse_object_entries(
-        &mut self,
-        entries: &mut Vec<(crate::value::MapKey, Value)>,
-        small_tags: &mut [u8; 16],
-    ) -> Result<(), String> {
-        loop {
-            self.skip_ws();
-            let (key, tag) = self.parse_object_key()?;
-            self.skip_ws();
-            if self.peek() != Some(b':') {
-                return Err("json_parse: expected ':'".to_string());
-            }
-            self.pos += 1;
-            let value = self.parse_value()?;
-            let mut dup = None;
-            if entries.len() <= 16 {
-                for (i, (ek, _)) in entries.iter().enumerate() {
-                    if small_tags[i] == tag {
-                        if let crate::value::MapKey::Str(existing) = ek {
-                            if existing == &key {
-                                dup = Some(i);
-                                break;
-                            }
+        let mut err: Option<String> = None;
+        {
+            let fm = std::sync::Arc::get_mut(&mut arc).expect("fresh or pooled map Arc");
+            let d = fm.get_mut().unwrap_or_else(|e| e.into_inner());
+            let mut seen_mask: u64 = 0;
+            loop {
+                if self.pos < self.b.len() && self.b[self.pos] <= b' ' {
+                    self.skip_ws();
+                }
+                let hint_idx = d.entries.len();
+                let (key, tag) = if let Some(kt) = self.try_fast_object_key(hint_idx) {
+                    kt
+                } else {
+                    match self.parse_object_key(hint_idx) {
+                        Ok(kt) => kt,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
                         }
                     }
-                }
-            } else {
-                let mk = crate::value::MapKey::Str(key.clone());
-                dup = entries.iter().position(|(k, _)| k == &mk);
-            }
-            if let Some(pos) = dup {
-                entries[pos].1 = value;
-            } else {
-                if entries.len() < 16 {
-                    small_tags[entries.len()] = tag;
-                }
-                entries.push((crate::value::MapKey::Str(key), value));
-            }
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => self.pos += 1,
-                Some(b'}') => {
+                };
+                if self.pos < self.b.len() && self.b[self.pos] == b':' {
                     self.pos += 1;
-                    return Ok(());
+                } else {
+                    self.skip_ws();
+                    if self.peek() != Some(b':') {
+                        err = Some("json_parse: expected ':'".to_string());
+                        break;
+                    }
+                    self.pos += 1;
                 }
-                _ => return Err(format!("json_parse: {} in object", self.unexpected_at())),
+                if self.depth >= JSON_MAX_DEPTH {
+                    err = Some(self.json_err_depth());
+                    break;
+                }
+                if self.pos < self.b.len() && self.b[self.pos] <= b' ' {
+                    self.skip_ws();
+                }
+                let value = match self.peek() {
+                    Some(b'"') => match self.parse_string_value() {
+                        Ok(s) => Value::Str(s),
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    Some(c) if c == b'-' || c.is_ascii_digit() => match self.parse_number() {
+                        Ok(n) => n,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    Some(b't') => match self.expect_word("true", Value::Bool(true)) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    Some(b'f') => match self.expect_word("false", Value::Bool(false)) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    Some(b'n') => match self.expect_word("null", Value::Null) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    Some(b'{') | Some(b'[') => match self.parse_value() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    },
+                    None => {
+                        err = Some("json_parse: unexpected end of input".to_string());
+                        break;
+                    }
+                    Some(_) => {
+                        err = Some(self.json_err_unexpected(""));
+                        break;
+                    }
+                };
+                d.set_parsed_str_entry_masked(key, tag, value, &mut seen_mask);
+                if self.pos < self.b.len() {
+                    let next = self.b[self.pos];
+                    if next == b',' {
+                        self.pos += 1;
+                        continue;
+                    }
+                    if next == b'}' {
+                        self.pos += 1;
+                        break;
+                    }
+                }
+                self.skip_ws();
+                match self.peek() {
+                    Some(b',') => self.pos += 1,
+                    Some(b'}') => {
+                        self.pos += 1;
+                        break;
+                    }
+                    _ => {
+                        err = Some(self.json_err_unexpected(" in object"));
+                        break;
+                    }
+                }
+            }
+            if err.is_none() {
+                d.finalize_parsed();
             }
         }
+        if let Some(e) = err {
+            crate::value::collections::seq::recycle_aborted_map_arc(self.map_pool, arc);
+            return Err(e);
+        }
+        Ok(Value::Map(arc))
     }
 }
 
@@ -4620,11 +4771,34 @@ mod json_byte_parity_tests {
 /// of a stack overflow / deadlock.
 const JSON_MAX_DEPTH: usize = 512;
 
+const JSON_DIGIT_PAIRS: &[u8; 200] = b"00010203040506070809\
+10111213141516171819\
+20212223242526272829\
+30313233343536373839\
+40414243444546474849\
+50515253545556575859\
+60616263646566676869\
+70717273747576777879\
+80818283848586878889\
+90919293949596979899";
+
 /// Fast zero-dependency decimal i64 formatter directly into `out: &mut Vec<u8>` (Track 3 RT-4).
-#[inline]
+#[cfg_attr(not(debug_assertions), inline(always))]
 fn push_i64_decimal(n: i64, out: &mut Vec<u8>) {
     if (0..10).contains(&n) {
         out.push(b'0' + n as u8);
+        return;
+    }
+    if (10..100).contains(&n) {
+        let p = (n as usize) * 2;
+        out.extend_from_slice(&JSON_DIGIT_PAIRS[p..p + 2]);
+        return;
+    }
+    if (100..1000).contains(&n) {
+        let u = n as usize;
+        let q = u / 100;
+        let p = (u - q * 100) * 2;
+        out.extend_from_slice(&[b'0' + q as u8, JSON_DIGIT_PAIRS[p], JSON_DIGIT_PAIRS[p + 1]]);
         return;
     }
     let mut buf = [0u8; 24];
@@ -4634,14 +4808,16 @@ fn push_i64_decimal(n: i64, out: &mut Vec<u8>) {
     while u >= 100 {
         let rem = (u % 100) as usize;
         u /= 100;
+        let p = rem * 2;
         pos -= 2;
-        buf[pos] = b'0' + (rem / 10) as u8;
-        buf[pos + 1] = b'0' + (rem % 10) as u8;
+        buf[pos] = JSON_DIGIT_PAIRS[p];
+        buf[pos + 1] = JSON_DIGIT_PAIRS[p + 1];
     }
     if u >= 10 {
+        let p = (u as usize) * 2;
         pos -= 2;
-        buf[pos] = b'0' + (u / 10) as u8;
-        buf[pos + 1] = b'0' + (u % 10) as u8;
+        buf[pos] = JSON_DIGIT_PAIRS[p];
+        buf[pos + 1] = JSON_DIGIT_PAIRS[p + 1];
     } else {
         pos -= 1;
         buf[pos] = b'0' + u as u8;
@@ -4656,11 +4832,11 @@ fn push_i64_decimal(n: i64, out: &mut Vec<u8>) {
 /// JSON string body escaper, shared by string values and map keys (keys were
 /// previously written raw, so a key containing `"` produced invalid JSON).
 /// Uses a byte-slice scan with bulk `extend_from_slice` copies into `Vec<u8>` (Track 3 RT-4).
+#[cfg_attr(not(debug_assertions), inline(always))]
 fn write_json_str(s: &str, out: &mut Vec<u8>) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let bytes = s.as_bytes();
     let Some(first_esc) = swar::find_json_escape_needed(bytes) else {
-        out.reserve(bytes.len() + 2);
         out.push(b'"');
         out.extend_from_slice(bytes);
         out.push(b'"');
@@ -4708,9 +4884,10 @@ fn write_json_str(s: &str, out: &mut Vec<u8>) {
 /// none of which can occur in a numeric / bool / null spelling, so the quoted
 /// spellings below are byte-identical to the old path. String keys keep the
 /// exact same escaping routine.
+#[cfg_attr(not(debug_assertions), inline(always))]
 fn write_json_key(k: &MapKey, out: &mut Vec<u8>) {
     match k {
-        MapKey::Str(s) => write_json_str(s, out),
+        MapKey::Str(s) => write_json_str(s.as_str(), out),
         MapKey::Null => out.extend_from_slice(b"\"null\""),
         MapKey::Bool(b) => out.extend_from_slice(if *b { b"\"true\"" } else { b"\"false\"" }),
         MapKey::Int(i) => {
@@ -4748,6 +4925,55 @@ fn json_cycle_err() -> String {
     )
 }
 
+#[cfg_attr(not(debug_assertions), inline(always))]
+fn write_json_slice(items: &[Value], out: &mut Vec<u8>, depth: usize) -> Result<(), String> {
+    out.push(b'[');
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        if depth < JSON_MAX_DEPTH {
+            if let Value::Map(d) = item {
+                if let Some(guard) = d.try_borrow_single_thread() {
+                    write_json_entries(&guard.entries, out, depth + 1)?;
+                    continue;
+                }
+            }
+        }
+        write_json(item, out, depth + 1)?;
+    }
+    out.push(b']');
+    Ok(())
+}
+
+#[cfg_attr(not(debug_assertions), inline(always))]
+fn write_json_entries(
+    entries: &[(MapKey, Value)],
+    out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), String> {
+    if !entries.is_empty() && depth >= JSON_MAX_DEPTH {
+        return Err(json_cycle_err());
+    }
+    out.push(b'{');
+    for (i, (k, val)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        write_json_key(k, out);
+        out.push(b':');
+        match val {
+            Value::Null => out.extend_from_slice(b"null"),
+            Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
+            Value::Int(n) => push_i64_decimal(*n, out),
+            Value::Str(s) => write_json_str(s, out),
+            other => write_json(other, out, depth + 1)?,
+        }
+    }
+    out.push(b'}');
+    Ok(())
+}
+
 fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> {
     if depth > JSON_MAX_DEPTH {
         return Err(json_cycle_err());
@@ -4770,90 +4996,46 @@ fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> 
         }
         Value::Str(s) => write_json_str(s, out),
         Value::List(d) | Value::VecDyn(d) => {
+            if let Some(guard) = d.try_borrow_single_thread() {
+                return write_json_slice(guard.as_slice(), out, depth);
+            }
             if !crate::value::is_multithreaded() {
                 let guard = match d.try_lock() {
                     Ok(g) => g,
                     Err(std::sync::TryLockError::WouldBlock) => return Err(json_cycle_err()),
                     Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
                 };
-                out.push(b'[');
-                for (i, item) in guard.as_slice().iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json(item, out, depth + 1)?;
-                }
-                out.push(b']');
-                return Ok(());
+                return write_json_slice(guard.as_slice(), out, depth);
             }
             let guard = crate::value::lock_ref(d);
             let slice = guard.as_slice();
             if slice.iter().all(json_is_scalar) {
-                out.push(b'[');
-                for (i, item) in slice.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json(item, out, depth + 1)?;
-                }
-                out.push(b']');
+                write_json_slice(slice, out, depth)?;
             } else {
                 let items = guard.clone_items();
                 drop(guard);
-                out.push(b'[');
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json(item, out, depth + 1)?;
-                }
-                out.push(b']');
+                write_json_slice(&items, out, depth)?;
             }
         }
         Value::Map(d) => {
+            if let Some(guard) = d.try_borrow_single_thread() {
+                return write_json_entries(&guard.entries, out, depth);
+            }
             if !crate::value::is_multithreaded() {
                 let guard = match d.try_lock() {
                     Ok(g) => g,
                     Err(std::sync::TryLockError::WouldBlock) => return Err(json_cycle_err()),
                     Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
                 };
-                out.push(b'{');
-                for (i, (k, val)) in guard.entries.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json_key(k, out);
-                    out.push(b':');
-                    write_json(val, out, depth + 1)?;
-                }
-                out.push(b'}');
-                return Ok(());
+                return write_json_entries(&guard.entries, out, depth);
             }
             let guard = crate::value::lock_ref(d);
             if guard.entries.iter().all(|(_, v)| json_is_scalar(v)) {
-                out.push(b'{');
-                for (i, (k, val)) in guard.entries.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json_key(k, out);
-                    out.push(b':');
-                    write_json(val, out, depth + 1)?;
-                }
-                out.push(b'}');
+                write_json_entries(&guard.entries, out, depth)?;
             } else {
                 let entries = guard.entries.clone();
                 drop(guard);
-                out.push(b'{');
-                for (i, (k, val)) in entries.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    write_json_key(k, out);
-                    out.push(b':');
-                    write_json(val, out, depth + 1)?;
-                }
-                out.push(b'}');
+                write_json_entries(&entries, out, depth)?;
             }
         }
         Value::Option(o) => match o {

@@ -47,9 +47,10 @@ use crate::vm::{vm_eval_binary, vm_eval_unary};
 // global variable table (natives + user globals + classes)
 // ----------------------------------------------------------------------------
 
-fn globals() -> &'static Mutex<HashMap<String, Value>> {
-    static G: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    G.get_or_init(|| Mutex::new(HashMap::new()))
+fn globals() -> &'static Mutex<crate::value::collections::FxHashMap<String, Value>> {
+    static G: OnceLock<Mutex<crate::value::collections::FxHashMap<String, Value>>> =
+        OnceLock::new();
+    G.get_or_init(|| Mutex::new(crate::value::collections::FxHashMap::default()))
 }
 
 /// Runtime error: print like the VM and exit with a non-zero status.
@@ -224,6 +225,9 @@ thread_local! {
     /// Pinned static string literal cache keyed by `(ptr_addr, byte_len)`.
     static STATIC_STR_CACHE: RefCell<crate::value::collections::FxHashMap<(usize, usize), *mut Value>> =
         RefCell::new(crate::value::collections::FxHashMap::default());
+    /// Tracks recently allocated heap container count so `json_parse` reclaims dead
+    /// trees into thread-local container pools before pool starvation occurs.
+    static CONTAINER_ALLOC_PRESSURE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Snapshot of allocation accounting counters (current thread + process-wide).
@@ -313,6 +317,82 @@ fn alloc_rope_from_str(s: &str, ascii: bool) -> ValueV2 {
     alloc_rope_into(s.len(), ascii, |buf| buf.push_str(s))
 }
 
+fn alloc_rope_try_write_bytes(
+    fill: impl FnOnce(&mut Vec<u8>) -> Result<(), String>,
+) -> Result<Option<ValueV2>, String> {
+    AOT_ROPE.with(|cell| {
+        let Ok(mut rope) = cell.try_borrow_mut() else {
+            return Ok(None);
+        };
+        let idx = rope.active;
+        rope.active = (idx + 1) % ROPE_RING_LEN;
+        if rope.slots[idx].epoch != 0 && !rope.slots[idx].buf.is_empty() {
+            let old_ep = rope.slots[idx].epoch;
+            if is_rope_epoch_rooted(old_ep) {
+                let old_buf = std::mem::take(&mut rope.slots[idx].buf);
+                rope.history
+                    .insert(old_ep, std::sync::Arc::<str>::from(old_buf));
+            } else {
+                rope.slots[idx].buf.clear();
+            }
+        }
+        rope.slots[idx].epoch = 0;
+
+        let mut bytes = std::mem::take(&mut rope.slots[idx].buf).into_bytes();
+        bytes.clear();
+        if let Err(e) = fill(&mut bytes) {
+            bytes.clear();
+            rope.slots[idx].buf = String::from_utf8(bytes).unwrap_or_default();
+            return Err(e);
+        }
+        if bytes.len() <= 15 {
+            let v = ValueV2::from_sso_bytes(&bytes);
+            bytes.clear();
+            rope.slots[idx].buf = String::from_utf8(bytes).unwrap_or_default();
+            return Ok(Some(v));
+        }
+        let ascii = bytes.is_ascii();
+        let s = if ascii {
+            // SAFETY: `bytes.is_ascii()` verified every byte is `< 0x80`, which is valid UTF-8.
+            unsafe { String::from_utf8_unchecked(bytes) }
+        } else {
+            match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    let mut recycled = e.into_bytes();
+                    recycled.clear();
+                    rope.slots[idx].buf = String::from_utf8(recycled).unwrap_or_default();
+                    return Err("json_write: invalid UTF-8 output".to_string());
+                }
+            }
+        };
+        if s.len() > u32::MAX as usize {
+            let heap = alloc_heap_v2(Value::Str(crate::value::ThinArcStr::from(s.as_str())));
+            drop(s);
+            return Ok(Some(heap));
+        }
+        let ep = loop {
+            rope.next_epoch = rope.next_epoch.wrapping_add(1);
+            let cand = rope.next_epoch;
+            if cand != 0
+                && !rope.slots.iter().any(|s| s.epoch == cand)
+                && !rope.history.contains_key(&cand)
+            {
+                break cand;
+            }
+        };
+        let byte_len = s.len() as u32;
+        rope.slots[idx].epoch = ep;
+        rope.slots[idx].buf = s;
+        rope.slots[idx].ascii = ascii;
+        Ok(Some(if ascii {
+            ValueV2::from_rope_ascii(ep, byte_len)
+        } else {
+            ValueV2::from_rope(ep, byte_len)
+        }))
+    })
+}
+
 #[inline]
 fn with_rope_str<R>(v: ValueV2, f: impl FnOnce(&str) -> R) -> Option<R> {
     if !v.is_rope() {
@@ -377,17 +457,25 @@ fn alloc_heap_v2(v: Value) -> ValueV2 {
     ValueV2::from_heap_ptr(ptr)
 }
 
-/// Convert a `&Value` reference into `ValueV2`: scalars and `<= 15`-byte
-/// strings stay inline without allocation or `Arc::clone`.
-#[inline]
+#[cold]
+#[inline(never)]
+fn value_ref_to_v2_slow(v: &Value) -> ValueV2 {
+    match v {
+        Value::Str(s) if s.len() <= 15 => ValueV2::from_sso_str(s.as_ref()),
+        other => alloc_heap_v2(other.clone()),
+    }
+}
+
+/// Convert a `&Value` reference into `ValueV2`: scalars stay inline without
+/// TLS/heap allocation or SEH frames on leaf fast paths.
+#[inline(always)]
 fn value_ref_to_v2(v: &Value) -> ValueV2 {
     match v {
         Value::Null => ValueV2::NULL,
         Value::Bool(b) => ValueV2::from_bool(*b),
         Value::Int(n) => ValueV2::from_int(*n),
         Value::Float(f) => ValueV2::from_float(*f),
-        Value::Str(s) if s.len() <= 15 => ValueV2::from_sso_str(s.as_ref()),
-        other => alloc_heap_v2(other.clone()),
+        other => value_ref_to_v2_slow(other),
     }
 }
 
@@ -435,17 +523,10 @@ pub extern "C" fn spid3r_frame_exit() {
     });
 }
 
-/// Loop-backedge / statement GC safepoint (DP-1 / RT-2). Sweeps unreachable
-/// `AOT_HEAP` `Box<Value>` allocations and stale `AOT_ROPE` history epochs
-/// when the thread-local heap reaches `ARENA_SLAB_LEN` (4096) objects.
-#[no_mangle]
-pub extern "C" fn spid3r_gc_safepoint() {
-    let heap_due = AOT_HEAP.with(|h| h.borrow().live.len() >= ARENA_SLAB_LEN);
+/// Sweep unreachable `AOT_HEAP` `Box<Value>` allocations and stale `AOT_ROPE`
+/// history epochs, returning reclaimed containers to thread-local pools.
+fn sweep_aot_heap_now() {
     let has_rope_history = AOT_ROPE.with(|r| !r.borrow().history.is_empty());
-    let rope_due = has_rope_history && AOT_ROPE.with(|r| r.borrow().history.len() >= 1024);
-    if !heap_due && !rope_due {
-        return;
-    }
     let mut live_small = [0usize; 64];
     let mut live_small_len = 0usize;
     let mut live_large: Option<crate::value::collections::FxHashSet<usize>> = None;
@@ -480,6 +561,11 @@ pub extern "C" fn spid3r_gc_safepoint() {
         }
     });
     let live_slice = &live_small[..live_small_len];
+    let free_cap = if crate::value::is_multithreaded() {
+        64
+    } else {
+        ARENA_SLAB_LEN
+    };
     AOT_HEAP.with(|h| {
         let mut st = h.borrow_mut();
         let mut i = 0;
@@ -493,7 +579,7 @@ pub extern "C" fn spid3r_gc_safepoint() {
                 i += 1;
             } else {
                 st.live.swap_remove(i);
-                if st.free.len() < ARENA_SLAB_LEN {
+                if st.free.len() < free_cap {
                     // SAFETY: `ptr` was allocated via `Box::into_raw(Box::new(v))`
                     // on this thread and is not referenced by any active frame root.
                     let old = unsafe { std::mem::replace(&mut *ptr, Value::Null) };
@@ -507,14 +593,43 @@ pub extern "C" fn spid3r_gc_safepoint() {
                 }
             }
         }
+        if st.live.capacity() > 1024 && st.live.len() < st.live.capacity() / 4 {
+            let target = st.live.len().saturating_mul(2).max(256);
+            st.live.shrink_to(target);
+        }
+        if st.free.capacity() > free_cap.saturating_mul(2) && st.free.len() <= free_cap {
+            st.free.shrink_to(free_cap.max(64));
+        }
     });
+    CONTAINER_ALLOC_PRESSURE.with(|c| c.set(0));
     if has_rope_history {
         AOT_ROPE.with(|r| {
-            r.borrow_mut()
-                .history
-                .retain(|ep, _| live_epochs.contains(ep));
+            let mut rope = r.borrow_mut();
+            rope.history.retain(|ep, _| live_epochs.contains(ep));
+            if rope.history.capacity() > 256 && rope.history.len() < rope.history.capacity() / 4 {
+                let target = rope.history.len().saturating_mul(2).max(64);
+                rope.history.shrink_to(target);
+            }
         });
     }
+    if crate::value::is_multithreaded() {
+        crate::value::gc::maybe_prune_dead_entries();
+    }
+}
+
+/// Loop-backedge / statement GC safepoint (DP-1 / RT-2). Sweeps unreachable
+/// `AOT_HEAP` `Box<Value>` allocations and stale `AOT_ROPE` history epochs
+/// when live heap objects, container pressure, or rope history reach threshold.
+#[no_mangle]
+pub extern "C" fn spid3r_gc_safepoint() {
+    let heap_due = AOT_HEAP.with(|h| h.borrow().live.len() >= 256)
+        || CONTAINER_ALLOC_PRESSURE.with(|c| c.get() >= 2048);
+    let has_rope_history = AOT_ROPE.with(|r| !r.borrow().history.is_empty());
+    let rope_due = has_rope_history && AOT_ROPE.with(|r| r.borrow().history.len() >= 1024);
+    if !heap_due && !rope_due {
+        return;
+    }
+    sweep_aot_heap_now();
 }
 
 // ----------------------------------------------------------------------------
@@ -699,10 +814,12 @@ fn cstr(p: *const c_char) -> String {
 
 type FullStdlibResolver = fn(&str) -> Option<std::sync::Arc<crate::value::NativeFn>>;
 type JsonWriteHook = fn(&Value) -> Result<crate::value::ThinArcStr, String>;
+type JsonWriteBytesHook = fn(&Value, &mut Vec<u8>) -> Result<(), String>;
 type JsonParseHook = fn(&str) -> Result<Value, String>;
 
 static FULL_STDLIB_RESOLVER: OnceLock<FullStdlibResolver> = OnceLock::new();
 static JSON_WRITE_HOOK: OnceLock<JsonWriteHook> = OnceLock::new();
+static JSON_WRITE_BYTES_HOOK: OnceLock<JsonWriteBytesHook> = OnceLock::new();
 static JSON_PARSE_HOOK: OnceLock<JsonParseHook> = OnceLock::new();
 static RT_CORE_INIT: OnceLock<()> = OnceLock::new();
 
@@ -732,13 +849,10 @@ fn install_aot_eventloop_invoker() {
     }));
 }
 
-fn rt_init_core() {
-    RT_CORE_INIT.get_or_init(|| {
-        let mut g = globals().lock().unwrap();
-        if !g.is_empty() {
-            return;
-        }
-        let object = std::sync::Arc::new(crate::value::CompiledClass {
+fn builtin_object_class() -> &'static std::sync::Arc<crate::value::CompiledClass> {
+    static OBJ: OnceLock<std::sync::Arc<crate::value::CompiledClass>> = OnceLock::new();
+    OBJ.get_or_init(|| {
+        std::sync::Arc::new(crate::value::CompiledClass {
             name: "Object".to_string(),
             parent: None,
             fields: Vec::new(),
@@ -747,13 +861,65 @@ fn rt_init_core() {
             class_id: 0,
             vtable: Vec::new(),
             vtable_slots: HashMap::new(),
-        });
-        g.insert("Object".to_string(), Value::CClass(object));
-        // `none` is a builtin global (an `Option` holding nothing), matching the
-        // tree/VM engines — so `none.unwrap()` throws "unwrap on none" instead of
-        // the generic "null values have no methods".
-        g.insert("none".to_string(), Value::Option(None));
+        })
+    })
+}
+
+fn rt_init_core() {
+    let _ = RT_CORE_INIT.set(());
+}
+
+type LazyDefsFn = fn() -> Vec<crate::stdlib::NativeDef>;
+type LazyGuardFn = fn(&str) -> Option<crate::vm::NativeImpl>;
+
+struct LazyStdlibGroup {
+    defs_fn: LazyDefsFn,
+    guard_lookup: Option<LazyGuardFn>,
+    resolved: Option<Vec<crate::stdlib::NativeDef>>,
+}
+
+static LAZY_STDLIB_GROUPS: Mutex<Vec<LazyStdlibGroup>> = Mutex::new(Vec::new());
+
+fn register_lazy_group(defs_fn: LazyDefsFn, guard_lookup: Option<LazyGuardFn>) {
+    let mut groups = LAZY_STDLIB_GROUPS.lock().unwrap();
+    let key = defs_fn as usize;
+    if groups.iter().any(|g| (g.defs_fn as usize) == key) {
+        return;
+    }
+    groups.push(LazyStdlibGroup {
+        defs_fn,
+        guard_lookup,
+        resolved: None,
     });
+    drop(groups);
+    GLOBAL_GEN.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
+fn resolve_lazy_stdlib_native(name: &str) -> Option<std::sync::Arc<crate::value::NativeFn>> {
+    if let Some(f) = FULL_STDLIB_RESOLVER.get() {
+        if let Some(n) = f(name) {
+            return Some(n);
+        }
+    }
+    let mut groups = LAZY_STDLIB_GROUPS.lock().unwrap();
+    for g in groups.iter_mut() {
+        let defs = g.resolved.get_or_insert_with(|| {
+            let raw = (g.defs_fn)();
+            match g.guard_lookup {
+                Some(lookup) => crate::stdlib::policy_checked_defs_with_guard(raw, lookup),
+                None => crate::stdlib::policy_checked_defs(raw),
+            }
+        });
+        for &(n, func) in defs.iter() {
+            if n == name {
+                return Some(std::sync::Arc::new(crate::value::NativeFn {
+                    name: n,
+                    func,
+                }));
+            }
+        }
+    }
+    None
 }
 
 /// Install the full native stdlib + `Object` into the global table. Called by
@@ -763,43 +929,28 @@ pub fn rt_init() {
     rt_init_core();
     let _ = FULL_STDLIB_RESOLVER.set(crate::stdlib::resolve_builtin_native);
     let _ = JSON_WRITE_HOOK.set(crate::stdlib::json_write_arc);
+    let _ = JSON_WRITE_BYTES_HOOK.set(crate::stdlib::json_write_into_bytes);
     let _ = JSON_PARSE_HOOK.set(crate::stdlib::json_parse_text);
     install_aot_eventloop_invoker();
 }
 
-fn install_native_defs(
-    defs: Vec<crate::stdlib::NativeDef>,
-    guard_lookup: Option<fn(&str) -> Option<crate::vm::NativeImpl>>,
-) {
-    let checked = match guard_lookup {
-        Some(lookup) => crate::stdlib::policy_checked_defs_with_guard(defs, lookup),
-        None => crate::stdlib::policy_checked_defs(defs),
-    };
-    let mut g = globals().lock().unwrap();
-    for (name, func) in checked {
-        g.entry(name.to_string()).or_insert_with(|| {
-            Value::Native(std::sync::Arc::new(crate::value::NativeFn { name, func }))
-        });
-    }
-    GLOBAL_GEN.fetch_add(1, std::sync::atomic::Ordering::Release);
-}
-
 #[no_mangle]
 pub extern "C" fn spid3r_reg_core() {
-    install_native_defs(crate::stdlib::core_defs(), None);
+    register_lazy_group(crate::stdlib::core_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_json() {
     let _ = JSON_WRITE_HOOK.set(crate::stdlib::json_write_arc);
+    let _ = JSON_WRITE_BYTES_HOOK.set(crate::stdlib::json_write_into_bytes);
     let _ = JSON_PARSE_HOOK.set(crate::stdlib::json_parse_text);
-    install_native_defs(crate::stdlib::json_defs(), None);
+    register_lazy_group(crate::stdlib::json_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_fs() {
-    install_native_defs(
-        crate::stdlib::fs_defs(),
+    register_lazy_group(
+        crate::stdlib::fs_defs,
         Some(crate::stdlib::fs_policy::guarded_fs),
     );
 }
@@ -807,51 +958,51 @@ pub extern "C" fn spid3r_reg_fs() {
 #[no_mangle]
 pub extern "C" fn spid3r_reg_net() {
     install_aot_eventloop_invoker();
-    install_native_defs(
-        crate::stdlib::net_defs(),
+    register_lazy_group(
+        crate::stdlib::net_defs,
         Some(crate::stdlib::fs_policy::guarded_net),
     );
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_db() {
-    install_native_defs(
-        crate::stdlib::db_defs(),
+    register_lazy_group(
+        crate::stdlib::db_defs,
         Some(crate::stdlib::fs_policy::guarded_db),
     );
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_media() {
-    install_native_defs(crate::stdlib::media_defs(), None);
+    register_lazy_group(crate::stdlib::media_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_tz() {
-    install_native_defs(crate::stdlib::tz_defs(), None);
+    register_lazy_group(crate::stdlib::tz_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_unicode() {
-    install_native_defs(crate::stdlib::unicode_defs(), None);
+    register_lazy_group(crate::stdlib::unicode_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_crypto() {
-    install_native_defs(crate::stdlib::crypto_defs(), None);
+    register_lazy_group(crate::stdlib::crypto_defs, None);
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_data() {
-    install_native_defs(
-        crate::stdlib::data_defs(),
+    register_lazy_group(
+        crate::stdlib::data_defs,
         Some(crate::stdlib::fs_policy::guarded_data),
     );
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_reg_info() {
-    install_native_defs(crate::stdlib::info_defs(), None);
+    register_lazy_group(crate::stdlib::info_defs, None);
 }
 
 // ----------------------------------------------------------------------------
@@ -1695,17 +1846,22 @@ pub struct GlobalCacheSlot {
     pub val: std::sync::atomic::AtomicPtr<Value>,
 }
 
+fn fetch_global_value_str(key: &str) -> Option<Value> {
+    if let Some(v) = globals().lock().unwrap().get(key).cloned() {
+        return Some(v);
+    }
+    if key == "none" {
+        return Some(Value::Option(None));
+    }
+    if key == "Object" {
+        return Some(Value::CClass(builtin_object_class().clone()));
+    }
+    resolve_lazy_stdlib_native(key).map(Value::Native)
+}
+
 fn fetch_global_value(name: *const c_char) -> Value {
     let key = cstr_ref(name);
-    let hit = globals().lock().unwrap().get(key.as_ref()).cloned();
-    match hit {
-        Some(v) => v,
-        None => FULL_STDLIB_RESOLVER
-            .get()
-            .and_then(|f| f(key.as_ref()))
-            .map(Value::Native)
-            .unwrap_or(Value::Null),
-    }
+    fetch_global_value_str(key.as_ref()).unwrap_or(Value::Null)
 }
 
 #[no_mangle]
@@ -1808,11 +1964,7 @@ pub extern "C" fn spid3r_global_exists(name: *const c_char) -> u8 {
         |_| 0,
         || {
             let key = cstr_ref(name);
-            (globals().lock().unwrap().contains_key(key.as_ref())
-                || FULL_STDLIB_RESOLVER
-                    .get()
-                    .and_then(|f| f(key.as_ref()))
-                    .is_some()) as u8
+            fetch_global_value_str(key.as_ref()).is_some() as u8
         },
     )
 }
@@ -1830,6 +1982,94 @@ unsafe fn args_vec(argc: usize, argv: *const *const ValueV2) -> Vec<Value> {
     v
 }
 
+#[inline(never)]
+fn try_fast_native_call_1(
+    out: *mut ValueV2,
+    n: &crate::value::NativeFn,
+    arg0_ptr: *const ValueV2,
+) -> bool {
+    if n.name == "string" {
+        let arg0 = read_v2(arg0_ptr);
+        if arg0.tag == ValueV2::TAG_INT {
+            let n_i64 = arg0.payload as i64;
+            let v = ValueV2::from_int_decimal(n_i64).unwrap_or_else(|| {
+                alloc_heap_v2(Value::Str(crate::stdlib::int_to_string_value(n_i64)))
+            });
+            write_out(out, cancel_guard(v));
+            return true;
+        }
+    } else if n.name == "json_write" {
+        if let Some(write_bytes_fn) = JSON_WRITE_BYTES_HOOK.get() {
+            let arg0 = read_v2(arg0_ptr);
+            let owned;
+            let val_ref = if let Some(v) = deref_heap(arg0) {
+                v
+            } else {
+                owned = v2_to_value(arg0);
+                &owned
+            };
+            match alloc_rope_try_write_bytes(|buf| write_bytes_fn(val_ref, buf)) {
+                Ok(Some(v)) => {
+                    write_out(out, cancel_guard(v));
+                    return true;
+                }
+                Ok(None) => {}
+                Err(msg) => {
+                    let res = rt_throw_v2(&msg);
+                    write_out(out, cancel_guard(res));
+                    return true;
+                }
+            }
+        }
+        if let Some(write_fn) = JSON_WRITE_HOOK.get() {
+            let arg0 = read_v2(arg0_ptr);
+            let owned;
+            let val_ref = if let Some(v) = deref_heap(arg0) {
+                v
+            } else {
+                owned = v2_to_value(arg0);
+                &owned
+            };
+            let res = match write_fn(val_ref) {
+                Ok(arc) => from_value_v2(Value::Str(arc)),
+                Err(msg) => rt_throw_v2(&msg),
+            };
+            write_out(out, cancel_guard(res));
+            return true;
+        }
+    } else if n.name == "json_parse" {
+        if let Some(parse_fn) = JSON_PARSE_HOOK.get() {
+            if CONTAINER_ALLOC_PRESSURE.with(|c| c.get() >= 2000)
+                && ROOT_FRAMES.with(|rf| !rf.borrow().is_empty())
+            {
+                sweep_aot_heap_now();
+            }
+            let arg0 = read_v2(arg0_ptr);
+            if let Some(parsed) = with_str_v2(arg0, *parse_fn) {
+                let res = match parsed {
+                    Ok(v) => {
+                        let count = match &v {
+                            Value::List(d) | Value::VecDyn(d) => {
+                                crate::value::with_ref(d, |g| g.len().saturating_add(1))
+                            }
+                            Value::Map(_) => 1,
+                            _ => 0,
+                        };
+                        if count > 0 {
+                            CONTAINER_ALLOC_PRESSURE.with(|c| c.set(c.get().saturating_add(count)));
+                        }
+                        from_value_v2(v)
+                    }
+                    Err(msg) => rt_throw_v2(&msg),
+                };
+                write_out(out, cancel_guard(res));
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Call any callable value: compiled function, native stdlib function, or
 /// compiled class (construct an instance and run its constructor).
 #[no_mangle]
@@ -1843,47 +2083,8 @@ pub extern "C" fn spid3r_call(
         if let Some(Value::Native(n)) = deref_heap(read_v2(f)) {
             // SAFETY: `argc == 1 && !argv.is_null()` guarantees `*argv` is readable.
             let arg0_ptr = unsafe { *argv };
-            if !arg0_ptr.is_null() {
-                if n.name == "string" {
-                    let arg0 = read_v2(arg0_ptr);
-                    if arg0.tag == ValueV2::TAG_INT {
-                        let n_i64 = arg0.payload as i64;
-                        let v = ValueV2::from_int_decimal(n_i64).unwrap_or_else(|| {
-                            alloc_heap_v2(Value::Str(crate::stdlib::int_to_string_value(n_i64)))
-                        });
-                        write_out(out, cancel_guard(v));
-                        return;
-                    }
-                } else if n.name == "json_write" {
-                    if let Some(write_fn) = JSON_WRITE_HOOK.get() {
-                        let arg0 = read_v2(arg0_ptr);
-                        let owned;
-                        let val_ref = if let Some(v) = deref_heap(arg0) {
-                            v
-                        } else {
-                            owned = v2_to_value(arg0);
-                            &owned
-                        };
-                        let res = match write_fn(val_ref) {
-                            Ok(arc) => from_value_v2(Value::Str(arc)),
-                            Err(msg) => rt_throw_v2(&msg),
-                        };
-                        write_out(out, cancel_guard(res));
-                        return;
-                    }
-                } else if n.name == "json_parse" {
-                    if let Some(parse_fn) = JSON_PARSE_HOOK.get() {
-                        let arg0 = read_v2(arg0_ptr);
-                        if let Some(parsed) = with_str_v2(arg0, *parse_fn) {
-                            let res = match parsed {
-                                Ok(v) => from_value_v2(v),
-                                Err(msg) => rt_throw_v2(&msg),
-                            };
-                            write_out(out, cancel_guard(res));
-                            return;
-                        }
-                    }
-                }
+            if !arg0_ptr.is_null() && try_fast_native_call_1(out, n, arg0_ptr) {
+                return;
             }
         }
     }
@@ -1901,12 +2102,19 @@ fn spid3r_call_inner(f: *const ValueV2, argc: usize, argv: *const *const ValueV2
     cancel_guard(spid3r_call_inner_dispatch(f, argc, argv))
 }
 
-fn spid3r_call_inner_dispatch(
-    f: *const ValueV2,
-    argc: usize,
-    argv: *const *const ValueV2,
-) -> ValueV2 {
-    let fv = read_v2(f);
+#[cold]
+#[inline(never)]
+fn throw_cfn_arity_mismatch(c: &CompiledFn, argc: usize) -> ValueV2 {
+    rt_throw_v2(&format!(
+        "{} expects {} argument(s), got {}",
+        c.name.as_deref().unwrap_or("<fn>"),
+        c.arity,
+        argc
+    ))
+}
+
+#[inline(never)]
+fn spid3r_call_non_cfn(fv: ValueV2, argc: usize, argv: *const *const ValueV2) -> ValueV2 {
     let Some(f_val) = deref_heap(fv) else {
         let owned = v2_to_value(fv);
         return rt_throw_v2(&format!(
@@ -1915,24 +2123,6 @@ fn spid3r_call_inner_dispatch(
         ));
     };
     match f_val {
-        Value::Cfn(c) => {
-            if argc < c.min_arity || argc > c.arity {
-                return rt_throw_v2(&format!(
-                    "{} expects {} argument(s), got {}",
-                    c.name.as_deref().unwrap_or("<fn>"),
-                    c.arity,
-                    argc
-                ));
-            }
-            if !enter_call() {
-                return rt_throw_v2("stack overflow: call depth limit reached");
-            }
-            let mut out = ValueV2::NULL;
-            // SAFETY: `c.code` is a compiled Spid3r function pointer with matching ABI.
-            unsafe { (c.code)(&mut out, c.env, argc, argv) };
-            leave_call();
-            out
-        }
         Value::Native(n) => {
             if n.name == "string" && argc == 1 {
                 // SAFETY: `argc == 1` guarantees `argv` has at least 1 valid pointer.
@@ -1970,6 +2160,28 @@ fn spid3r_call_inner_dispatch(
             crate::value::type_name(other)
         )),
     }
+}
+
+fn spid3r_call_inner_dispatch(
+    f: *const ValueV2,
+    argc: usize,
+    argv: *const *const ValueV2,
+) -> ValueV2 {
+    let fv = read_v2(f);
+    if let Some(Value::Cfn(c)) = deref_heap(fv) {
+        if argc < c.min_arity || argc > c.arity {
+            return throw_cfn_arity_mismatch(c, argc);
+        }
+        if !enter_call() {
+            return rt_throw_v2("stack overflow: call depth limit reached");
+        }
+        let mut out = ValueV2::NULL;
+        // SAFETY: `c.code` is a compiled Spid3r function pointer with matching ABI.
+        unsafe { (c.code)(&mut out, c.env, argc, argv) };
+        leave_call();
+        return out;
+    }
+    spid3r_call_non_cfn(fv, argc, argv)
 }
 
 /// Arity check shared by calls of compiled functions (methods/constructors).
@@ -2456,93 +2668,57 @@ fn find_method_cclass(
     None
 }
 
-#[inline]
-fn index_get_inner(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) -> i8 {
-    let ov = read_v2(obj);
-    let iv = read_v2(idx);
+#[cold]
+#[inline(never)]
+fn throw_missing_key_bytes(raw: &[u8]) -> i8 {
+    let k = std::str::from_utf8(raw).unwrap_or("");
+    rt_throw_v2(&format!("missing key {}", k));
+    1
+}
+
+#[cold]
+#[inline(never)]
+fn throw_missing_key_str(key: &str) -> i8 {
+    rt_throw_v2(&format!("missing key {}", key));
+    1
+}
+
+#[cold]
+#[inline(never)]
+fn throw_missing_key_int(n: i64) -> i8 {
+    rt_throw_v2(&format!("missing key {}", n));
+    1
+}
+
+#[cold]
+#[inline(never)]
+fn throw_index_oob(i: i64, len: usize) -> i8 {
+    rt_throw_v2(&format!("index {} out of bounds for length {}", i, len));
+    1
+}
+
+#[cold]
+#[inline(never)]
+fn index_get_slow(out: *mut ValueV2, ov: ValueV2, iv: ValueV2) -> i8 {
     if let Some(object) = deref_heap(ov) {
-        let res = match object {
-            Value::Map(m) if iv.is_sso() => {
-                let mut sso_buf = [0u8; 16];
-                let sso_len = iv.write_sso_bytes(&mut sso_buf);
-                let raw = &sso_buf[1..1 + sso_len];
-                let guard = crate::value::lock_ref(m);
-                return match guard.find_str_bytes(raw) {
-                    Some(i) => {
-                        write_out(out, value_ref_to_v2(&guard.entries[i].1));
-                        0
-                    }
-                    None => {
-                        let k = std::str::from_utf8(raw).unwrap_or("");
-                        rt_throw_v2(&format!("missing key {}", k));
-                        1
-                    }
-                };
-            }
-            Value::Map(m) if iv.tag == ValueV2::TAG_INT => {
-                let n = iv.payload as i64;
-                let guard = crate::value::lock_ref(m);
-                return match guard.find(&crate::value::MapKey::Int(n)) {
-                    Some(i) => {
-                        write_out(out, value_ref_to_v2(&guard.entries[i].1));
-                        0
-                    }
-                    None => {
-                        rt_throw_v2(&format!("missing key {}", n));
-                        1
-                    }
-                };
-            }
-            Value::Map(m) => {
-                if let Some(found) = with_str_v2(iv, |k| {
-                    let guard = crate::value::lock_ref(m);
-                    match guard.find_str(k) {
-                        Some(i) => Ok(value_ref_to_v2(&guard.entries[i].1)),
-                        None => Err(format!("missing key {}", k)),
+        if let Value::Bytes(b) = object {
+            if iv.tag == ValueV2::TAG_INT {
+                if let Some(byte) = crate::value::with_ref(b, |guard| {
+                    let len = guard.len();
+                    let i = iv.payload as i64;
+                    let resolved = if i < 0 { len as i64 + i } else { i };
+                    if resolved >= 0 && (resolved as usize) < len {
+                        Some(guard[resolved as usize])
+                    } else {
+                        None
                     }
                 }) {
-                    return match found {
-                        Ok(v) => {
-                            write_out(out, v);
-                            0
-                        }
-                        Err(msg) => {
-                            rt_throw_v2(&msg);
-                            1
-                        }
-                    };
-                }
-                collections::index_get(object, &v2_to_value(iv))
-            }
-            Value::List(d) | Value::VecDyn(d) if iv.tag == ValueV2::TAG_INT => {
-                let guard = crate::value::lock_ref(d);
-                let items = guard.as_slice();
-                let len = items.len();
-                let i = iv.payload as i64;
-                let resolved = if i < 0 { len as i64 + i } else { i };
-                return if resolved >= 0 && (resolved as usize) < len {
-                    write_out(out, value_ref_to_v2(&items[resolved as usize]));
-                    0
-                } else {
-                    rt_throw_v2(&format!("index {} out of bounds for length {}", i, len));
-                    1
-                };
-            }
-            Value::Bytes(b) if iv.tag == ValueV2::TAG_INT => {
-                let guard = crate::value::lock_ref(b);
-                let len = guard.len();
-                let i = iv.payload as i64;
-                let resolved = if i < 0 { len as i64 + i } else { i };
-                if resolved >= 0 && (resolved as usize) < len {
-                    write_out(out, ValueV2::from_int(guard[resolved as usize] as i64));
+                    write_out(out, ValueV2::from_int(byte as i64));
                     return 0;
                 }
-                drop(guard);
-                collections::index_get(object, &v2_to_value(iv))
             }
-            _ => collections::index_get(object, &v2_to_value(iv)),
-        };
-        return match res {
+        }
+        return match collections::index_get(object, &v2_to_value(iv)) {
             Ok(v) => {
                 write_out(out, from_value_v2(v));
                 0
@@ -2565,9 +2741,150 @@ fn index_get_inner(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) 
     }
 }
 
+#[cold]
+#[inline(never)]
+fn index_get_non_hot(out: *mut ValueV2, ov: ValueV2, iv: ValueV2) -> i8 {
+    if let Some(object) = deref_heap(ov) {
+        match object {
+            Value::Map(m) if iv.tag == ValueV2::TAG_INT => {
+                let n = iv.payload as i64;
+                return crate::value::with_ref(m, |guard| {
+                    match guard.find(&crate::value::MapKey::Int(n)) {
+                        Some(i) => {
+                            write_out(out, value_ref_to_v2(&guard.entries[i].1));
+                            0
+                        }
+                        None => throw_missing_key_int(n),
+                    }
+                });
+            }
+            Value::Map(m) => {
+                if let Some(rc) = with_str_v2(iv, |k| {
+                    crate::value::with_ref(m, |guard| match guard.get_str(k) {
+                        Some(v) => {
+                            write_out(out, value_ref_to_v2(v));
+                            0
+                        }
+                        None => throw_missing_key_str(k),
+                    })
+                }) {
+                    return rc;
+                }
+            }
+            _ => {}
+        }
+    }
+    index_get_slow(out, ov, iv)
+}
+
+#[cold]
+#[inline(never)]
+fn index_get_map_sso_locked(
+    out: *mut ValueV2,
+    m: &crate::value::Ref<crate::value::collections::MapData>,
+    raw: &[u8],
+    h: u64,
+) -> i8 {
+    crate::value::with_ref(m, |guard| match guard.get_str_bytes_with_hash(raw, h) {
+        Some(v) => {
+            write_out(out, value_ref_to_v2(v));
+            0
+        }
+        None => throw_missing_key_bytes(raw),
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn index_get_list_locked(
+    out: *mut ValueV2,
+    d: &crate::value::Ref<crate::value::collections::VecData>,
+    i: i64,
+) -> i8 {
+    crate::value::with_ref(d, |guard| {
+        let items = guard.as_slice();
+        let len = items.len();
+        let resolved = if i < 0 { len as i64 + i } else { i };
+        if resolved >= 0 && (resolved as usize) < len {
+            write_out(out, value_ref_to_v2(&items[resolved as usize]));
+            0
+        } else {
+            throw_index_oob(i, len)
+        }
+    })
+}
+
+#[inline(always)]
+fn index_get_hot(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) -> i8 {
+    let ov = read_v2(obj);
+    let iv = read_v2(idx);
+    if let Some(object) = deref_heap(ov) {
+        match object {
+            Value::Map(m) if iv.is_sso() => {
+                #[cfg(target_endian = "little")]
+                let (raw, h) = {
+                    let sso_len = iv.sso_len();
+                    // SAFETY: `iv` is a local `#[repr(C)]` `ValueV2 { u64, u64 }`.
+                    // On little-endian targets, bytes `1..1 + sso_len` (`<= 15`)
+                    // hold valid UTF-8 written exclusively by `ValueV2` SSO constructors.
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(
+                            (&iv as *const ValueV2 as *const u8).add(1),
+                            sso_len,
+                        )
+                    };
+                    let h = collections::fx_hash_sso_tag_le(iv.tag, raw);
+                    (raw, h)
+                };
+                #[cfg(not(target_endian = "little"))]
+                let mut sso_buf = [0u8; 16];
+                #[cfg(not(target_endian = "little"))]
+                let (raw, h) = {
+                    let sso_len = iv.write_sso_bytes(&mut sso_buf);
+                    let raw = &sso_buf[1..1 + sso_len];
+                    (raw, collections::fx_hash_bytes(raw))
+                };
+                if let Some(guard) = m.try_borrow_single_thread() {
+                    return match guard.get_str_bytes_with_hash(raw, h) {
+                        Some(v) => {
+                            write_out(out, value_ref_to_v2(v));
+                            0
+                        }
+                        None => throw_missing_key_bytes(raw),
+                    };
+                }
+                return index_get_map_sso_locked(out, m, raw, h);
+            }
+            Value::List(d) | Value::VecDyn(d) if iv.tag == ValueV2::TAG_INT => {
+                let i = iv.payload as i64;
+                if let Some(guard) = d.try_borrow_single_thread() {
+                    let items = guard.as_slice();
+                    let len = items.len();
+                    let resolved = if i < 0 { len as i64 + i } else { i };
+                    return if resolved >= 0 && (resolved as usize) < len {
+                        write_out(out, value_ref_to_v2(&items[resolved as usize]));
+                        0
+                    } else {
+                        throw_index_oob(i, len)
+                    };
+                }
+                return index_get_list_locked(out, d, i);
+            }
+            _ => {}
+        }
+    }
+    index_get_non_hot(out, ov, iv)
+}
+
+#[cold]
+#[inline(never)]
+fn index_get_reuse_fallback(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) -> i8 {
+    index_get_hot(out, obj, idx)
+}
+
 #[no_mangle]
 pub extern "C" fn spid3r_index_get(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) {
-    let _ = index_get_inner(out, obj, idx);
+    let _ = index_get_hot(out, obj, idx);
 }
 
 /// Phase 2: index lookup returning the throw flag (`0` ok, `1` threw) so
@@ -2578,7 +2895,222 @@ pub extern "C" fn spid3r_index_get_chk(
     obj: *const ValueV2,
     idx: *const ValueV2,
 ) -> i8 {
-    index_get_inner(out, obj, idx)
+    index_get_hot(out, obj, idx)
+}
+
+/// Phase 4b: allocate one frame-rooted reusable heap holder box before a loop
+/// for non-escaping loop-local container indexing.
+#[no_mangle]
+pub extern "C" fn spid3r_reuse_box_new(out: *mut ValueV2) {
+    write_out(out, alloc_heap_v2(Value::Null));
+}
+
+#[inline(always)]
+fn index_get_reuse_guard(
+    out: *mut ValueV2,
+    holder_ptr: *mut Value,
+    guard: &crate::value::collections::VecData,
+    i: i64,
+    old_to_drop: &mut Option<Value>,
+) -> i8 {
+    let items = guard.as_slice();
+    let len = items.len();
+    let resolved = if i < 0 { len as i64 + i } else { i };
+    if resolved < 0 || (resolved as usize) >= len {
+        return throw_index_oob(i, len);
+    }
+    let item = &items[resolved as usize];
+    let inline = match item {
+        Value::Null => Some(ValueV2::NULL),
+        Value::Bool(b) => Some(ValueV2::from_bool(*b)),
+        Value::Int(n) => Some(ValueV2::from_int(*n)),
+        Value::Float(f) => Some(ValueV2::from_float(*f)),
+        Value::Str(s) if s.len() <= 15 => Some(ValueV2::from_sso_str(s.as_ref())),
+        _ => None,
+    };
+    if let Some(v2) = inline {
+        write_out(out, v2);
+        return 0;
+    }
+    if !holder_ptr.is_null() {
+        let cloned = item.clone();
+        // SAFETY: `box_holder` was allocated by `spid3r_reuse_box_new`
+        // on this thread and remains frame-rooted for the loop lifetime;
+        // the compiler proved this binding never escapes the iteration.
+        *old_to_drop = Some(unsafe { std::mem::replace(&mut *holder_ptr, cloned) });
+        write_out(out, ValueV2::from_heap_ptr(holder_ptr));
+        return 0;
+    }
+    write_out(out, value_ref_to_v2(item));
+    0
+}
+
+#[cold]
+#[inline(never)]
+fn index_get_reuse_locked(
+    out: *mut ValueV2,
+    holder_ptr: *mut Value,
+    d: &crate::value::Ref<crate::value::collections::VecData>,
+    i: i64,
+) -> i8 {
+    let mut old_to_drop: Option<Value> = None;
+    let rc = crate::value::with_ref(d, |guard| {
+        index_get_reuse_guard(out, holder_ptr, guard, i, &mut old_to_drop)
+    });
+    drop(old_to_drop);
+    rc
+}
+
+/// Phase 4b: list/index lookup that overwrites a non-escaping loop-local holder
+/// box in place on heap elements (`0` ok, `1` threw), avoiding per-iteration
+/// `AOT_HEAP` growth and GC sweeps.
+#[no_mangle]
+pub extern "C" fn spid3r_index_get_reuse_chk(
+    out: *mut ValueV2,
+    box_holder: *const ValueV2,
+    obj: *const ValueV2,
+    idx: *const ValueV2,
+) -> i8 {
+    let ov = read_v2(obj);
+    let iv = read_v2(idx);
+    if iv.tag == ValueV2::TAG_INT {
+        if let Some(Value::List(d) | Value::VecDyn(d)) = deref_heap(ov) {
+            let bh = read_v2(box_holder);
+            let holder_ptr = if bh.tag == ValueV2::TAG_HEAP {
+                bh.as_heap_ptr()
+            } else {
+                std::ptr::null_mut()
+            };
+            let i = iv.payload as i64;
+            let mut old_to_drop: Option<Value> = None;
+            let fast_rc = d
+                .try_borrow_single_thread()
+                .map(|guard| index_get_reuse_guard(out, holder_ptr, guard, i, &mut old_to_drop));
+            if let Some(rc) = fast_rc {
+                drop(old_to_drop);
+                return rc;
+            }
+            return index_get_reuse_locked(out, holder_ptr, d, i);
+        }
+    }
+    index_get_reuse_fallback(out, obj, idx)
+}
+
+/// Borrowed read-only list element lookup for compiler-proven non-escaping
+/// loop-local bindings over unmutated containers (`0` ok, `1` threw), avoiding
+/// `Arc::clone`, `Arc::drop`, and `AOT_HEAP` box churn.
+#[no_mangle]
+pub extern "C" fn spid3r_index_get_borrow_chk(
+    out: *mut ValueV2,
+    box_holder: *const ValueV2,
+    obj: *const ValueV2,
+    idx: *const ValueV2,
+) -> i8 {
+    if crate::value::is_single_thread_process() {
+        let ov = read_v2(obj);
+        let iv = read_v2(idx);
+        if iv.tag == ValueV2::TAG_INT {
+            if let Some(Value::List(d) | Value::VecDyn(d)) = deref_heap(ov) {
+                if let Some(guard) = d.try_borrow_single_thread() {
+                    let items = guard.as_slice();
+                    let len = items.len();
+                    let i = iv.payload as i64;
+                    let resolved = if i < 0 { len as i64 + i } else { i };
+                    if resolved < 0 || (resolved as usize) >= len {
+                        return throw_index_oob(i, len);
+                    }
+                    let item = &items[resolved as usize];
+                    let v2 = match item {
+                        Value::Null => ValueV2::NULL,
+                        Value::Bool(b) => ValueV2::from_bool(*b),
+                        Value::Int(n) => ValueV2::from_int(*n),
+                        Value::Float(f) => ValueV2::from_float(*f),
+                        Value::Str(s) if s.len() <= 15 => ValueV2::from_sso_str(s.as_ref()),
+                        other => ValueV2::from_heap_ptr((other as *const Value) as *mut Value),
+                    };
+                    write_out(out, v2);
+                    return 0;
+                }
+            }
+        }
+    }
+    spid3r_index_get_reuse_chk(out, box_holder, obj, idx)
+}
+
+/// Return the non-negative length of built-in containers/strings or `-1` for any
+/// other receiver (such as custom class instances with a user-defined `.len()`).
+#[no_mangle]
+pub extern "C" fn spid3r_fast_len_i64(obj: *const ValueV2) -> i64 {
+    if obj.is_null() {
+        return -1;
+    }
+    let ov = read_v2(obj);
+    if ov.is_sso() {
+        return ov
+            .with_sso_str(|s| {
+                if s.is_ascii() {
+                    s.len() as i64
+                } else {
+                    s.chars().count() as i64
+                }
+            })
+            .unwrap_or(-1);
+    }
+    if ov.is_rope() {
+        return with_rope_str(ov, |s| {
+            if s.is_ascii() {
+                s.len() as i64
+            } else {
+                s.chars().count() as i64
+            }
+        })
+        .unwrap_or(-1);
+    }
+    if let Some(object) = deref_heap(ov) {
+        match object {
+            Value::List(d) | Value::VecDyn(d) => {
+                if let Some(g) = d.try_borrow_single_thread() {
+                    return g.len() as i64;
+                }
+                return crate::value::with_ref(d, |g| g.len() as i64);
+            }
+            Value::Str(s) => {
+                return if s.is_ascii() {
+                    s.len() as i64
+                } else {
+                    s.chars().count() as i64
+                };
+            }
+            Value::Map(m) => {
+                let n_opt = if let Some(guard) = m.try_borrow_single_thread() {
+                    if !guard.namespace {
+                        Some(guard.entries.len() as i64)
+                    } else {
+                        None
+                    }
+                } else {
+                    crate::value::with_ref(m, |guard| {
+                        if !guard.namespace {
+                            Some(guard.entries.len() as i64)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                if let Some(n) = n_opt {
+                    return n;
+                }
+            }
+            Value::Bytes(b) => {
+                if let Some(g) = b.try_borrow_single_thread() {
+                    return g.len() as i64;
+                }
+                return crate::value::with_ref(b, |g| g.len() as i64);
+            }
+            _ => {}
+        }
+    }
+    -1
 }
 
 #[no_mangle]
@@ -2612,10 +3144,12 @@ pub extern "C" fn spid3r_list_len(out: *mut ValueV2, obj: *const ValueV2) {
     if let Some(object) = deref_heap(ov) {
         match object {
             Value::List(d) | Value::VecDyn(d) => {
-                write_out(
-                    out,
-                    ValueV2::from_int(crate::value::lock_ref(d).len() as i64),
-                );
+                let n = if let Some(g) = d.try_borrow_single_thread() {
+                    g.len() as i64
+                } else {
+                    crate::value::with_ref(d, |g| g.len() as i64)
+                };
+                write_out(out, ValueV2::from_int(n));
                 return;
             }
             Value::Str(s) => {
@@ -2628,17 +3162,33 @@ pub extern "C" fn spid3r_list_len(out: *mut ValueV2, obj: *const ValueV2) {
                 return;
             }
             Value::Map(m) => {
-                let guard = crate::value::lock_ref(m);
-                if !guard.namespace {
-                    write_out(out, ValueV2::from_int(guard.entries.len() as i64));
+                let n_opt = if let Some(guard) = m.try_borrow_single_thread() {
+                    if !guard.namespace {
+                        Some(guard.entries.len() as i64)
+                    } else {
+                        None
+                    }
+                } else {
+                    crate::value::with_ref(m, |guard| {
+                        if !guard.namespace {
+                            Some(guard.entries.len() as i64)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                if let Some(n) = n_opt {
+                    write_out(out, ValueV2::from_int(n));
                     return;
                 }
             }
             Value::Bytes(b) => {
-                write_out(
-                    out,
-                    ValueV2::from_int(crate::value::lock_ref(b).len() as i64),
-                );
+                let n = if let Some(g) = b.try_borrow_single_thread() {
+                    g.len() as i64
+                } else {
+                    crate::value::with_ref(b, |g| g.len() as i64)
+                };
+                write_out(out, ValueV2::from_int(n));
                 return;
             }
             _ => {}
@@ -2937,36 +3487,9 @@ pub extern "C" fn spid3r_str_build(out: *mut ValueV2, parts: *const StrPart, cou
     }
 }
 
-#[inline]
-fn map_get_str_inner(
-    out: *mut ValueV2,
-    obj: *const ValueV2,
-    key_ptr: *const u8,
-    key_len: usize,
-    hash_opt: Option<u64>,
-) -> i8 {
-    let ov = read_v2(obj);
-    // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8 string
-    // literal of `key_len` bytes (non-null when `key_len > 0`).
-    let key = if key_len == 0 {
-        ""
-    } else {
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
-    };
-    if let Some(Value::Map(m)) = deref_heap(ov) {
-        let h = hash_opt.unwrap_or_else(|| collections::fx_hash_str(key));
-        let guard = crate::value::lock_ref(m);
-        return match guard.find_str_with_hash(key, h) {
-            Some(i) => {
-                write_out(out, value_ref_to_v2(&guard.entries[i].1));
-                0
-            }
-            None => {
-                rt_throw_v2(&format!("missing key {}", key));
-                1
-            }
-        };
-    }
+#[cold]
+#[inline(never)]
+fn map_get_str_slow(out: *mut ValueV2, ov: ValueV2, key: &str) -> i8 {
     let idx_val = Value::Str(crate::value::ThinArcStr::from(key));
     match collections::index_get(&v2_to_value(ov), &idx_val) {
         Ok(v) => {
@@ -2980,6 +3503,47 @@ fn map_get_str_inner(
     }
 }
 
+#[cold]
+#[inline(never)]
+fn map_get_str_h_slow(out: *mut ValueV2, ov: ValueV2, key_ptr: *const u8, key_len: usize) -> i8 {
+    let key = if key_len == 0 {
+        ""
+    } else {
+        // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8
+        // string literal of `key_len` bytes (non-null when `key_len > 0`).
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
+    };
+    map_get_str_slow(out, ov, key)
+}
+
+#[inline]
+fn map_get_str_inner(
+    out: *mut ValueV2,
+    obj: *const ValueV2,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> i8 {
+    let ov = read_v2(obj);
+    // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8 string
+    // literal of `key_len` bytes (non-null when `key_len > 0`).
+    let key = if key_len == 0 {
+        ""
+    } else {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
+    };
+    if let Some(Value::Map(m)) = deref_heap(ov) {
+        let h = collections::fx_hash_str(key);
+        return crate::value::with_ref(m, |guard| match guard.get_str_with_hash(key, h) {
+            Some(v) => {
+                write_out(out, value_ref_to_v2(v));
+                0
+            }
+            None => throw_missing_key_str(key),
+        });
+    }
+    map_get_str_slow(out, ov, key)
+}
+
 #[no_mangle]
 pub extern "C" fn spid3r_map_get_str(
     out: *mut ValueV2,
@@ -2987,7 +3551,26 @@ pub extern "C" fn spid3r_map_get_str(
     key_ptr: *const u8,
     key_len: usize,
 ) {
-    let _ = map_get_str_inner(out, obj, key_ptr, key_len, None);
+    let _ = map_get_str_inner(out, obj, key_ptr, key_len);
+}
+
+#[cold]
+#[inline(never)]
+fn map_get_str_h_locked(
+    out: *mut ValueV2,
+    m: &crate::value::Ref<crate::value::collections::MapData>,
+    key_bytes: &[u8],
+    hash: u64,
+) -> i8 {
+    crate::value::with_ref(m, |guard| {
+        match guard.get_str_bytes_with_hash(key_bytes, hash) {
+            Some(v) => {
+                write_out(out, value_ref_to_v2(v));
+                0
+            }
+            None => throw_missing_key_bytes(key_bytes),
+        }
+    })
 }
 
 #[no_mangle]
@@ -2998,7 +3581,27 @@ pub extern "C" fn spid3r_map_get_str_h(
     key_len: usize,
     hash: u64,
 ) -> i8 {
-    map_get_str_inner(out, obj, key_ptr, key_len, Some(hash))
+    let ov = read_v2(obj);
+    if let Some(Value::Map(m)) = deref_heap(ov) {
+        let key_bytes = if key_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8
+            // string literal of `key_len` bytes (non-null when `key_len > 0`).
+            unsafe { std::slice::from_raw_parts(key_ptr, key_len) }
+        };
+        if let Some(guard) = m.try_borrow_single_thread() {
+            return match guard.get_str_bytes_with_hash(key_bytes, hash) {
+                Some(v) => {
+                    write_out(out, value_ref_to_v2(v));
+                    0
+                }
+                None => throw_missing_key_bytes(key_bytes),
+            };
+        }
+        return map_get_str_h_locked(out, m, key_bytes, hash);
+    }
+    map_get_str_h_slow(out, ov, key_ptr, key_len)
 }
 
 #[no_mangle]
@@ -3287,9 +3890,8 @@ pub extern "C" fn spid3r_class_register(
         None
     } else {
         let pname = cstr(parent_name);
-        let g = globals().lock().unwrap();
-        match g.get(&pname) {
-            Some(Value::CClass(c)) => Some(c.clone()),
+        match fetch_global_value_str(&pname) {
+            Some(Value::CClass(c)) => Some(c),
             _ => abort(&format!("unknown class '{}'", pname)),
         }
     };
@@ -3309,11 +3911,15 @@ pub extern "C" fn spid3r_class_register(
 
 static NEXT_CLASS_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn class_tables() -> &'static Mutex<HashMap<u64, std::sync::Arc<crate::value::CompiledClass>>> {
+fn class_tables() -> &'static Mutex<
+    crate::value::collections::FxHashMap<u64, std::sync::Arc<crate::value::CompiledClass>>,
+> {
     static TABLES: std::sync::OnceLock<
-        Mutex<HashMap<u64, std::sync::Arc<crate::value::CompiledClass>>>,
+        Mutex<
+            crate::value::collections::FxHashMap<u64, std::sync::Arc<crate::value::CompiledClass>>,
+        >,
     > = std::sync::OnceLock::new();
-    TABLES.get_or_init(|| Mutex::new(HashMap::new()))
+    TABLES.get_or_init(|| Mutex::new(crate::value::collections::FxHashMap::default()))
 }
 
 #[no_mangle]
@@ -3544,6 +4150,7 @@ pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *const ValueV2) {
 
 #[no_mangle]
 pub extern "C" fn spid3r_rt_start(entry: extern "C" fn(*mut ValueV2)) -> i32 {
+    crate::value::enter_single_thread_process();
     rt_init();
     crate::stdlib::set_script_args(std::env::args().skip(1).collect());
     ffi_guard("rt_start", |_| 70, || run_program(entry))
@@ -3551,14 +4158,16 @@ pub extern "C" fn spid3r_rt_start(entry: extern "C" fn(*mut ValueV2)) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn spid3r_rt_start_slim(entry: extern "C" fn(*mut ValueV2)) -> i32 {
+    crate::value::enter_single_thread_process();
     rt_init_core();
-    crate::stdlib::set_script_args(std::env::args().skip(1).collect());
+    crate::stdlib::enable_lazy_env_script_args();
     ffi_guard("rt_start_slim", |_| 70, || run_program(entry))
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_rt_start_freestanding(entry: extern "C" fn(*mut ValueV2)) -> i32 {
-    install_native_defs(crate::stdlib::freestanding_defs(), None);
+    crate::value::enter_single_thread_process();
+    register_lazy_group(crate::stdlib::freestanding_defs, None);
     ffi_guard("rt_start_freestanding", |_| 70, || run_program(entry))
 }
 
@@ -3598,8 +4207,7 @@ fn run_program(entry: extern "C" fn(*mut ValueV2)) -> i32 {
             1
         }
     };
-    let _ = crate::sched::join_tasks_at_exit();
-    crate::sched::shutdown();
+    crate::sched::finish_aot_at_exit();
     let _ = std::io::stdout().flush();
     code
 }
@@ -3626,7 +4234,7 @@ pub extern "C" fn spid3r_spawn(out: *mut ValueV2, f: *const ValueV2) {
                 let argv: [*const ValueV2; 0] = [];
                 let mut r = ValueV2::NULL;
                 unsafe { (cfn.code)(&mut r, cfn.env, 0usize, argv.as_ptr()) };
-                if spid3r_threw() != 0 {
+                let outcome = if spid3r_threw() != 0 {
                     match take_thrown_value() {
                         None => crate::sched::TaskOutcome {
                             result: Err("task threw".to_string()),
@@ -3642,7 +4250,23 @@ pub extern "C" fn spid3r_spawn(out: *mut ValueV2, f: *const ValueV2) {
                         result: Ok(v2_to_value(r)),
                         thrown: None,
                     }
-                }
+                };
+                // Reclaim thread-local AOT_HEAP / AOT_ROPE objects from the
+                // completed task now that its return/thrown value is owned and
+                // ROOT_FRAMES is empty on this worker thread.
+                sweep_aot_heap_now();
+                AOT_HEAP.with(|h| {
+                    let mut st = h.borrow_mut();
+                    while st.free.len() > 64 {
+                        if let Some(ptr) = st.free.pop() {
+                            // SAFETY: `ptr` is an unrooted `Box<Value>` owned by this thread's free list.
+                            unsafe {
+                                drop(Box::from_raw(ptr));
+                            }
+                        }
+                    }
+                });
+                outcome
             }));
             alloc_heap_v2(Value::Task(handle))
         }
@@ -3696,10 +4320,7 @@ pub extern "C" fn spid3r_struct_box(
     field_vals: *const *const ValueV2,
 ) {
     let cname = cstr(class_name);
-    let cls_val = {
-        let g = globals().lock().unwrap();
-        g.get(&cname).cloned()
-    };
+    let cls_val = fetch_global_value_str(&cname);
     let Some(cls_val) = cls_val else {
         write_out(
             out,
@@ -4095,6 +4716,39 @@ pub extern "C" fn spid3r_list_view_i64(obj: *const ValueV2, out: *mut ListView) 
 #[no_mangle]
 pub extern "C" fn spid3r_list_view_f64(obj: *const ValueV2, out: *mut ListView) -> i8 {
     write_list_view(obj, out, collections::VecData::ensure_dense_f64)
+}
+
+/// Borrowed dense view into an all-SSO-keyed, all-int-valued `MapData` for
+/// hoisted AOT lookup loops.
+#[repr(C)]
+pub struct MapViewSsoI64 {
+    pub slots: *const collections::DenseSsoI64Slot,
+    pub mask: u64,
+}
+
+/// Populate `out` with an open-addressed SSO+i64 view of `obj` if every entry
+/// has a `<= 15`-byte string key and `Value::Int` value. Returns `1` on success
+/// or `0` to fall back to the generic loop.
+#[no_mangle]
+pub extern "C" fn spid3r_map_view_sso_i64(obj: *const ValueV2, out: *mut MapViewSsoI64) -> i8 {
+    if out.is_null() || obj.is_null() || crate::value::is_multithreaded() {
+        return 0;
+    }
+    let ov = read_v2(obj);
+    if let Some(Value::Map(m)) = deref_heap(ov) {
+        let mut guard = crate::value::lock_ref(m);
+        if let Some((slots, mask)) = guard.ensure_dense_sso_i64() {
+            // SAFETY: caller provides a valid stack-allocated `MapViewSsoI64` destination.
+            unsafe {
+                out.write(MapViewSsoI64 {
+                    slots,
+                    mask: mask as u64,
+                });
+            }
+            return 1;
+        }
+    }
+    0
 }
 
 #[cfg(test)]

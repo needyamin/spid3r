@@ -138,6 +138,7 @@ fn send_cmd(cmd: LoopCmd) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_loop_thread(rx: Receiver<LoopCmd>) {
+    crate::value::mark_multithreaded();
     std::thread::Builder::new()
         .name("spid3r-eventloop".to_string())
         .spawn(move || loop_thread_main(rx))

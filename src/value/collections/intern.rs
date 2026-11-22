@@ -12,19 +12,93 @@ const INTERN_SLOTS: usize = 2048;
 const INTERN_MAX_LEN: usize = 64;
 const INTERN_MAX_PROBES: usize = 8;
 
-/// String key stored in `MapKey::Str`: either a permanently interned `'static`
-/// key (zero atomic refcount traffic on clone/drop) or a compact 8-byte `ThinArcStr`.
+const INLINE_KEY_MAX: usize = 15;
+
+/// String key stored in `MapKey::Str`: either a small inline byte array
+/// (`<= 15` bytes, zero allocation and zero atomic refcounting), a permanently
+/// interned `'static` key (`16..=64` bytes), or a compact 8-byte `ThinArcStr`.
 pub enum KeyStr {
     Static(&'static str),
     Thin(ThinArcStr),
+    Inline { len: u8, buf: [u8; INLINE_KEY_MAX] },
+}
+
+/// Compare short slices inline without calling `memcmp` for `<= 16`-byte keys.
+#[cfg_attr(not(debug_assertions), inline(always))]
+#[cfg_attr(debug_assertions, inline(never))]
+pub fn bytes_eq_short(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len();
+    if n != b.len() {
+        return false;
+    }
+    if n <= 8 {
+        if n >= 4 {
+            return a[..4] == b[..4] && a[n - 4..] == b[n - 4..];
+        }
+        if n >= 2 {
+            return a[0] == b[0] && a[1] == b[1] && a[n - 1] == b[n - 1];
+        }
+        return n == 0 || a[0] == b[0];
+    }
+    if n <= 16 {
+        return a[..8] == b[..8] && a[n - 8..] == b[n - 8..];
+    }
+    a == b
 }
 
 impl KeyStr {
+    #[inline]
+    fn try_inline(s: &str) -> Option<Self> {
+        let len = s.len();
+        if len <= INLINE_KEY_MAX {
+            let mut buf = [0u8; INLINE_KEY_MAX];
+            buf[..len].copy_from_slice(s.as_bytes());
+            return Some(KeyStr::Inline {
+                len: len as u8,
+                buf,
+            });
+        }
+        None
+    }
+
+    #[inline(always)]
+    pub fn from_thin_str_ref(t: &ThinArcStr) -> Self {
+        if let Some(inl) = Self::try_inline(t.as_str()) {
+            return inl;
+        }
+        KeyStr::Thin(t.clone())
+    }
+
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            KeyStr::Static(s) => s.as_bytes(),
+            KeyStr::Thin(t) => t.as_bytes(),
+            KeyStr::Inline { len, buf } => &buf[..(*len as usize).min(INLINE_KEY_MAX)],
+        }
+    }
+
+    #[inline(always)]
+    pub fn eq_bytes(&self, s: &[u8]) -> bool {
+        match self {
+            KeyStr::Inline { len, buf } => {
+                let n = *len as usize;
+                n <= INLINE_KEY_MAX && bytes_eq_short(&buf[..n], s)
+            }
+            KeyStr::Static(k) => bytes_eq_short(k.as_bytes(), s),
+            KeyStr::Thin(t) => bytes_eq_short(t.as_bytes(), s),
+        }
+    }
+
     #[inline(always)]
     pub fn as_str(&self) -> &str {
         match self {
             KeyStr::Static(s) => s,
             KeyStr::Thin(t) => t.as_str(),
+            KeyStr::Inline { len, buf } => {
+                let n = (*len as usize).min(INLINE_KEY_MAX);
+                std::str::from_utf8(&buf[..n]).unwrap_or("")
+            }
         }
     }
 
@@ -33,6 +107,7 @@ impl KeyStr {
         match self {
             KeyStr::Static(s) => ThinArcStr::from(*s),
             KeyStr::Thin(t) => t.clone(),
+            KeyStr::Inline { .. } => ThinArcStr::from(self.as_str()),
         }
     }
 }
@@ -59,6 +134,10 @@ impl Clone for KeyStr {
         match self {
             KeyStr::Static(s) => KeyStr::Static(s),
             KeyStr::Thin(t) => KeyStr::Thin(t.clone()),
+            KeyStr::Inline { len, buf } => KeyStr::Inline {
+                len: *len,
+                buf: *buf,
+            },
         }
     }
 }
@@ -70,8 +149,8 @@ impl PartialEq for KeyStr {
             (KeyStr::Static(a), KeyStr::Static(b)) => {
                 (std::ptr::eq(a.as_ptr(), b.as_ptr()) && a.len() == b.len()) || *a == *b
             }
-            (KeyStr::Thin(a), KeyStr::Thin(b)) => a.ptr_eq(b) || a.as_str() == b.as_str(),
-            _ => self.as_str() == other.as_str(),
+            (KeyStr::Thin(a), KeyStr::Thin(b)) => a.ptr_eq(b) || a.as_bytes() == b.as_bytes(),
+            _ => self.as_bytes() == other.as_bytes(),
         }
     }
 }
@@ -79,16 +158,16 @@ impl PartialEq for KeyStr {
 impl Eq for KeyStr {}
 
 impl PartialEq<str> for KeyStr {
-    #[inline]
+    #[inline(always)]
     fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
+        self.as_bytes() == other.as_bytes()
     }
 }
 
 impl PartialEq<&str> for KeyStr {
-    #[inline]
+    #[inline(always)]
     fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
+        self.as_bytes() == other.as_bytes()
     }
 }
 
@@ -114,35 +193,35 @@ impl fmt::Display for KeyStr {
 impl From<&str> for KeyStr {
     #[inline]
     fn from(s: &str) -> Self {
-        KeyStr::Thin(ThinArcStr::from(s))
+        Self::try_inline(s).unwrap_or_else(|| KeyStr::Thin(ThinArcStr::from(s)))
     }
 }
 
 impl From<String> for KeyStr {
     #[inline]
     fn from(s: String) -> Self {
-        KeyStr::Thin(ThinArcStr::from(s.as_str()))
+        Self::try_inline(s.as_str()).unwrap_or_else(|| KeyStr::Thin(ThinArcStr::from(s.as_str())))
     }
 }
 
 impl From<Arc<str>> for KeyStr {
     #[inline]
     fn from(a: Arc<str>) -> Self {
-        KeyStr::Thin(ThinArcStr::from(a.as_ref()))
+        Self::try_inline(a.as_ref()).unwrap_or_else(|| KeyStr::Thin(ThinArcStr::from(a.as_ref())))
     }
 }
 
 impl From<ThinArcStr> for KeyStr {
     #[inline]
     fn from(t: ThinArcStr) -> Self {
-        KeyStr::Thin(t)
+        Self::try_inline(t.as_str()).unwrap_or(KeyStr::Thin(t))
     }
 }
 
 impl From<&String> for KeyStr {
     #[inline]
     fn from(s: &String) -> Self {
-        KeyStr::Thin(ThinArcStr::from(s.as_str()))
+        Self::try_inline(s.as_str()).unwrap_or_else(|| KeyStr::Thin(ThinArcStr::from(s.as_str())))
     }
 }
 
@@ -171,12 +250,15 @@ fn nz_hash(h: u64) -> u64 {
     }
 }
 
-/// Look up or lock-free intern a short string key (`<= 64` bytes) into `GLOBAL_KEY_TABLE`
-/// using precomputed `fx_hash_str(s)`. Returns `KeyStr::Arc` if longer than `INTERN_MAX_LEN`
-/// or if the probe chain is saturated.
+/// Look up or lock-free intern a short key: `<= 15` bytes return `KeyStr::Inline`
+/// without heap allocation or atomics; `16..=64` bytes intern into `GLOBAL_KEY_TABLE`
+/// using precomputed `fx_hash_str(s)`; longer or saturated keys return `KeyStr::Thin`.
 #[inline]
 pub fn intern_key_with_hash(s: &str, h: u64) -> KeyStr {
     debug_assert_eq!(h, super::fx_hash_str(s));
+    if let Some(inl) = KeyStr::try_inline(s) {
+        return inl;
+    }
     if s.len() > INTERN_MAX_LEN {
         return KeyStr::Thin(ThinArcStr::from(s));
     }
@@ -263,6 +345,53 @@ mod tests {
             .collect();
         for h in handles {
             h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn inline_key_str_matches_static_and_thin_without_size_growth() {
+        assert!(std::mem::size_of::<KeyStr>() <= 24);
+        let k_empty = intern_key("");
+        let k_short = intern_key("price");
+        let k_15 = intern_key("exactly_15bytes");
+        let k_16 = intern_key("exactly_16_bytes");
+        assert!(matches!(k_empty, KeyStr::Inline { .. }));
+        assert!(matches!(k_short, KeyStr::Inline { .. }));
+        assert!(matches!(k_15, KeyStr::Inline { .. }));
+        assert!(matches!(k_16, KeyStr::Static(_)));
+
+        let t_short = ThinArcStr::from("price");
+        let k_thin = KeyStr::Thin(t_short.clone());
+        let k_from_ref = KeyStr::from_thin_str_ref(&t_short);
+        assert!(matches!(k_from_ref, KeyStr::Inline { .. }));
+        assert_eq!(k_short, k_thin);
+        assert_eq!(k_thin, k_short);
+        assert_eq!(k_short.as_bytes(), b"price");
+        assert_eq!(k_short, "price");
+
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        k_short.hash(&mut h1);
+        k_thin.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn bytes_eq_short_covers_lengths_and_single_byte_flips() {
+        for len in 0..=20 {
+            let a: Vec<u8> = (0..len).map(|i| b'a' + (i as u8 % 23)).collect();
+            let b = a.clone();
+            assert!(bytes_eq_short(&a, &b));
+            if len > 0 {
+                let mut shorter = a.clone();
+                shorter.pop();
+                assert!(!bytes_eq_short(&a, &shorter));
+            }
+            for pos in 0..len {
+                let mut flipped = a.clone();
+                flipped[pos] ^= 1;
+                assert!(!bytes_eq_short(&a, &flipped));
+            }
         }
     }
 }

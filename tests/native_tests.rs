@@ -1841,3 +1841,197 @@ fn main() {
 "#;
     assert_native_matches_tree("p2_fast_mutex_spawn", src);
 }
+
+#[test]
+fn phase2_hoisted_map_loop_mutation_fallback_and_str_key_var_match_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+fn sum_map_loop(m, n: int) {
+    let i = 0;
+    let s = 0;
+    while i < n {
+        s = s + m["k" + string(i % 4)];
+        i = i + 1;
+    }
+    return s;
+}
+
+fn mutate_long_key(m) {
+    m["this_key_is_over_15_bytes"] = 999;
+}
+
+fn mutate_str_val(m) {
+    m["k0"] = "not_an_int";
+}
+
+fn sum_with_str_local(m) -> int {
+    let k = "beta";
+    let i = 0;
+    let s = 0;
+    while i < 5 {
+        s = s + m[k];
+        i = i + 1;
+    }
+    return s;
+}
+
+fn sum_until_missing(m) -> int {
+    let i = 0;
+    let s = 0;
+    try {
+        while i < 5 {
+            s = s + m["k" + string(i)];
+            i = i + 1;
+        }
+    } catch (e) {
+        return s * 10 + i;
+    }
+    return s;
+}
+
+fn main() {
+    let m = {"k0": 10, "k1": 20, "k2": 30, "k3": 40};
+    println(sum_map_loop(m, 8));
+    mutate_long_key(m);
+    println(sum_map_loop(m, 8));
+
+    let m2 = {"alpha": 3, "beta": 7};
+    println(sum_with_str_local(m2));
+
+    let m3 = {"k0": 5, "k1": 6, "k2": 7};
+    println(sum_until_missing(m3));
+
+    mutate_str_val(m);
+    try {
+        println(sum_map_loop(m, 4));
+    } catch (e) {
+        println("caught_type=" + string(e));
+    }
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_hoisted_map_fallback", src);
+}
+
+#[test]
+fn phase2_hoisted_loops_reject_shadowed_string_and_dunder_mutation() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let src = r#"
+let MAP_HOLDER = [];
+let ROW_HOLDER = [];
+let LIST_HOLDER = [];
+
+fn string(x: int) -> string {
+    let m = MAP_HOLDER[0];
+    m["a"] = x * 100;
+    m["b"] = x * 100;
+    m["c"] = x * 100;
+    m["d"] = x * 100;
+    return "d";
+}
+
+fn test_shadowed_string_in_map_loop() -> int {
+    let m = {"a": 1, "b": 1, "c": 1, "d": 1};
+    MAP_HOLDER.clear();
+    MAP_HOLDER.push(m);
+    let i = 1;
+    let s = 0;
+    while i <= 3 {
+        s = s + m[string(i)];
+        i = i + 1;
+    }
+    return s;
+}
+
+fn test_dunder_in_map_loop() -> int {
+    let m = {"a": 1, "b": 1, "c": 1, "d": 1};
+    MAP_HOLDER.clear();
+    MAP_HOLDER.push(m);
+    let evil = {
+        "__neg__": fn(self) {
+            let target = MAP_HOLDER[0];
+            target["d"] = 200;
+            return 0;
+        }
+    };
+    let i = 0;
+    let s = 0;
+    while i < 3 {
+        let d = -evil;
+        s = s + m["d"] + d;
+        i = i + 1;
+    }
+    return s;
+}
+
+let GLOBAL_ROW_EVIL = {
+    "__neg__": fn(self) {
+        let row = ROW_HOLDER[0];
+        row.clear();
+        let k = 0;
+        while k < 16 {
+            row.push(200);
+            k = k + 1;
+        }
+        return 0;
+    }
+};
+
+fn test_dunder_in_row_loop() -> int {
+    let grid = [[1, 2, 3, 4, 5, 6, 7, 8]];
+    let row = grid[0];
+    ROW_HOLDER.clear();
+    ROW_HOLDER.push(row);
+    let i = 0;
+    let s = 0;
+    while i < 3 {
+        let d = -GLOBAL_ROW_EVIL;
+        s = s + row[5] + d;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn test_dunder_in_readonly_len_loop() -> int {
+    let xs = [[10, 20, 30]];
+    LIST_HOLDER.clear();
+    LIST_HOLDER.push(xs);
+    let evil = {
+        "__neg__": fn(self) {
+            let target = LIST_HOLDER[0];
+            target.clear();
+            let k = 0;
+            while k < 16 {
+                target.push([50, 60, 70]);
+                k = k + 1;
+            }
+            return 0;
+        }
+    };
+    let i = 0;
+    let s = 0;
+    while i < xs.len() {
+        let row = xs[i];
+        let d = -evil;
+        s = s + row[0] + d;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn main() {
+    println(test_shadowed_string_in_map_loop());
+    println(test_dunder_in_map_loop());
+    println(test_dunder_in_row_loop());
+    println(test_dunder_in_readonly_len_loop());
+    return 0;
+}
+"#;
+    assert_native_matches_tree("p2_hoisted_dunder_safety", src);
+}

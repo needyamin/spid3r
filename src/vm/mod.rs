@@ -160,6 +160,10 @@ struct CallFrame {
     /// Byte offset of the instruction currently executing (or waiting on a
     /// call) in this frame, recorded before `ip` advances past its operands.
     inst_ip: usize,
+    /// Fast-path return `pc` saved by `CallGlobal1` (`u32::MAX` when unset).
+    ret_pc: u32,
+    /// Cached `DecodedChunk` held while a callee runs from `CallGlobal1`.
+    decoded: Option<Arc<decode::DecodedChunk>>,
     slots: Vec<Value>,
     /// Captured locals: slot index -> shared cell. Created lazily on first
     /// capture so reads/writes of that local stay in sync after the frame
@@ -263,7 +267,7 @@ pub struct Vm {
     /// 64-slot ring cache for `try_fused_prefix_string` (`prefix + string(i)`
     /// where `0 <= i < 64`), avoiding repeated formatting and `Arc<str>` heap
     /// allocation when keys cycle (e.g. `r % 64`).
-    prefix_str_cache: Vec<Option<(usize, i64, crate::value::ThinArcStr)>>,
+    prefix_str_cache: Vec<Option<(usize, i64, crate::value::ThinArcStr, u64)>>,
     /// Cached `(globals_ptr, gidx, gen, is_string_native)` check for
     /// `try_fused_prefix_string`.
     prefix_global_cache: (usize, u16, u64, bool),
@@ -280,6 +284,10 @@ pub struct Vm {
     opt_enabled: bool,
     /// Recycled `CallFrame::slots` buffers to avoid malloc/free on every call.
     slot_pool: Vec<Vec<Value>>,
+    /// 1-slot cache of the most recently popped pure leaf `CallFrame` and its decoded chunk.
+    last_leaf_frame: Option<(CallFrame, Arc<decode::DecodedChunk>)>,
+    /// Reusable local slots scratch buffer for zero-frame pure-leaf calls.
+    leaf_slots: Vec<Value>,
     /// Execution budget (`Engine::budget` / `spid3r run --budget`, spelled
     /// `--max-steps` as an alias): charged in batches at the instruction
     /// poll. `None` costs one `Option` check per poll, not per instruction.
@@ -325,6 +333,7 @@ struct GlobalCacheEntry {
     const_idx: u16,
     gen: u64,
     val: Value,
+    decoded: Option<Arc<decode::DecodedChunk>>,
 }
 
 #[derive(Clone, Copy)]
@@ -640,6 +649,8 @@ impl Vm {
             closure_cache: None,
             opt_enabled: true,
             slot_pool: Vec::with_capacity(16),
+            last_leaf_frame: None,
+            leaf_slots: Vec::with_capacity(16),
             budget: None,
             wall_clock: None,
             mem_limit: None,
@@ -740,6 +751,8 @@ impl Vm {
             closure_cache: None,
             opt_enabled: true,
             slot_pool: Vec::with_capacity(8),
+            last_leaf_frame: None,
+            leaf_slots: Vec::with_capacity(16),
             budget: None,
             wall_clock: None,
             mem_limit: None,
@@ -2494,6 +2507,16 @@ impl Vm {
                                     const_idx: idx as u16,
                                     gen: cur_gen,
                                     val: resolved.clone(),
+                                    decoded: match &resolved {
+                                        Value::VFunc(fd) => fd
+                                            .chunk
+                                            .decoded
+                                            .get_or_init(|| {
+                                                decode::DecodedChunk::compile(&fd.chunk)
+                                            })
+                                            .clone(),
+                                        _ => None,
+                                    },
                                 });
                                 resolved
                             }
@@ -4793,17 +4816,19 @@ impl Vm {
                 let p_ptr = prefix.as_ptr() as usize;
                 let arc_s = if (0..64).contains(&value) {
                     let cslot = value as usize;
-                    if let Some((cp, cv, ref cs)) = self.prefix_str_cache[cslot] {
+                    if let Some((cp, cv, ref cs, _ch)) = self.prefix_str_cache[cslot] {
                         if cp == p_ptr && cv == value {
                             cs.clone()
                         } else {
+                            let h = crate::value::collections::fx_hash_str(s);
                             let a = crate::value::ThinArcStr::from(s);
-                            self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone()));
+                            self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone(), h));
                             a
                         }
                     } else {
+                        let h = crate::value::collections::fx_hash_str(s);
                         let a = crate::value::ThinArcStr::from(s);
-                        self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone()));
+                        self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone(), h));
                         a
                     }
                 } else {
@@ -4958,6 +4983,8 @@ impl Vm {
             label,
             ip: 0,
             inst_ip: 0,
+            ret_pc: u32::MAX,
+            decoded: None,
             slots: args,
             captured: Vec::new(),
             own_cells,
@@ -5799,6 +5826,14 @@ impl Vm {
             const_idx: idx as u16,
             gen: cur_gen,
             val: resolved.clone(),
+            decoded: match &resolved {
+                Value::VFunc(fd) => fd
+                    .chunk
+                    .decoded
+                    .get_or_init(|| decode::DecodedChunk::compile(&fd.chunk))
+                    .clone(),
+                _ => None,
+            },
         });
         Some(resolved)
     }
@@ -5863,6 +5898,280 @@ impl Vm {
         }
         if let Ok(s) = std::str::from_utf8(&tmp[pos..]) {
             buf.push_str(s);
+        }
+    }
+
+    #[inline]
+    fn eval_prefix_mod_str_cached(
+        cache: &mut [Option<(usize, i64, crate::value::ThinArcStr, u64)>],
+        scratch: &mut String,
+        prefix: &str,
+        p_ptr: usize,
+        val: i64,
+    ) -> (crate::value::ThinArcStr, u64) {
+        if (0..64).contains(&val) {
+            let cslot = val as usize;
+            if let Some((cp, cv, ref cs, ch)) = cache[cslot] {
+                if cp == p_ptr && cv == val {
+                    return (cs.clone(), ch);
+                }
+            }
+            let mut buf = std::mem::take(scratch);
+            buf.clear();
+            buf.push_str(prefix);
+            Self::push_i64_decimal_into(&mut buf, val);
+            let h = crate::value::collections::fx_hash_str(buf.as_str());
+            let a = crate::value::ThinArcStr::from(buf.as_str());
+            *scratch = buf;
+            cache[cslot] = Some((p_ptr, val, a.clone(), h));
+            (a, h)
+        } else {
+            let mut buf = std::mem::take(scratch);
+            buf.clear();
+            buf.push_str(prefix);
+            Self::push_i64_decimal_into(&mut buf, val);
+            let h = crate::value::collections::fx_hash_str(buf.as_str());
+            let a = crate::value::ThinArcStr::from(buf.as_str());
+            *scratch = buf;
+            (a, h)
+        }
+    }
+
+    fn try_batch_prefix_map_lookup(
+        &mut self,
+        cur_dec: &decode::DecodedChunk,
+        nf: usize,
+        pc_u: usize,
+        [str_dst, str_cidx, gidx, var_slot, div_ic]: [usize; 5],
+        cancel_poll: &mut u32,
+        poll_limit: u32,
+    ) -> Option<(usize, bool)> {
+        use decode::{CmpKind, DecodedOp};
+
+        let op1 = cur_dec.insts.get(pc_u + 1)?;
+        let op2 = cur_dec.insts.get(pc_u + 2)?;
+        if op1.op != DecodedOp::AddLocalIndexGet2 || op2.op != DecodedOp::IncCmpJumpLocal {
+            return None;
+        }
+        let acc_slot = op1.a as usize;
+        let cont_slot = op1.b as usize;
+        let key_slot = op1.c as usize;
+
+        let inc_slot = op2.a as usize;
+        let step = cur_dec.int_consts[op2.b as usize];
+        let lim_is_const = (op2.aux & 1) != 0;
+        let inc_jtrue = (op2.aux & 2) != 0;
+        let cmp = CmpKind::from_u8(op2.aux >> 2);
+        let target = op2.d as usize;
+        let pops = op2.ext as usize;
+
+        if target != pc_u {
+            return None;
+        }
+        let slen = self.frames[nf].slots.len();
+        if acc_slot >= slen || cont_slot >= slen || var_slot >= slen || inc_slot >= slen {
+            return None;
+        }
+        if str_dst == u16::MAX as usize {
+            if key_slot != slen || pops != 1 {
+                return None;
+            }
+        } else if str_dst >= slen || key_slot != str_dst || pops != 0 {
+            return None;
+        }
+        if acc_slot == cont_slot
+            || acc_slot == inc_slot
+            || acc_slot == var_slot
+            || acc_slot == str_dst
+            || cont_slot == inc_slot
+            || cont_slot == str_dst
+            || inc_slot == str_dst
+        {
+            return None;
+        }
+        let lim_val = if lim_is_const {
+            cur_dec.int_consts[op2.c as usize]
+        } else {
+            let lim_slot = op2.c as usize;
+            if lim_slot >= slen
+                || lim_slot == acc_slot
+                || lim_slot == inc_slot
+                || lim_slot == str_dst
+            {
+                return None;
+            }
+            match self.frames[nf].slots.get(lim_slot) {
+                Some(&Value::Int(l)) => l,
+                _ => return None,
+            }
+        };
+        if !self.is_canonical_string_global(nf, gidx) {
+            return None;
+        }
+        let div = cur_dec.int_consts[div_ic];
+        let prefix_s = match self.frames[nf].func.chunk.constants.get(str_cidx) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => return None,
+        };
+        let p_ptr = prefix_s.as_ptr() as usize;
+
+        let &Value::Int(mut acc) = self.frames[nf].slots.get(acc_slot)? else {
+            return None;
+        };
+        let &Value::Int(mut idx) = self.frames[nf].slots.get(inc_slot)? else {
+            return None;
+        };
+        let var_is_inc = var_slot == inc_slot;
+        let static_var = if var_is_inc {
+            0
+        } else {
+            match self.frames[nf].slots.get(var_slot) {
+                Some(&Value::Int(v)) => v,
+                _ => return None,
+            }
+        };
+        let Value::Map(m) = self.frames[nf].slots.get(cont_slot)? else {
+            return None;
+        };
+        let m_arc = m.clone();
+
+        enum LoopEnd {
+            Fallback(Option<crate::value::ThinArcStr>),
+            BatchCap(Option<crate::value::ThinArcStr>),
+            Yield(Option<crate::value::ThinArcStr>),
+            ExitLoop(Option<crate::value::ThinArcStr>),
+        }
+
+        let need_last_key = str_dst != u16::MAX as usize;
+        let cache = &mut self.prefix_str_cache;
+        let scratch = &mut self.scratch_str;
+        let mut steps: u32 = 0;
+
+        let end = crate::value::with_ref(&m_arc, |guard| {
+            if guard.namespace {
+                return None;
+            }
+            let mut last_key: Option<crate::value::ThinArcStr> = None;
+            let end = loop {
+                let raw_var = if var_is_inc { idx } else { static_var };
+                let Some(val) = raw_var.checked_rem(div) else {
+                    break LoopEnd::Fallback(last_key);
+                };
+                let (key_val_opt, cached_arc_opt) = if (0..64).contains(&val) {
+                    let cslot = val as usize;
+                    let hit = matches!(
+                        cache[cslot],
+                        Some((cp, cv, _, _)) if cp == p_ptr && cv == val
+                    );
+                    if !hit {
+                        let _ = Self::eval_prefix_mod_str_cached(
+                            cache,
+                            scratch,
+                            prefix_s.as_str(),
+                            p_ptr,
+                            val,
+                        );
+                    }
+                    if let Some((_, _, ref cs, ch)) = cache[cslot] {
+                        (
+                            match guard.get_str_with_hash(cs.as_str(), ch) {
+                                Some(&Value::Int(v)) => Some(v),
+                                _ => None,
+                            },
+                            if need_last_key {
+                                Some(cs.clone())
+                            } else {
+                                None
+                            },
+                        )
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    let (a, h) = Self::eval_prefix_mod_str_cached(
+                        cache,
+                        scratch,
+                        prefix_s.as_str(),
+                        p_ptr,
+                        val,
+                    );
+                    (
+                        match guard.get_str_with_hash(a.as_str(), h) {
+                            Some(&Value::Int(v)) => Some(v),
+                            _ => None,
+                        },
+                        if need_last_key { Some(a) } else { None },
+                    )
+                };
+                let Some(map_v) = key_val_opt else {
+                    break LoopEnd::Fallback(last_key);
+                };
+                let Some(next_acc) = acc.checked_add(map_v) else {
+                    break LoopEnd::Fallback(last_key);
+                };
+                let Some(next_idx) = idx.checked_add(step) else {
+                    break LoopEnd::Fallback(last_key);
+                };
+                acc = next_acc;
+                idx = next_idx;
+                if need_last_key {
+                    last_key = cached_arc_opt;
+                }
+                if cmp.eval_i64(idx, lim_val) == inc_jtrue {
+                    steps += 1;
+                    if (*cancel_poll).saturating_add(steps) >= poll_limit {
+                        break LoopEnd::Yield(last_key);
+                    }
+                    if steps >= 128 {
+                        break LoopEnd::BatchCap(last_key);
+                    }
+                } else {
+                    break LoopEnd::ExitLoop(last_key);
+                }
+            };
+            Some(end)
+        })?;
+
+        let flush = |slots: &mut Vec<Value>, lk: Option<crate::value::ThinArcStr>| {
+            if let Some(Value::Int(r)) = slots.get_mut(acc_slot) {
+                *r = acc;
+            } else {
+                slots[acc_slot] = Value::Int(acc);
+            }
+            if let Some(Value::Int(r)) = slots.get_mut(inc_slot) {
+                *r = idx;
+            } else {
+                slots[inc_slot] = Value::Int(idx);
+            }
+            if let Some(k) = lk {
+                slots[str_dst] = Value::Str(k);
+            }
+        };
+
+        match end {
+            LoopEnd::Fallback(lk) => {
+                if steps == 0 && lk.is_none() {
+                    return None;
+                }
+                flush(&mut self.frames[nf].slots, lk);
+                *cancel_poll = cancel_poll.saturating_add(steps);
+                None
+            }
+            LoopEnd::BatchCap(lk) => {
+                flush(&mut self.frames[nf].slots, lk);
+                *cancel_poll = cancel_poll.saturating_add(steps);
+                Some((pc_u, false))
+            }
+            LoopEnd::ExitLoop(lk) => {
+                flush(&mut self.frames[nf].slots, lk);
+                *cancel_poll = cancel_poll.saturating_add(steps);
+                Some((pc_u + 3, false))
+            }
+            LoopEnd::Yield(lk) => {
+                flush(&mut self.frames[nf].slots, lk);
+                *cancel_poll = cancel_poll.saturating_add(steps);
+                Some((pc_u, true))
+            }
         }
     }
 
@@ -6103,9 +6412,234 @@ impl Vm {
                     let is_jtrue = (inst.aux & 1) != 0;
                     let is_ne = (inst.aux & 2) != 0;
                     let k = cur_dec.int_consts[inst.c as usize];
+                    let a_slot = inst.a as usize;
+                    let b_slot = inst.b as usize;
+                    let target = inst.d as usize;
+
+                    let batch_cfg = if a_slot != b_slot {
+                        let cand = if target == pc_u + 2 {
+                            Some((pc_u + 2, true))
+                        } else if target != pc_u + 1 {
+                            Some((pc_u + 1, false))
+                        } else {
+                            None
+                        };
+                        cand.and_then(|(inc_pc, jump_to_inc)| {
+                            let inc_i = cur_dec.insts.get(inc_pc)?;
+                            if inc_i.d as usize != pc_u
+                                || inc_i.ext != 0
+                                || inc_i.a as usize != b_slot
+                            {
+                                return None;
+                            }
+                            let slots = &self.frames[nf].slots;
+                            let step = cur_dec.int_consts[inc_i.b as usize];
+                            if inc_i.op == DecodedOp::IncMulCmpJumpLocal {
+                                let lim_slot = inc_i.c as usize;
+                                if lim_slot == b_slot {
+                                    return None;
+                                }
+                                let &Value::Int(lim) = slots.get(lim_slot)? else {
+                                    return None;
+                                };
+                                Some((
+                                    inc_pc,
+                                    jump_to_inc,
+                                    true,
+                                    step,
+                                    lim,
+                                    inc_i.aux != 0,
+                                    CmpKind::Lt,
+                                ))
+                            } else if inc_i.op == DecodedOp::IncCmpJumpLocal {
+                                let lim_is_const = (inc_i.aux & 1) != 0;
+                                let lim = if lim_is_const {
+                                    cur_dec.int_consts[inc_i.c as usize]
+                                } else {
+                                    let lim_slot = inc_i.c as usize;
+                                    if lim_slot == b_slot {
+                                        return None;
+                                    }
+                                    let &Value::Int(l) = slots.get(lim_slot)? else {
+                                        return None;
+                                    };
+                                    l
+                                };
+                                Some((
+                                    inc_pc,
+                                    jump_to_inc,
+                                    false,
+                                    step,
+                                    lim,
+                                    (inc_i.aux & 2) != 0,
+                                    CmpKind::from_u8(inc_i.aux >> 2),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                    if let Some((inc_pc, jump_to_inc, is_mul_inc, step, lim, inc_jtrue, inc_cmp)) =
+                        batch_cfg
+                    {
+                        let slots = &mut self.frames[nf].slots;
+                        if let (Some(&Value::Int(a)), Some(&Value::Int(mut b))) =
+                            (slots.get(a_slot), slots.get(b_slot))
+                        {
+                            let mut steps: u32 = 0;
+                            enum ModBatchEnd {
+                                Fallback,
+                                Exit(usize),
+                                StayAtStart,
+                                YieldAt(usize),
+                            }
+                            let mut bend_opt: Option<ModBatchEnd> = None;
+                            if a >= 0
+                                && a <= u32::MAX as i64
+                                && b > 0
+                                && b <= u32::MAX as i64
+                                && step > 0
+                                && step <= u32::MAX as i64
+                                && lim >= 0
+                                && lim <= u32::MAX as i64
+                                && k >= 0
+                                && k <= u32::MAX as i64
+                                && (!is_mul_inc || b <= 65535)
+                            {
+                                let a_u = a as u32;
+                                let mut b_u = b as u32;
+                                let step_u = step as u32;
+                                let lim_u = lim as u32;
+                                let k_u = k as u32;
+                                let max_b: u64 = if is_mul_inc { 65535 } else { u32::MAX as u64 };
+                                loop {
+                                    let rem = a_u % b_u;
+                                    let cond = if is_ne { rem != k_u } else { rem == k_u };
+                                    let take_exit = if jump_to_inc {
+                                        cond != is_jtrue
+                                    } else {
+                                        cond == is_jtrue
+                                    };
+                                    if take_exit {
+                                        let exit_pc = if jump_to_inc { pc_u + 1 } else { target };
+                                        if !jump_to_inc && exit_pc <= pc_u {
+                                            steps += 1;
+                                            if (*cancel_poll).saturating_add(steps) >= poll_limit {
+                                                bend_opt = Some(ModBatchEnd::YieldAt(exit_pc));
+                                                break;
+                                            }
+                                        }
+                                        bend_opt = Some(ModBatchEnd::Exit(exit_pc));
+                                        break;
+                                    }
+                                    let next_b64 = (b_u as u64) + (step_u as u64);
+                                    if next_b64 > max_b {
+                                        break;
+                                    }
+                                    b_u = next_b64 as u32;
+                                    let cont_loop = if is_mul_inc {
+                                        (b_u * b_u <= lim_u) == inc_jtrue
+                                    } else {
+                                        (match inc_cmp {
+                                            CmpKind::Lt => b_u < lim_u,
+                                            CmpKind::Le => b_u <= lim_u,
+                                            CmpKind::Gt => b_u > lim_u,
+                                            CmpKind::Ge => b_u >= lim_u,
+                                            CmpKind::Eq => b_u == lim_u,
+                                            CmpKind::Ne => b_u != lim_u,
+                                        }) == inc_jtrue
+                                    };
+                                    if cont_loop {
+                                        steps += 1;
+                                        if (*cancel_poll).saturating_add(steps) >= poll_limit {
+                                            bend_opt = Some(ModBatchEnd::YieldAt(pc_u));
+                                            break;
+                                        }
+                                        if steps >= 128 {
+                                            bend_opt = Some(ModBatchEnd::StayAtStart);
+                                            break;
+                                        }
+                                    } else {
+                                        bend_opt = Some(ModBatchEnd::Exit(inc_pc + 1));
+                                        break;
+                                    }
+                                }
+                                b = b_u as i64;
+                            }
+                            let bend = match bend_opt {
+                                Some(end) => end,
+                                None => loop {
+                                    let Some(rem) = a.checked_rem(b) else {
+                                        break ModBatchEnd::Fallback;
+                                    };
+                                    let cond = if is_ne { rem != k } else { rem == k };
+                                    let take_exit = if jump_to_inc {
+                                        cond != is_jtrue
+                                    } else {
+                                        cond == is_jtrue
+                                    };
+                                    if take_exit {
+                                        let exit_pc = if jump_to_inc { pc_u + 1 } else { target };
+                                        if !jump_to_inc && exit_pc <= pc_u {
+                                            steps += 1;
+                                            if (*cancel_poll).saturating_add(steps) >= poll_limit {
+                                                break ModBatchEnd::YieldAt(exit_pc);
+                                            }
+                                        }
+                                        break ModBatchEnd::Exit(exit_pc);
+                                    }
+                                    let Some(next_b) = b.checked_add(step) else {
+                                        break ModBatchEnd::Exit(inc_pc);
+                                    };
+                                    let cont_loop = if is_mul_inc {
+                                        let Some(prod) = next_b.checked_mul(next_b) else {
+                                            break ModBatchEnd::Exit(inc_pc);
+                                        };
+                                        b = next_b;
+                                        (prod <= lim) == inc_jtrue
+                                    } else {
+                                        b = next_b;
+                                        inc_cmp.eval_i64(next_b, lim) == inc_jtrue
+                                    };
+                                    if cont_loop {
+                                        steps += 1;
+                                        if (*cancel_poll).saturating_add(steps) >= poll_limit {
+                                            break ModBatchEnd::YieldAt(pc_u);
+                                        }
+                                        if steps >= 128 {
+                                            break ModBatchEnd::StayAtStart;
+                                        }
+                                    } else {
+                                        break ModBatchEnd::Exit(inc_pc + 1);
+                                    }
+                                },
+                            };
+                            set_int_slot!(slots, b_slot, b);
+                            *cancel_poll = cancel_poll.saturating_add(steps);
+                            match bend {
+                                ModBatchEnd::Fallback => fallback!(),
+                                ModBatchEnd::Exit(next_pc) => {
+                                    pc_u = next_pc;
+                                    continue;
+                                }
+                                ModBatchEnd::StayAtStart => continue,
+                                ModBatchEnd::YieldAt(ypc) => {
+                                    let next_ip = cur_dec.insts[ypc].orig_ip as usize;
+                                    self.frames[nf].ip = next_ip;
+                                    self.frames[nf].inst_ip = next_ip;
+                                    self.frames[nf].ret_pc = u32::MAX;
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+
                     let slots = &self.frames[nf].slots;
                     let (Some(&Value::Int(a)), Some(&Value::Int(b))) =
-                        (slots.get(inst.a as usize), slots.get(inst.b as usize))
+                        (slots.get(a_slot), slots.get(b_slot))
                     else {
                         fallback!();
                     };
@@ -6114,7 +6648,7 @@ impl Vm {
                     };
                     let cond = if is_ne { rem != k } else { rem == k };
                     if cond == is_jtrue {
-                        jump_to!(inst.d as usize);
+                        jump_to!(target);
                     } else {
                         pc_u += 1;
                     }
@@ -6123,21 +6657,23 @@ impl Vm {
                     let slots = &mut self.frames[nf].slots;
                     let val_opt = match (slots.get(inst.a as usize), slots.get(inst.b as usize)) {
                         (Some(Value::Map(m)), Some(Value::Str(k))) => {
-                            let guard = crate::value::lock_ref(m);
-                            guard
-                                .find_str(k.as_ref())
-                                .map(|i| guard.entries[i].1.clone())
+                            crate::value::with_ref(m, |guard| {
+                                guard
+                                    .find_str(k.as_ref())
+                                    .map(|i| guard.entries[i].1.clone())
+                            })
                         }
                         (Some(Value::List(d) | Value::VecDyn(d)), Some(&Value::Int(idx))) => {
-                            let guard = crate::value::lock_ref(d);
-                            let items = guard.as_slice();
-                            let len = items.len();
-                            let res = if idx < 0 { len as i64 + idx } else { idx };
-                            if res >= 0 && (res as usize) < len {
-                                Some(items[res as usize].clone())
-                            } else {
-                                None
-                            }
+                            crate::value::with_ref(d, |guard| {
+                                let items = guard.as_slice();
+                                let len = items.len();
+                                let res = if idx < 0 { len as i64 + idx } else { idx };
+                                if res >= 0 && (res as usize) < len {
+                                    Some(items[res as usize].clone())
+                                } else {
+                                    None
+                                }
+                            })
                         }
                         _ => None,
                     };
@@ -6154,10 +6690,11 @@ impl Vm {
                             let slots = &self.frames[nf].slots;
                             if let Some(Value::Map(m)) = slots.get(cont) {
                                 let (ref ks, h) = cur_dec.str_keys[inst.c as usize];
-                                let guard = crate::value::lock_ref(m);
-                                guard
-                                    .find_str_with_hash(ks.as_str(), h)
-                                    .map(|i| guard.entries[i].1.clone())
+                                crate::value::with_ref(m, |guard| {
+                                    guard
+                                        .find_str_with_hash(ks.as_str(), h)
+                                        .map(|i| guard.entries[i].1.clone())
+                                })
                             } else {
                                 None
                             }
@@ -6171,15 +6708,16 @@ impl Vm {
                                 slots.get(cont),
                                 self.frames[nf].func.chunk.constants.get(inst.b as usize),
                             ) {
-                                let guard = crate::value::lock_ref(d);
-                                let items = guard.as_slice();
-                                let len = items.len();
-                                let res = if idx < 0 { len as i64 + idx } else { idx };
-                                if res >= 0 && (res as usize) < len {
-                                    Some(items[res as usize].clone())
-                                } else {
-                                    None
-                                }
+                                crate::value::with_ref(d, |guard| {
+                                    let items = guard.as_slice();
+                                    let len = items.len();
+                                    let res = if idx < 0 { len as i64 + idx } else { idx };
+                                    if res >= 0 && (res as usize) < len {
+                                        Some(items[res as usize].clone())
+                                    } else {
+                                        None
+                                    }
+                                })
                             } else {
                                 None
                             }
@@ -6376,27 +6914,29 @@ impl Vm {
                     };
                     let sum_opt = match (slots.get(cont), slots.get(key_s)) {
                         (Some(Value::Map(m)), Some(Value::Str(k))) => {
-                            let guard = crate::value::lock_ref(m);
-                            guard
-                                .find_str(k.as_ref())
-                                .and_then(|i| match &guard.entries[i].1 {
-                                    Value::Int(v) => acc.checked_add(*v),
-                                    _ => None,
-                                })
+                            crate::value::with_ref(m, |guard| {
+                                guard
+                                    .find_str(k.as_ref())
+                                    .and_then(|i| match &guard.entries[i].1 {
+                                        Value::Int(v) => acc.checked_add(*v),
+                                        _ => None,
+                                    })
+                            })
                         }
                         (Some(Value::List(d) | Value::VecDyn(d)), Some(&Value::Int(idx))) => {
-                            let guard = crate::value::lock_ref(d);
-                            let items = guard.as_slice();
-                            let len = items.len();
-                            let res = if idx < 0 { len as i64 + idx } else { idx };
-                            if res >= 0 && (res as usize) < len {
-                                match items[res as usize] {
-                                    Value::Int(v) => acc.checked_add(v),
-                                    _ => None,
+                            crate::value::with_ref(d, |guard| {
+                                let items = guard.as_slice();
+                                let len = items.len();
+                                let res = if idx < 0 { len as i64 + idx } else { idx };
+                                if res >= 0 && (res as usize) < len {
+                                    match items[res as usize] {
+                                        Value::Int(v) => acc.checked_add(v),
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
                                 }
-                            } else {
-                                None
-                            }
+                            })
                         }
                         _ => None,
                     };
@@ -6411,7 +6951,26 @@ impl Vm {
                     let str_cidx = inst.b as usize;
                     let gidx = inst.c as usize;
                     let var_slot = inst.d as usize;
-                    let div = cur_dec.int_consts[inst.ext as usize];
+                    let div_ic = inst.ext as usize;
+                    if let Some((next_pc, did_yield)) = self.try_batch_prefix_map_lookup(
+                        &cur_dec,
+                        nf,
+                        pc_u,
+                        [dst, str_cidx, gidx, var_slot, div_ic],
+                        cancel_poll,
+                        poll_limit,
+                    ) {
+                        if did_yield {
+                            let next_ip = cur_dec.insts[next_pc].orig_ip as usize;
+                            self.frames[nf].ip = next_ip;
+                            self.frames[nf].inst_ip = next_ip;
+                            self.frames[nf].ret_pc = u32::MAX;
+                            return None;
+                        }
+                        pc_u = next_pc;
+                        continue;
+                    }
+                    let div = cur_dec.int_consts[div_ic];
                     if (dst != u16::MAX as usize && dst >= self.frames[nf].slots.len())
                         || !self.is_canonical_string_global(nf, gidx)
                     {
@@ -6423,46 +6982,19 @@ impl Vm {
                     let Some(val) = raw_i.checked_rem(div) else {
                         fallback!();
                     };
-                    let prefix_ptr_opt = match self.frames[nf].func.chunk.constants.get(str_cidx) {
-                        Some(Value::Str(s)) => Some((s.as_ptr() as usize, s.clone())),
-                        _ => None,
-                    };
-                    let Some((p_ptr, prefix)) = prefix_ptr_opt else {
-                        fallback!();
-                    };
-                    let arc_s = if (0..64).contains(&val) {
-                        let cslot = val as usize;
-                        if let Some((cp, cv, ref cs)) = self.prefix_str_cache[cslot] {
-                            if cp == p_ptr && cv == val {
-                                cs.clone()
-                            } else {
-                                let mut buf = std::mem::take(&mut self.scratch_str);
-                                buf.clear();
-                                buf.push_str(&prefix);
-                                Self::push_i64_decimal_into(&mut buf, val);
-                                let a = crate::value::ThinArcStr::from(buf.as_str());
-                                self.scratch_str = buf;
-                                self.prefix_str_cache[cslot] = Some((p_ptr, val, a.clone()));
-                                a
-                            }
-                        } else {
-                            let mut buf = std::mem::take(&mut self.scratch_str);
-                            buf.clear();
-                            buf.push_str(&prefix);
-                            Self::push_i64_decimal_into(&mut buf, val);
-                            let a = crate::value::ThinArcStr::from(buf.as_str());
-                            self.scratch_str = buf;
-                            self.prefix_str_cache[cslot] = Some((p_ptr, val, a.clone()));
-                            a
+                    let arc_s = match self.frames[nf].func.chunk.constants.get(str_cidx) {
+                        Some(Value::Str(s)) => {
+                            let p_ptr = s.as_ptr() as usize;
+                            Self::eval_prefix_mod_str_cached(
+                                &mut self.prefix_str_cache,
+                                &mut self.scratch_str,
+                                s.as_str(),
+                                p_ptr,
+                                val,
+                            )
+                            .0
                         }
-                    } else {
-                        let mut buf = std::mem::take(&mut self.scratch_str);
-                        buf.clear();
-                        buf.push_str(&prefix);
-                        Self::push_i64_decimal_into(&mut buf, val);
-                        let a = crate::value::ThinArcStr::from(buf.as_str());
-                        self.scratch_str = buf;
-                        a
+                        _ => fallback!(),
                     };
                     if dst == u16::MAX as usize {
                         self.frames[nf].slots.push(Value::Str(arc_s));
@@ -6478,6 +7010,78 @@ impl Vm {
                         fallback!();
                     }
                     let tpl_parts_len = cur_dec.str_templates[tpl_idx].parts.len();
+                    if tpl_parts_len == 2 {
+                        if let (
+                            StrPartKind::Lit(str_cidx),
+                            StrPartKind::StringGlobalLocalMod {
+                                gidx,
+                                slot: var_slot,
+                                div_ic,
+                            },
+                        ) = (
+                            cur_dec.str_templates[tpl_idx].parts[0].clone(),
+                            cur_dec.str_templates[tpl_idx].parts[1].clone(),
+                        ) {
+                            if let Some((next_pc, did_yield)) = self.try_batch_prefix_map_lookup(
+                                &cur_dec,
+                                nf,
+                                pc_u,
+                                [
+                                    dst,
+                                    str_cidx as usize,
+                                    gidx as usize,
+                                    var_slot as usize,
+                                    div_ic as usize,
+                                ],
+                                cancel_poll,
+                                poll_limit,
+                            ) {
+                                if did_yield {
+                                    let next_ip = cur_dec.insts[next_pc].orig_ip as usize;
+                                    self.frames[nf].ip = next_ip;
+                                    self.frames[nf].inst_ip = next_ip;
+                                    self.frames[nf].ret_pc = u32::MAX;
+                                    return None;
+                                }
+                                pc_u = next_pc;
+                                continue;
+                            }
+                            if !self.is_canonical_string_global(nf, gidx as usize) {
+                                fallback!();
+                            }
+                            let Some(&Value::Int(raw_i)) =
+                                self.frames[nf].slots.get(var_slot as usize)
+                            else {
+                                fallback!();
+                            };
+                            let div = cur_dec.int_consts[div_ic as usize];
+                            let Some(val) = raw_i.checked_rem(div) else {
+                                fallback!();
+                            };
+                            let arc_s =
+                                match self.frames[nf].func.chunk.constants.get(str_cidx as usize) {
+                                    Some(Value::Str(s)) => {
+                                        let p_ptr = s.as_ptr() as usize;
+                                        Self::eval_prefix_mod_str_cached(
+                                            &mut self.prefix_str_cache,
+                                            &mut self.scratch_str,
+                                            s.as_str(),
+                                            p_ptr,
+                                            val,
+                                        )
+                                        .0
+                                    }
+                                    _ => fallback!(),
+                                };
+                            if dst == u16::MAX as usize {
+                                self.frames[nf].slots.push(Value::Str(arc_s));
+                            } else {
+                                self.frames[nf].slots[dst] = Value::Str(arc_s);
+                            }
+                            pc_u += 1;
+                            continue;
+                        }
+                    }
                     // Verify globals first outside `scratch_str` borrow.
                     let mut ok = true;
                     for pi in 0..tpl_parts_len {
@@ -6593,16 +7197,15 @@ impl Vm {
                             s.chars().count()
                         } as i64),
                         Some(Value::List(d) | Value::VecDyn(d)) => {
-                            Some(crate::value::lock_ref(d).len() as i64)
+                            Some(crate::value::with_ref(d, |g| g.len() as i64))
                         }
-                        Some(Value::Map(m)) => {
-                            let g = crate::value::lock_ref(m);
+                        Some(Value::Map(m)) => crate::value::with_ref(m, |g| {
                             if !g.namespace {
                                 Some(g.entries.len() as i64)
                             } else {
                                 None
                             }
-                        }
+                        }),
                         _ => None,
                     };
                     let Some(len_i) = len_opt else {
@@ -6623,16 +7226,15 @@ impl Vm {
                             s.chars().count()
                         } as i64),
                         Some(Value::List(d) | Value::VecDyn(d)) => {
-                            Some(crate::value::lock_ref(d).len() as i64)
+                            Some(crate::value::with_ref(d, |g| g.len() as i64))
                         }
-                        Some(Value::Map(m)) => {
-                            let g = crate::value::lock_ref(m);
+                        Some(Value::Map(m)) => crate::value::with_ref(m, |g| {
                             if !g.namespace {
                                 Some(g.entries.len() as i64)
                             } else {
                                 None
                             }
-                        }
+                        }),
                         _ => None,
                     };
                     let Some(len_i) = len_opt else {
@@ -6655,29 +7257,141 @@ impl Vm {
                                 && c.const_idx == gidx as u16
                                 && c.gen == cur_gen =>
                         {
-                            Some(&c.val)
+                            Some(c)
                         }
                         _ => None,
                     };
                     if cache_hit.is_none() && self.resolve_global_fast(nf, gidx).is_none() {
                         fallback!();
                     }
-                    let Some(arg_val) = self.frames[nf].slots.get(arg_slot).cloned() else {
-                        fallback!();
+                    let arg_val = match self.frames[nf].slots.get(arg_slot) {
+                        Some(Value::Int(i)) => Value::Int(*i),
+                        Some(Value::Bool(b)) => Value::Bool(*b),
+                        Some(Value::Float(x)) => Value::Float(*x),
+                        Some(Value::Null) => Value::Null,
+                        Some(other) => other.clone(),
+                        None => fallback!(),
                     };
-                    enum CalleeFast {
-                        Func(Arc<VmFunc>),
-                        StringNative,
-                        Other,
-                    }
-                    let fast = match &self.global_cache[cache_slot].as_ref().unwrap().val {
+                    let cached_entry = self.global_cache[cache_slot].as_ref().unwrap();
+                    match &cached_entry.val {
                         Value::VFunc(fd)
                             if fd.arity == 1
                                 && fd.min_arity == 1
                                 && fd.own_upvalues == 0
-                                && fd.upvalues.is_empty() =>
+                                && fd.upvalues.is_empty()
+                                && self.depth < self.max_depth =>
                         {
-                            CalleeFast::Func(fd.clone())
+                            *cancel_poll = cancel_poll.saturating_add(1);
+                            if *cancel_poll >= poll_limit {
+                                fallback!();
+                            }
+                            if let Some(callee_dec) =
+                                cached_entry.decoded.as_ref().filter(|d| d.is_pure_leaf)
+                            {
+                                if matches!(
+                                    arg_val,
+                                    Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Null
+                                ) {
+                                    let arg_copy = match arg_val {
+                                        Value::Int(i) => Value::Int(i),
+                                        Value::Bool(b) => Value::Bool(b),
+                                        Value::Float(x) => Value::Float(x),
+                                        Value::Null => Value::Null,
+                                        _ => unreachable!(),
+                                    };
+                                    let mut local_poll = *cancel_poll;
+                                    if let Some(ret_val) = Self::exec_pure_leaf_1(
+                                        callee_dec,
+                                        &fd.chunk.constants,
+                                        arg_copy,
+                                        &mut self.leaf_slots,
+                                        &mut local_poll,
+                                        poll_limit,
+                                    ) {
+                                        *cancel_poll = local_poll;
+                                        if let Value::Bool(b) = ret_val {
+                                            match cur_dec.insts.get(pc_u + 1) {
+                                                Some(next) if next.op == DecodedOp::JumpIfFalse => {
+                                                    let next_pc =
+                                                        if b { pc_u + 2 } else { next.d as usize };
+                                                    jump_to!(next_pc);
+                                                    continue;
+                                                }
+                                                Some(next) if next.op == DecodedOp::JumpIfTrue => {
+                                                    let next_pc =
+                                                        if b { next.d as usize } else { pc_u + 2 };
+                                                    jump_to!(next_pc);
+                                                    continue;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        self.frames[nf].slots.push(ret_val);
+                                        pc_u += 1;
+                                        continue;
+                                    }
+                                    if local_poll >= poll_limit {
+                                        *cancel_poll = poll_limit;
+                                        fallback!();
+                                    }
+                                }
+                            }
+                            let ret_ip = inst.orig_ip as usize + inst.ext as usize;
+                            let expected_globals = fd.globals.as_ref().unwrap_or(&self.globals);
+                            let rec_hit = match self.last_leaf_frame.take() {
+                                Some((rec, rec_dec))
+                                    if Arc::ptr_eq(&rec.func, fd)
+                                        && Arc::ptr_eq(&rec.globals, expected_globals) =>
+                                {
+                                    Some((rec, rec_dec))
+                                }
+                                other => {
+                                    self.last_leaf_frame = other;
+                                    None
+                                }
+                            };
+                            if let Some((mut rec, rec_dec)) = rec_hit {
+                                self.frames[nf].ip = ret_ip;
+                                self.frames[nf].inst_ip = inst.orig_ip as usize;
+                                self.frames[nf].ret_pc = (pc_u + 1) as u32;
+                                self.frames[nf].decoded = Some(cur_dec);
+                                rec.slots.push(arg_val);
+                                self.depth += 1;
+                                self.frames.push(rec);
+                                nf = self.frames.len() - 1;
+                                cur_dec = rec_dec;
+                                pc_u = 0;
+                            } else {
+                                let Some(callee_dec) = cached_entry.decoded.clone() else {
+                                    fallback!();
+                                };
+                                let fd_c = fd.clone();
+                                let frame_globals = expected_globals.clone();
+                                self.frames[nf].ip = ret_ip;
+                                self.frames[nf].inst_ip = inst.orig_ip as usize;
+                                self.frames[nf].ret_pc = (pc_u + 1) as u32;
+                                self.frames[nf].decoded = Some(cur_dec);
+                                let mut args = self.alloc_slots(16);
+                                args.push(arg_val);
+                                self.depth += 1;
+                                self.frames.push(CallFrame {
+                                    func: fd_c,
+                                    globals: frame_globals,
+                                    label: FrameLabel::Fn,
+                                    ip: 0,
+                                    inst_ip: 0,
+                                    ret_pc: u32::MAX,
+                                    decoded: None,
+                                    slots: args,
+                                    captured: Vec::new(),
+                                    own_cells: Vec::new(),
+                                    guards: Vec::new(),
+                                    ctor_result: None,
+                                });
+                                nf = self.frames.len() - 1;
+                                cur_dec = callee_dec;
+                                pc_u = 0;
+                            }
                         }
                         Value::Native(n)
                             if std::ptr::fn_addr_eq(
@@ -6685,49 +7399,6 @@ impl Vm {
                                 crate::stdlib::inline_string_impl(),
                             ) =>
                         {
-                            CalleeFast::StringNative
-                        }
-                        _ => CalleeFast::Other,
-                    };
-                    match fast {
-                        CalleeFast::Func(fd) if self.depth < self.max_depth => {
-                            *cancel_poll = cancel_poll.saturating_add(1);
-                            if *cancel_poll >= poll_limit {
-                                fallback!();
-                            }
-                            let Some(callee_dec) = fd
-                                .chunk
-                                .decoded
-                                .get_or_init(|| decode::DecodedChunk::compile(&fd.chunk))
-                                .clone()
-                            else {
-                                fallback!();
-                            };
-                            let ret_ip = inst.orig_ip as usize + inst.ext as usize;
-                            self.frames[nf].ip = ret_ip;
-                            self.frames[nf].inst_ip = inst.orig_ip as usize;
-                            let mut args = self.alloc_slots(16);
-                            args.push(arg_val);
-                            self.depth += 1;
-                            let frame_globals =
-                                fd.globals.clone().unwrap_or_else(|| self.globals.clone());
-                            self.frames.push(CallFrame {
-                                func: fd,
-                                globals: frame_globals,
-                                label: FrameLabel::Fn,
-                                ip: 0,
-                                inst_ip: 0,
-                                slots: args,
-                                captured: Vec::new(),
-                                own_cells: Vec::new(),
-                                guards: Vec::new(),
-                                ctor_result: None,
-                            });
-                            nf = self.frames.len() - 1;
-                            cur_dec = callee_dec;
-                            pc_u = 0;
-                        }
-                        CalleeFast::StringNative => {
                             let s: crate::value::ThinArcStr = match arg_val {
                                 Value::Int(i) => crate::stdlib::int_to_string_value(i),
                                 Value::Str(s) => s,
@@ -6769,28 +7440,58 @@ impl Vm {
                             v
                         }
                     };
-                    if let Some(popped) = self.pop_frame() {
-                        self.free_slots(popped.slots);
+                    if let Some(mut popped) = self.pop_frame() {
+                        if popped.captured.is_empty()
+                            && popped.own_cells.is_empty()
+                            && popped.guards.is_empty()
+                            && popped.ctor_result.is_none()
+                        {
+                            popped.slots.clear();
+                            popped.ip = 0;
+                            popped.inst_ip = 0;
+                            popped.ret_pc = u32::MAX;
+                            popped.decoded = None;
+                            self.last_leaf_frame = Some((popped, cur_dec));
+                        } else {
+                            self.free_slots(popped.slots);
+                        }
                     }
                     self.depth = self.depth.saturating_sub(1);
                     if self.frames.len() == self.stop {
+                        self.last_leaf_frame = None;
                         return Some(ret_val);
                     }
                     let caller_nf = self.frames.len() - 1;
                     self.frames[caller_nf].slots.push(ret_val);
                     if !self.frames[caller_nf].captured.is_empty() {
+                        self.frames[caller_nf].ret_pc = u32::MAX;
                         return None;
                     }
-                    let caller_dec = self.decoded_for_frame(caller_nf)?;
                     let caller_ip = self.frames[caller_nf].ip;
-                    let ret_pc = caller_dec
-                        .ip_to_pc
-                        .get(caller_ip)
-                        .copied()
-                        .unwrap_or(u32::MAX);
-                    if ret_pc == u32::MAX {
-                        return None;
-                    }
+                    let fast_ret_pc = self.frames[caller_nf].ret_pc;
+                    self.frames[caller_nf].ret_pc = u32::MAX;
+                    let caller_dec = match self.frames[caller_nf].decoded.take() {
+                        Some(d) => d,
+                        None => self.decoded_for_frame(caller_nf)?,
+                    };
+                    let ret_pc = if fast_ret_pc != u32::MAX
+                        && caller_dec
+                            .insts
+                            .get(fast_ret_pc as usize)
+                            .is_some_and(|i| i.orig_ip as usize == caller_ip)
+                    {
+                        fast_ret_pc
+                    } else {
+                        let pc = caller_dec
+                            .ip_to_pc
+                            .get(caller_ip)
+                            .copied()
+                            .unwrap_or(u32::MAX);
+                        if pc == u32::MAX {
+                            return None;
+                        }
+                        pc
+                    };
                     nf = caller_nf;
                     cur_dec = caller_dec;
                     pc_u = ret_pc as usize;
@@ -6935,6 +7636,579 @@ impl Vm {
                 DecodedOp::Fallback => {
                     fallback!();
                 }
+            }
+        }
+    }
+
+    /// Execute a side-effect-free 1-arg decoded chunk directly on reusable
+    /// `slots` without pushing or popping a `CallFrame`. Returns `None` on
+    /// cancellation poll limit, dynamic type/edge bailouts, or runtime errors so
+    /// the caller falls back cleanly to a full `CallFrame` invocation.
+    fn exec_pure_leaf_1(
+        dec: &decode::DecodedChunk,
+        consts: &[Value],
+        arg: Value,
+        slots: &mut Vec<Value>,
+        local_poll: &mut u32,
+        poll_limit: u32,
+    ) -> Option<Value> {
+        use decode::{BinKind, CmpKind, DecodedOp};
+
+        slots.clear();
+        slots.push(arg);
+        let insts = &dec.insts;
+        let int_consts = &dec.int_consts;
+        let mut pc_u = 0usize;
+
+        macro_rules! set_int_slot {
+            ($idx:expr, $val:expr) => {{
+                let v = $val;
+                if let Some(Value::Int(r)) = slots.get_mut($idx) {
+                    *r = v;
+                } else {
+                    slots[$idx] = Value::Int(v);
+                }
+            }};
+        }
+
+        macro_rules! jump_to {
+            ($target:expr) => {{
+                let target = $target;
+                if target <= pc_u {
+                    *local_poll = local_poll.saturating_add(1);
+                    if *local_poll >= poll_limit {
+                        return None;
+                    }
+                }
+                pc_u = target;
+            }};
+        }
+
+        loop {
+            let inst = *insts.get(pc_u)?;
+            match inst.op {
+                DecodedOp::ModEqZeroJump => {
+                    let is_jtrue = (inst.aux & 1) != 0;
+                    let is_ne = (inst.aux & 2) != 0;
+                    let k = int_consts[inst.c as usize];
+                    let a_slot = inst.a as usize;
+                    let b_slot = inst.b as usize;
+                    let target = inst.d as usize;
+
+                    let batch_cfg = if a_slot != b_slot {
+                        let cand = if target == pc_u + 2 {
+                            Some((pc_u + 2, true))
+                        } else if target != pc_u + 1 {
+                            Some((pc_u + 1, false))
+                        } else {
+                            None
+                        };
+                        cand.and_then(|(inc_pc, jump_to_inc)| {
+                            let inc_i = insts.get(inc_pc)?;
+                            if inc_i.d as usize != pc_u
+                                || inc_i.ext != 0
+                                || inc_i.a as usize != b_slot
+                            {
+                                return None;
+                            }
+                            let step = int_consts[inc_i.b as usize];
+                            if inc_i.op == DecodedOp::IncMulCmpJumpLocal {
+                                let lim_slot = inc_i.c as usize;
+                                if lim_slot == b_slot {
+                                    return None;
+                                }
+                                let &Value::Int(lim) = slots.get(lim_slot)? else {
+                                    return None;
+                                };
+                                Some((
+                                    inc_pc,
+                                    jump_to_inc,
+                                    true,
+                                    step,
+                                    lim,
+                                    inc_i.aux != 0,
+                                    CmpKind::Lt,
+                                ))
+                            } else if inc_i.op == DecodedOp::IncCmpJumpLocal {
+                                let lim_is_const = (inc_i.aux & 1) != 0;
+                                let lim = if lim_is_const {
+                                    int_consts[inc_i.c as usize]
+                                } else {
+                                    let lim_slot = inc_i.c as usize;
+                                    if lim_slot == b_slot {
+                                        return None;
+                                    }
+                                    let &Value::Int(l) = slots.get(lim_slot)? else {
+                                        return None;
+                                    };
+                                    l
+                                };
+                                Some((
+                                    inc_pc,
+                                    jump_to_inc,
+                                    false,
+                                    step,
+                                    lim,
+                                    (inc_i.aux & 2) != 0,
+                                    CmpKind::from_u8(inc_i.aux >> 2),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                    if let Some((inc_pc, jump_to_inc, is_mul_inc, step, lim, inc_jtrue, inc_cmp)) =
+                        batch_cfg
+                    {
+                        if let (Some(&Value::Int(a)), Some(&Value::Int(mut b))) =
+                            (slots.get(a_slot), slots.get(b_slot))
+                        {
+                            let mut steps: u32 = 0;
+                            enum LeafBatchEnd {
+                                Fallback,
+                                Exit(usize),
+                                StayAtStart,
+                            }
+                            let mut bend_opt: Option<LeafBatchEnd> = None;
+                            if a >= 0
+                                && a <= u32::MAX as i64
+                                && b > 0
+                                && b <= u32::MAX as i64
+                                && step > 0
+                                && step <= u32::MAX as i64
+                                && lim >= 0
+                                && lim <= u32::MAX as i64
+                                && k >= 0
+                                && k <= u32::MAX as i64
+                                && (!is_mul_inc || b <= 65535)
+                            {
+                                let a_u = a as u32;
+                                let mut b_u = b as u32;
+                                let step_u = step as u32;
+                                let lim_u = lim as u32;
+                                let k_u = k as u32;
+                                let max_b: u64 = if is_mul_inc { 65535 } else { u32::MAX as u64 };
+                                loop {
+                                    let rem = a_u % b_u;
+                                    let cond = if is_ne { rem != k_u } else { rem == k_u };
+                                    let take_exit = if jump_to_inc {
+                                        cond != is_jtrue
+                                    } else {
+                                        cond == is_jtrue
+                                    };
+                                    if take_exit {
+                                        let exit_pc = if jump_to_inc { pc_u + 1 } else { target };
+                                        if !jump_to_inc && exit_pc <= pc_u {
+                                            steps += 1;
+                                            if (*local_poll).saturating_add(steps) >= poll_limit {
+                                                *local_poll = poll_limit;
+                                                return None;
+                                            }
+                                        }
+                                        bend_opt = Some(LeafBatchEnd::Exit(exit_pc));
+                                        break;
+                                    }
+                                    let next_b64 = (b_u as u64) + (step_u as u64);
+                                    if next_b64 > max_b {
+                                        break;
+                                    }
+                                    b_u = next_b64 as u32;
+                                    let cont_loop = if is_mul_inc {
+                                        (b_u * b_u <= lim_u) == inc_jtrue
+                                    } else {
+                                        (match inc_cmp {
+                                            CmpKind::Lt => b_u < lim_u,
+                                            CmpKind::Le => b_u <= lim_u,
+                                            CmpKind::Gt => b_u > lim_u,
+                                            CmpKind::Ge => b_u >= lim_u,
+                                            CmpKind::Eq => b_u == lim_u,
+                                            CmpKind::Ne => b_u != lim_u,
+                                        }) == inc_jtrue
+                                    };
+                                    if cont_loop {
+                                        steps += 1;
+                                        if (*local_poll).saturating_add(steps) >= poll_limit {
+                                            *local_poll = poll_limit;
+                                            return None;
+                                        }
+                                        if steps >= 128 {
+                                            bend_opt = Some(LeafBatchEnd::StayAtStart);
+                                            break;
+                                        }
+                                    } else {
+                                        bend_opt = Some(LeafBatchEnd::Exit(inc_pc + 1));
+                                        break;
+                                    }
+                                }
+                                b = b_u as i64;
+                            }
+                            let bend = match bend_opt {
+                                Some(end) => end,
+                                None => loop {
+                                    let Some(rem) = a.checked_rem(b) else {
+                                        break LeafBatchEnd::Fallback;
+                                    };
+                                    let cond = if is_ne { rem != k } else { rem == k };
+                                    let take_exit = if jump_to_inc {
+                                        cond != is_jtrue
+                                    } else {
+                                        cond == is_jtrue
+                                    };
+                                    if take_exit {
+                                        let exit_pc = if jump_to_inc { pc_u + 1 } else { target };
+                                        if !jump_to_inc && exit_pc <= pc_u {
+                                            steps += 1;
+                                            if (*local_poll).saturating_add(steps) >= poll_limit {
+                                                *local_poll = poll_limit;
+                                                return None;
+                                            }
+                                        }
+                                        break LeafBatchEnd::Exit(exit_pc);
+                                    }
+                                    let Some(next_b) = b.checked_add(step) else {
+                                        break LeafBatchEnd::Exit(inc_pc);
+                                    };
+                                    let cont_loop = if is_mul_inc {
+                                        let Some(prod) = next_b.checked_mul(next_b) else {
+                                            break LeafBatchEnd::Exit(inc_pc);
+                                        };
+                                        b = next_b;
+                                        (prod <= lim) == inc_jtrue
+                                    } else {
+                                        b = next_b;
+                                        inc_cmp.eval_i64(next_b, lim) == inc_jtrue
+                                    };
+                                    if cont_loop {
+                                        steps += 1;
+                                        if (*local_poll).saturating_add(steps) >= poll_limit {
+                                            *local_poll = poll_limit;
+                                            return None;
+                                        }
+                                        if steps >= 128 {
+                                            break LeafBatchEnd::StayAtStart;
+                                        }
+                                    } else {
+                                        break LeafBatchEnd::Exit(inc_pc + 1);
+                                    }
+                                },
+                            };
+                            *local_poll = local_poll.saturating_add(steps);
+                            match bend {
+                                LeafBatchEnd::Fallback => return None,
+                                LeafBatchEnd::Exit(next_pc) => {
+                                    set_int_slot!(b_slot, b);
+                                    pc_u = next_pc;
+                                    continue;
+                                }
+                                LeafBatchEnd::StayAtStart => {
+                                    set_int_slot!(b_slot, b);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    let (Some(&Value::Int(a)), Some(&Value::Int(b))) =
+                        (slots.get(a_slot), slots.get(b_slot))
+                    else {
+                        return None;
+                    };
+                    let rem = a.checked_rem(b)?;
+                    let cond = if is_ne { rem != k } else { rem == k };
+                    if cond == is_jtrue {
+                        jump_to!(target);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::AddLocalConst => {
+                    let dst = inst.a as usize;
+                    let src = inst.b as usize;
+                    let c = int_consts[inst.c as usize];
+                    if dst >= slots.len() {
+                        return None;
+                    }
+                    let &Value::Int(a) = slots.get(src)? else {
+                        return None;
+                    };
+                    let sum = a.checked_add(c)?;
+                    set_int_slot!(dst, sum);
+                    pc_u += 1;
+                }
+                DecodedOp::SubLocalConst => {
+                    let dst = inst.a as usize;
+                    let src = inst.b as usize;
+                    let c = int_consts[inst.c as usize];
+                    if dst >= slots.len() {
+                        return None;
+                    }
+                    let &Value::Int(a) = slots.get(src)? else {
+                        return None;
+                    };
+                    let diff = a.checked_sub(c)?;
+                    set_int_slot!(dst, diff);
+                    pc_u += 1;
+                }
+                DecodedOp::BinOpLocal2Set => {
+                    let dst = inst.a as usize;
+                    let sa = inst.b as usize;
+                    let sb = inst.c as usize;
+                    let bk = BinKind::from_u8(inst.aux);
+                    if dst >= slots.len() {
+                        return None;
+                    }
+                    let (Some(&Value::Int(a)), Some(&Value::Int(b))) =
+                        (slots.get(sa), slots.get(sb))
+                    else {
+                        return None;
+                    };
+                    let v = bk.eval_i64(a, b)?;
+                    set_int_slot!(dst, v);
+                    pc_u += 1;
+                }
+                DecodedOp::IncMulCmpJumpLocal => {
+                    let slot = inst.a as usize;
+                    let step = int_consts[inst.b as usize];
+                    let lim_slot = inst.c as usize;
+                    let is_jtrue = inst.aux != 0;
+                    let pops = inst.ext as usize;
+                    let slen = slots.len();
+                    if slen < pops || slot >= slen - pops || lim_slot >= slen - pops {
+                        return None;
+                    }
+                    let &Value::Int(cur) = slots.get(slot)? else {
+                        return None;
+                    };
+                    let next_v = cur.checked_add(step)?;
+                    let lim = if lim_slot == slot {
+                        next_v
+                    } else {
+                        let &Value::Int(l) = slots.get(lim_slot)? else {
+                            return None;
+                        };
+                        l
+                    };
+                    let prod = next_v.checked_mul(next_v)?;
+                    if pops > 0 {
+                        slots.truncate(slen - pops);
+                    }
+                    set_int_slot!(slot, next_v);
+                    if (prod <= lim) == is_jtrue {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::IncCmpJumpLocal => {
+                    let slot = inst.a as usize;
+                    let step = int_consts[inst.b as usize];
+                    let lim_is_const = (inst.aux & 1) != 0;
+                    let is_jtrue = (inst.aux & 2) != 0;
+                    let cmp = CmpKind::from_u8(inst.aux >> 2);
+                    let pops = inst.ext as usize;
+                    let slen = slots.len();
+                    if slen < pops || slot >= slen - pops {
+                        return None;
+                    }
+                    let &Value::Int(cur) = slots.get(slot)? else {
+                        return None;
+                    };
+                    let next_v = cur.checked_add(step)?;
+                    let lim = if lim_is_const {
+                        int_consts[inst.c as usize]
+                    } else if inst.c as usize >= slen - pops {
+                        return None;
+                    } else if inst.c as usize == slot {
+                        next_v
+                    } else {
+                        let &Value::Int(l) = slots.get(inst.c as usize)? else {
+                            return None;
+                        };
+                        l
+                    };
+                    if pops > 0 {
+                        slots.truncate(slen - pops);
+                    }
+                    set_int_slot!(slot, next_v);
+                    if cmp.eval_i64(next_v, lim) == is_jtrue {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::CmpJumpLocal2 => {
+                    let is_jtrue = (inst.aux & 1) != 0;
+                    let cmp = CmpKind::from_u8(inst.aux >> 1);
+                    let (Some(&Value::Int(a)), Some(&Value::Int(b))) =
+                        (slots.get(inst.a as usize), slots.get(inst.b as usize))
+                    else {
+                        return None;
+                    };
+                    if cmp.eval_i64(a, b) == is_jtrue {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::CmpJumpLocalConst => {
+                    let is_jtrue = (inst.aux & 1) != 0;
+                    let cmp = CmpKind::from_u8(inst.aux >> 1);
+                    let b = int_consts[inst.b as usize];
+                    let &Value::Int(a) = slots.get(inst.a as usize)? else {
+                        return None;
+                    };
+                    if cmp.eval_i64(a, b) == is_jtrue {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::MulCmpJumpLocal3 => {
+                    let is_jtrue = inst.aux != 0;
+                    let (Some(&Value::Int(a)), Some(&Value::Int(b)), Some(&Value::Int(c))) = (
+                        slots.get(inst.a as usize),
+                        slots.get(inst.b as usize),
+                        slots.get(inst.c as usize),
+                    ) else {
+                        return None;
+                    };
+                    let prod = a.checked_mul(b)?;
+                    if (prod <= c) == is_jtrue {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::ReturnFalse => return Some(Value::Bool(false)),
+                DecodedOp::ReturnTrue => return Some(Value::Bool(true)),
+                DecodedOp::ReturnLocal => return slots.get(inst.a as usize).cloned(),
+                DecodedOp::Return => return slots.pop(),
+                DecodedOp::GetLocal => {
+                    let v = slots.get(inst.a as usize)?.clone();
+                    slots.push(v);
+                    pc_u += 1;
+                }
+                DecodedOp::SetLocal => {
+                    let dst = inst.a as usize;
+                    let v = slots.last()?.clone();
+                    if dst >= slots.len() {
+                        return None;
+                    }
+                    slots[dst] = v;
+                    pc_u += 1;
+                }
+                DecodedOp::SetLocalPop => {
+                    let dst = inst.a as usize;
+                    if dst + 1 >= slots.len() {
+                        return None;
+                    }
+                    let v = slots.pop()?;
+                    slots[dst] = v;
+                    pc_u += 1;
+                }
+                DecodedOp::Const => {
+                    let v = consts.get(inst.a as usize)?.clone();
+                    slots.push(v);
+                    pc_u += 1;
+                }
+                DecodedOp::IntConst => {
+                    slots.push(Value::Int(int_consts[inst.a as usize]));
+                    pc_u += 1;
+                }
+                DecodedOp::ConstSetLocal => {
+                    let dst = inst.a as usize;
+                    if dst >= slots.len() {
+                        return None;
+                    }
+                    let v = if inst.ext != u16::MAX {
+                        Value::Int(int_consts[inst.ext as usize])
+                    } else {
+                        consts.get(inst.b as usize)?.clone()
+                    };
+                    slots[dst] = v;
+                    pc_u += 1;
+                }
+                DecodedOp::Jump | DecodedOp::Loop => {
+                    jump_to!(inst.d as usize);
+                }
+                DecodedOp::JumpIfFalse => {
+                    let Value::Bool(b) = slots.pop()? else {
+                        return None;
+                    };
+                    if !b {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::JumpIfTrue => {
+                    let Value::Bool(b) = slots.pop()? else {
+                        return None;
+                    };
+                    if b {
+                        jump_to!(inst.d as usize);
+                    } else {
+                        pc_u += 1;
+                    }
+                }
+                DecodedOp::Add
+                | DecodedOp::Sub
+                | DecodedOp::Mul
+                | DecodedOp::Div
+                | DecodedOp::Mod => {
+                    let len = slots.len();
+                    if len < 2 {
+                        return None;
+                    }
+                    let (Value::Int(a), Value::Int(b)) = (&slots[len - 2], &slots[len - 1]) else {
+                        return None;
+                    };
+                    let bk = match inst.op {
+                        DecodedOp::Add => BinKind::Add,
+                        DecodedOp::Sub => BinKind::Sub,
+                        DecodedOp::Mul => BinKind::Mul,
+                        DecodedOp::Div => BinKind::Div,
+                        _ => BinKind::Mod,
+                    };
+                    let res = bk.eval_i64(*a, *b)?;
+                    slots.pop();
+                    set_int_slot!(len - 2, res);
+                    pc_u += 1;
+                }
+                DecodedOp::Equal
+                | DecodedOp::NotEqual
+                | DecodedOp::Less
+                | DecodedOp::LessEq
+                | DecodedOp::Greater
+                | DecodedOp::GreaterEq => {
+                    let len = slots.len();
+                    if len < 2 {
+                        return None;
+                    }
+                    let (Value::Int(a), Value::Int(b)) = (&slots[len - 2], &slots[len - 1]) else {
+                        return None;
+                    };
+                    let cmp = match inst.op {
+                        DecodedOp::Equal => CmpKind::Eq,
+                        DecodedOp::NotEqual => CmpKind::Ne,
+                        DecodedOp::Less => CmpKind::Lt,
+                        DecodedOp::LessEq => CmpKind::Le,
+                        DecodedOp::Greater => CmpKind::Gt,
+                        _ => CmpKind::Ge,
+                    };
+                    let cond = cmp.eval_i64(*a, *b);
+                    slots.pop();
+                    slots[len - 2] = Value::Bool(cond);
+                    pc_u += 1;
+                }
+                DecodedOp::Pop => {
+                    slots.pop()?;
+                    pc_u += 1;
+                }
+                _ => return None,
             }
         }
     }

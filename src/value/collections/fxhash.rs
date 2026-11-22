@@ -84,7 +84,7 @@ pub type FxHashSet<T> = HashSet<T, BuildHasherDefault<FxHasher>>;
 #[inline]
 pub fn fx_hash_bytes(bytes: &[u8]) -> u64 {
     let len = bytes.len();
-    let mut hash = 3u64.wrapping_mul(K);
+    let hash = 3u64.wrapping_mul(K);
     if len <= 8 {
         let word = match len {
             0 => 0u64,
@@ -109,6 +109,13 @@ pub fn fx_hash_bytes(bytes: &[u8]) -> u64 {
         };
         return (hash.rotate_left(5) ^ word).wrapping_mul(K);
     }
+    fx_hash_bytes_long(bytes)
+}
+
+#[cold]
+#[inline(never)]
+fn fx_hash_bytes_long(bytes: &[u8]) -> u64 {
+    let mut hash = 3u64.wrapping_mul(K);
     let mut rest = bytes;
     while rest.len() >= 8 {
         let w = u64::from_ne_bytes(rest[..8].try_into().unwrap());
@@ -129,6 +136,19 @@ pub fn fx_hash_bytes(bytes: &[u8]) -> u64 {
         hash = (hash.rotate_left(5) ^ (rest[0] as u64)).wrapping_mul(K);
     }
     hash
+}
+
+/// Hash a little-endian SSO `ValueV2` string directly from its `tag` word when `len <= 3`,
+/// avoiding byte re-loading and jump tables on short keys (`"k0"`, `"id"`, `"sku"`, `"qty"`).
+#[inline(always)]
+pub fn fx_hash_sso_tag_le(tag: u64, raw: &[u8]) -> u64 {
+    let len = raw.len();
+    if len <= 3 {
+        let hash = 3u64.wrapping_mul(K);
+        let word = ((len as u64) << 56) | (tag >> 8);
+        return (hash.rotate_left(5) ^ word).wrapping_mul(K);
+    }
+    fx_hash_bytes(raw)
 }
 
 /// Fast FxHash of a string key, matching `fx_hash_map_key(&MapKey::Str(..))`.
@@ -157,4 +177,37 @@ pub fn fx_hash_map_key(k: &crate::value::MapKey) -> u64 {
         crate::value::MapKey::Str(_) => unreachable!(),
     }
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fx_hash_sso_tag_le_matches_fx_hash_bytes() {
+        let samples = [
+            "",
+            "a",
+            "k0",
+            "id",
+            "k63",
+            "sku",
+            "qty",
+            "abcd",
+            "price",
+            "SKU-199",
+            "12345678",
+            "123456789",
+            "123456789012345",
+        ];
+        for s in samples {
+            let v2 = crate::value::ValueV2::from_sso_str(s);
+            assert_eq!(
+                fx_hash_sso_tag_le(v2.tag, s.as_bytes()),
+                fx_hash_bytes(s.as_bytes()),
+                "mismatch for SSO string {:?}",
+                s
+            );
+        }
+    }
 }

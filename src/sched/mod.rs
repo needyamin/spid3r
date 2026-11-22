@@ -557,6 +557,12 @@ struct SchedInner {
     handles: Mutex<Vec<JoinHandle<()>>>,
     /// Set by `shutdown`: workers stop taking jobs and exit.
     stopping: AtomicBool,
+    #[cfg(not(target_arch = "wasm32"))]
+    workers_started: AtomicBool,
+    #[cfg(not(target_arch = "wasm32"))]
+    watchdog_started: AtomicBool,
+    #[cfg(not(target_arch = "wasm32"))]
+    start_lock: Mutex<()>,
     /// Watchdog ticker: signalled by `shutdown` to end the watchdog promptly.
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<()>,
@@ -598,16 +604,13 @@ const WATCHDOG_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(not(target_arch = "wasm32"))]
 const WATCHDOG_STALL_TICKS: u32 = 3;
 
-/// Start the process-wide pool (and with it the deadlock watchdog) the first
-/// time a task parks in a wait only another task can end. A program that
-/// never spawns has no pool of its own, so without this its single
-/// `recv`-with-no-sender would hang with no watchdog to notice.
+/// Start the process-wide pool's deadlock watchdog the first time a task
+/// parks in a wait only another task can end. A program that never spawns
+/// has no pool of its own, so without this its single `recv`-with-no-sender
+/// would hang with no watchdog to notice.
 #[cfg(not(target_arch = "wasm32"))]
 fn ensure_deadlock_watchdog() {
-    static ENSURE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    ENSURE.get_or_init(|| {
-        Scheduler::shared();
-    });
+    Scheduler::shared().ensure_watchdog();
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -627,11 +630,28 @@ static SCHED: OnceLock<Mutex<Option<Arc<Scheduler>>>> = OnceLock::new();
 #[cfg(not(target_arch = "wasm32"))]
 const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
 
+static SCHED_EXIT_HOOK: OnceLock<fn()> = OnceLock::new();
+
+fn run_shared_sched_exit() {
+    let _ = join_tasks_at_exit();
+    shutdown();
+}
+
+/// Drain and shut down the shared scheduler only if [`Scheduler::shared`] was
+/// ever initialized in this process. Allows AOT binaries that never reference
+/// `spawn` to dead-strip the scheduler pool and config INI loader.
+pub fn finish_aot_at_exit() {
+    if let Some(f) = SCHED_EXIT_HOOK.get() {
+        f();
+    }
+}
+
 impl Scheduler {
     /// The process-wide pool, started on first use. After
     /// [`Scheduler::shutdown`] the singleton is restarted on the next call, so
     /// a REPL or embedding host can keep spawning tasks after a clean stop.
     pub fn shared() -> Arc<Scheduler> {
+        let _ = SCHED_EXIT_HOOK.set(run_shared_sched_exit);
         let slot = SCHED.get_or_init(|| Mutex::new(None));
         let mut guard = slot.lock().unwrap();
         if let Some(sched) = guard.as_ref() {
@@ -648,7 +668,7 @@ impl Scheduler {
     /// down. Unlike [`Scheduler::shared`] this never starts a pool — used by
     /// the exit path, which must not spin threads up just to stop them.
     pub fn current() -> Option<Arc<Scheduler>> {
-        let slot = SCHED.get_or_init(|| Mutex::new(None));
+        let slot = SCHED.get()?;
         let guard = slot.lock().unwrap();
         guard.as_ref().filter(|sched| !sched.is_stopped()).cloned()
     }
@@ -668,7 +688,7 @@ impl Scheduler {
                 .map(|n| n.get())
                 .unwrap_or(1)
                 .min(max_workers);
-            Scheduler::build(base, queue_cap, max_workers)
+            Scheduler::build(base, queue_cap, max_workers, false)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -682,11 +702,11 @@ impl Scheduler {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn isolated(workers: usize, queue_cap: usize) -> Arc<Scheduler> {
         let workers = workers.max(1);
-        Scheduler::build(workers, queue_cap.max(1), workers)
+        Scheduler::build(workers, queue_cap.max(1), workers, true)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn build(base: usize, queue_cap: usize, max_workers: usize) -> Arc<Scheduler> {
+    fn build(base: usize, queue_cap: usize, max_workers: usize, eager: bool) -> Arc<Scheduler> {
         let inner = Arc::new(SchedInner {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
@@ -697,17 +717,56 @@ impl Scheduler {
             max_workers,
             handles: Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
+            workers_started: AtomicBool::new(false),
+            watchdog_started: AtomicBool::new(false),
+            start_lock: Mutex::new(()),
             watch: Mutex::new(()),
             watch_cv: Condvar::new(),
             next_id: Mutex::new(1),
             live: Mutex::new(0),
             idle: Condvar::new(),
         });
-        for _ in 0..base {
-            Scheduler::spawn_worker(&inner, base);
+        let sched = Arc::new(Scheduler { inner });
+        if eager {
+            sched.ensure_started();
         }
-        Scheduler::spawn_watchdog(&inner);
-        Arc::new(Scheduler { inner })
+        sched
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_watchdog(&self) {
+        if self.inner.watchdog_started.load(Ordering::Acquire) {
+            return;
+        }
+        let _guard = self.inner.start_lock.lock().unwrap();
+        if self.inner.stopping.load(Ordering::SeqCst)
+            || self.inner.watchdog_started.load(Ordering::Relaxed)
+        {
+            return;
+        }
+        Scheduler::spawn_watchdog(&self.inner);
+        self.inner.watchdog_started.store(true, Ordering::Release);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_started(&self) {
+        if self.inner.workers_started.load(Ordering::Acquire) {
+            return;
+        }
+        let _guard = self.inner.start_lock.lock().unwrap();
+        if self.inner.stopping.load(Ordering::SeqCst)
+            || self.inner.workers_started.load(Ordering::Relaxed)
+        {
+            return;
+        }
+        for _ in 0..self.inner.base {
+            Scheduler::spawn_worker(&self.inner, self.inner.base);
+        }
+        if !self.inner.watchdog_started.load(Ordering::Relaxed) {
+            Scheduler::spawn_watchdog(&self.inner);
+            self.inner.watchdog_started.store(true, Ordering::Release);
+        }
+        self.inner.workers_started.store(true, Ordering::Release);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -734,6 +793,7 @@ impl Scheduler {
             }
             w.alive += 1;
         }
+        crate::value::mark_multithreaded();
         let loop_inner = inner.clone();
         let spawned = thread::Builder::new()
             .name("spid3r-worker".to_string())
@@ -762,6 +822,7 @@ impl Scheduler {
     /// silently, report it once with an actionable message.
     #[cfg(not(target_arch = "wasm32"))]
     fn spawn_watchdog(inner: &Arc<SchedInner>) {
+        crate::value::mark_multithreaded();
         let loop_inner = inner.clone();
         let _ = thread::Builder::new()
             .name("spid3r-watchdog".to_string())
@@ -846,6 +907,7 @@ impl Scheduler {
                 task_finished(&self.inner);
                 return handle;
             }
+            self.ensure_started();
             let inner = self.inner.clone();
             let wrapped: Job = Box::new(move || {
                 // Count this thread as executing Spid3r code while the job
@@ -1057,6 +1119,15 @@ impl Scheduler {
                 let _tick = self.inner.watch.lock().unwrap();
                 self.inner.watch_cv.notify_all();
             }
+            // Synchronize with any concurrent `ensure_started` / `ensure_watchdog`
+            // so newly started workers are registered and woken before joining.
+            drop(self.inner.start_lock.lock().unwrap());
+            drop(self.inner.queue.lock().unwrap());
+            self.inner.cv.notify_all();
+            {
+                let _tick = self.inner.watch.lock().unwrap();
+                self.inner.watch_cv.notify_all();
+            }
             // Never join a worker that is still inside a job: it may be parked
             // in recv/join/mutex forever, and joining would hang the exit path.
             // (Checked on every call, including a repeat after a failed one.)
@@ -1100,16 +1171,14 @@ fn drain_ms() -> u64 {
 /// running after the deadline (0 when everything finished). Never starts a
 /// pool: if nothing ever spawned, there is nothing to wait for.
 pub fn drain_at_exit() -> usize {
+    let Some(sched) = Scheduler::current() else {
+        return 0;
+    };
     let ms = drain_ms();
-    match Scheduler::current() {
-        Some(sched) => {
-            if ms == 0 {
-                sched.live_tasks()
-            } else {
-                sched.drain(std::time::Duration::from_millis(ms))
-            }
-        }
-        None => 0,
+    if ms == 0 {
+        sched.live_tasks()
+    } else {
+        sched.drain(std::time::Duration::from_millis(ms))
     }
 }
 
@@ -1126,8 +1195,15 @@ pub fn shutdown() {
 /// some are still running after the deadline, say so on stderr instead of
 /// silently discarding their work.
 pub fn join_tasks_at_exit() -> usize {
+    let Some(sched) = Scheduler::current() else {
+        return 0;
+    };
     let ms = drain_ms();
-    let left = drain_at_exit();
+    let left = if ms == 0 {
+        sched.live_tasks()
+    } else {
+        sched.drain(std::time::Duration::from_millis(ms))
+    };
     if left > 0 {
         eprintln!(
             "spid3r: warning: {} task(s) still running after main returned \

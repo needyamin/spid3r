@@ -72,6 +72,12 @@ enum VarLoc<'ctx> {
         orig_slot: PointerValue<'ctx>,
         is_ulist: bool,
     },
+    /// Hoisted contiguous SSO+i64 open-addressed map view.
+    MapViewSsoI64 {
+        slots: PointerValue<'ctx>,
+        mask: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+    },
     /// Stack slot holding an upvalue-cell pointer.
     Cell(PointerValue<'ctx>),
     /// Index of the captured cell inside this function's environment.
@@ -970,6 +976,12 @@ pub struct Ir<'ctx> {
     /// Phase 2: set by self-guarded or non-throwing `compile_expr_inner` arms so
     /// `compile_expr` skips emitting a duplicate `spid3r_threw()` poll.
     expr_guarded: bool,
+    /// Phase 4b: pre-allocated reusable box holder per non-escaping loop-local `let v = xs[i]`.
+    loop_reuse_holders: HashMap<String, PointerValue<'ctx>>,
+    /// Containers proven read-only over the enclosing loop body so non-escaping
+    /// loop-local element bindings can borrow entries cleanly via
+    /// `spid3r_index_get_borrow_chk`.
+    loop_readonly_containers: HashSet<String>,
 }
 
 type MonoFnSig<'ctx> = (FunctionValue<'ctx>, Option<String>, Vec<Option<String>>);
@@ -1064,6 +1076,8 @@ impl<'ctx> Ir<'ctx> {
             shadowed_builtins: HashSet::new(),
             str_locals: None,
             expr_guarded: false,
+            loop_reuse_holders: HashMap::new(),
+            loop_readonly_containers: HashSet::new(),
             freestanding: false,
             is_entry: false,
             strings: HashMap::new(),
@@ -1736,7 +1750,10 @@ impl<'ctx> Ir<'ctx> {
     /// iterations, so a cancelled native task stops promptly without paying
     /// a runtime call on every iteration.
     fn emit_cancel_poll(&mut self, counter: PointerValue<'ctx>) {
-        const CANCEL_POLL_INTERVAL: i64 = 2048;
+        self.emit_cancel_poll_interval(counter, 2048);
+    }
+
+    fn emit_cancel_poll_interval(&mut self, counter: PointerValue<'ctx>, interval: i64) {
         let one = self.i64c(1);
         let cur = self
             .builder
@@ -1745,7 +1762,7 @@ impl<'ctx> Ir<'ctx> {
             .into_int_value();
         let next = self.builder.build_int_add(cur, one, "cancel.n1").unwrap();
         self.builder.build_store(counter, next).unwrap();
-        let limit = self.i64c(CANCEL_POLL_INTERVAL);
+        let limit = self.i64c(interval);
         let hit_raw = self
             .builder
             .build_int_compare(IntPredicate::UGE, next, limit, "cancel.hit")
@@ -1845,8 +1862,55 @@ impl<'ctx> Ir<'ctx> {
         }
     }
 
-    /// Convert a value handle to an i1 condition.
+    /// Convert a value handle to an i1 condition (inline `TAG_BOOL` fast path).
     fn cond_i1(&mut self, v: PointerValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        let v2_ty = self.val_v2_ty();
+        let tag_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, v, &[self.i64c(0), self.i32c(0)], "c.tp")
+                .unwrap()
+        };
+        let tag = self
+            .builder
+            .build_load(self.i64_ty(), tag_p, "c.tag")
+            .unwrap()
+            .into_int_value();
+        let is_bool_raw = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                self.i64c(crate::value::ValueV2::TAG_BOOL as i64),
+                "c.isb",
+            )
+            .unwrap();
+        let is_bool = self.expect_i1(is_bool_raw, true);
+        let fast_bb = self.new_block("cond.fast");
+        let slow_bb = self.new_block("cond.slow");
+        let cont_bb = self.new_block("cond.cont");
+        self.builder
+            .build_conditional_branch(is_bool, fast_bb, slow_bb)
+            .unwrap();
+
+        self.builder.position_at_end(fast_bb);
+        let pay_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, v, &[self.i64c(0), self.i32c(1)], "c.pp")
+                .unwrap()
+        };
+        let pay = self
+            .builder
+            .build_load(self.i64_ty(), pay_p, "c.pay")
+            .unwrap()
+            .into_int_value();
+        let fast_i1 = self
+            .builder
+            .build_int_compare(IntPredicate::NE, pay, self.i64c(0), "c.fast")
+            .unwrap();
+        let fast_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(slow_bb);
         let f = self.tramp(
             "spid3r_truthy",
             &[self.ptr_ty().into()],
@@ -1854,11 +1918,20 @@ impl<'ctx> Ir<'ctx> {
         );
         let r = self.emit_call(f, &[v.into()], "t");
         let b = call_int(r);
-        let zero = self.i8c(0);
-        let cname = self.tmp_name("c");
-        self.builder
-            .build_int_compare(IntPredicate::NE, b, zero, &cname)
-            .unwrap()
+        let slow_i1 = self
+            .builder
+            .build_int_compare(IntPredicate::NE, b, self.i8c(0), "c.slow")
+            .unwrap();
+        let slow_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        let phi = self
+            .builder
+            .build_phi(self.ctx.bool_type(), "c.phi")
+            .unwrap();
+        phi.add_incoming(&[(&fast_i1, fast_from), (&slow_i1, slow_from)]);
+        phi.as_basic_value().into_int_value()
     }
 
     /// Load the current function's environment pointer.
@@ -4058,6 +4131,318 @@ struct HoistedLoopPlan {
     bce: Option<BcePlan>,
 }
 
+struct HoistedMapLoopPlan {
+    maps: BTreeSet<String>,
+    /// Outer `VarLoc::Local` variables promoted to unboxed `i64`; bool = written in loop.
+    promoted: BTreeMap<String, bool>,
+}
+
+#[derive(Default)]
+struct MapLoopScan<'a> {
+    inner_decls: HashSet<String>,
+    outer_refs: HashSet<String>,
+    assigned: HashSet<String>,
+    written_inits: Vec<(String, Option<&'a Expr>)>,
+    assigns: Vec<(&'a str, AssignOp, &'a Expr)>,
+    binary_ops: Vec<(BinOp, &'a Expr, &'a Expr)>,
+    unary_negs: Vec<&'a Expr>,
+    bare_bool_vars: HashSet<String>,
+    index_sites: Vec<(String, &'a Expr)>,
+    has_string_call: bool,
+}
+
+impl<'a> MapLoopScan<'a> {
+    fn visit_stmts(&mut self, stmts: &'a [Stmt]) -> bool {
+        for s in stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    self.inner_decls.insert(name.clone());
+                    self.written_inits.push((name.clone(), value.as_ref()));
+                    if let Some(v) = value {
+                        if !self.visit_expr(v) {
+                            return false;
+                        }
+                    }
+                }
+                Stmt::Const { name, value, .. } => {
+                    self.inner_decls.insert(name.clone());
+                    self.written_inits.push((name.clone(), Some(value)));
+                    if !self.visit_expr(value) {
+                        return false;
+                    }
+                }
+                Stmt::If {
+                    cond,
+                    then,
+                    elifs,
+                    els,
+                    ..
+                } => {
+                    if !self.visit_cond(cond) || !self.visit_stmts(&then.stmts) {
+                        return false;
+                    }
+                    for (ec, eb) in elifs {
+                        if !self.visit_cond(ec) || !self.visit_stmts(&eb.stmts) {
+                            return false;
+                        }
+                    }
+                    if let Some(el) = els {
+                        if !self.visit_stmts(&el.stmts) {
+                            return false;
+                        }
+                    }
+                }
+                Stmt::Block(b) => {
+                    if !self.visit_stmts(&b.stmts) {
+                        return false;
+                    }
+                }
+                Stmt::Expr(e) => {
+                    if !self.visit_expr(e) {
+                        return false;
+                    }
+                }
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
+                Stmt::Import { .. }
+                | Stmt::Fn(_)
+                | Stmt::Class(_)
+                | Stmt::Interface(_)
+                | Stmt::Enum(_)
+                | Stmt::LetTuple { .. }
+                | Stmt::While { .. }
+                | Stmt::ForIn { .. }
+                | Stmt::ForC { .. }
+                | Stmt::Return { .. }
+                | Stmt::Spawn { .. }
+                | Stmt::Yield { .. }
+                | Stmt::Try { .. }
+                | Stmt::Throw { .. } => return false,
+            }
+        }
+        true
+    }
+
+    fn visit_cond(&mut self, e: &'a Expr) -> bool {
+        if let Expr::Ident(n, _) = e {
+            self.bare_bool_vars.insert(n.clone());
+        }
+        self.visit_expr(e)
+    }
+
+    fn visit_expr(&mut self, e: &'a Expr) -> bool {
+        match e {
+            Expr::Int(_, _)
+            | Expr::Float(_, _)
+            | Expr::Str(_, _)
+            | Expr::Bool(_, _)
+            | Expr::Null(_) => true,
+            Expr::Ident(name, _) => {
+                self.outer_refs.insert(name.clone());
+                true
+            }
+            Expr::Unary { op, expr, .. } => {
+                if matches!(op, UnOp::Not) {
+                    if let Expr::Ident(n, _) = expr.as_ref() {
+                        self.bare_bool_vars.insert(n.clone());
+                    }
+                } else {
+                    self.unary_negs.push(expr.as_ref());
+                }
+                self.visit_expr(expr)
+            }
+            Expr::Binary { op, l, r, .. } => {
+                self.binary_ops.push((*op, l.as_ref(), r.as_ref()));
+                self.visit_expr(l) && self.visit_expr(r)
+            }
+            Expr::Logical { l, r, .. } => {
+                if let Expr::Ident(n, _) = l.as_ref() {
+                    self.bare_bool_vars.insert(n.clone());
+                }
+                if let Expr::Ident(n, _) = r.as_ref() {
+                    self.bare_bool_vars.insert(n.clone());
+                }
+                self.visit_expr(l) && self.visit_expr(r)
+            }
+            Expr::Assign {
+                target, op, value, ..
+            } => {
+                let Expr::Ident(name, _) = target.as_ref() else {
+                    return false;
+                };
+                self.outer_refs.insert(name.clone());
+                self.assigned.insert(name.clone());
+                self.assigns.push((name.as_str(), *op, value.as_ref()));
+                self.visit_expr(value)
+            }
+            Expr::Index { object, index, .. } => {
+                if let Expr::Ident(obj_name, _) = object.as_ref() {
+                    self.index_sites.push((obj_name.clone(), index.as_ref()));
+                    self.visit_expr(index)
+                } else {
+                    self.visit_expr(object) && self.visit_expr(index)
+                }
+            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => {
+                if !type_args.is_empty() || args.len() != 1 {
+                    return false;
+                }
+                let Expr::Ident(fn_name, _) = callee.as_ref() else {
+                    return false;
+                };
+                if fn_name != "string" {
+                    return false;
+                }
+                self.has_string_call = true;
+                self.visit_expr(&args[0])
+            }
+            Expr::List(_, _)
+            | Expr::Fn(_)
+            | Expr::Method { .. }
+            | Expr::Field { .. }
+            | Expr::New { .. }
+            | Expr::Await(_, _)
+            | Expr::NamedArg { .. }
+            | Expr::Spawn { .. }
+            | Expr::Super { .. }
+            | Expr::SuperCall { .. }
+            | Expr::If { .. }
+            | Expr::OptField { .. }
+            | Expr::Coalesce { .. }
+            | Expr::Propagate(_, _)
+            | Expr::Match { .. } => false,
+        }
+    }
+}
+
+fn map_loop_is_str_expr(e: &Expr, str_vars: &HashSet<String>) -> bool {
+    match e {
+        Expr::Str(_, _) => true,
+        Expr::Ident(n, _) => str_vars.contains(n),
+        Expr::Call { callee, args, .. } => {
+            args.len() == 1 && matches!(callee.as_ref(), Expr::Ident(n, _) if n == "string")
+        }
+        Expr::Binary {
+            op: BinOp::Add,
+            l,
+            r,
+            ..
+        } => map_loop_is_str_expr(l, str_vars) || map_loop_is_str_expr(r, str_vars),
+        _ => false,
+    }
+}
+
+fn map_loop_is_float_or_bool_expr(
+    e: &Expr,
+    tainted: &HashSet<String>,
+    int_vars: &HashSet<String>,
+    maps: &BTreeSet<String>,
+) -> bool {
+    match e {
+        Expr::Float(_, _) | Expr::Bool(_, _) | Expr::Null(_) => true,
+        Expr::Ident(n, _) => tainted.contains(n),
+        Expr::Unary { op: UnOp::Not, .. } | Expr::Logical { .. } => true,
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => map_loop_is_float_or_bool_expr(expr, tainted, int_vars, maps),
+        Expr::Binary { op, l, r, .. } => match op {
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => true,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                map_loop_is_float_or_bool_expr(l, tainted, int_vars, maps)
+                    || map_loop_is_float_or_bool_expr(r, tainted, int_vars, maps)
+            }
+        },
+        Expr::Index { object, .. } => {
+            if let Expr::Ident(m, _) = object.as_ref() {
+                if maps.contains(m) {
+                    return false;
+                }
+            }
+            let _ = int_vars;
+            false
+        }
+        _ => false,
+    }
+}
+
+fn map_loop_is_def_int(e: &Expr, int_vars: &HashSet<String>, maps: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Int(_, _) => true,
+        Expr::Ident(n, _) => int_vars.contains(n),
+        Expr::Index { object, .. } => {
+            matches!(object.as_ref(), Expr::Ident(m, _) if maps.contains(m))
+        }
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => map_loop_is_def_int(expr, int_vars, maps),
+        Expr::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
+            l,
+            r,
+            ..
+        } => map_loop_is_def_int(l, int_vars, maps) && map_loop_is_def_int(r, int_vars, maps),
+        _ => false,
+    }
+}
+
+fn map_loop_has_grounded_int(
+    e: &Expr,
+    grounded: &HashSet<String>,
+    maps: &BTreeSet<String>,
+) -> bool {
+    match e {
+        Expr::Int(_, _) => true,
+        Expr::Ident(n, _) => grounded.contains(n),
+        Expr::Index { object, .. } => {
+            matches!(object.as_ref(), Expr::Ident(m, _) if maps.contains(m))
+        }
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => map_loop_has_grounded_int(expr, grounded, maps),
+        Expr::Binary {
+            op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
+            ..
+        } => true,
+        Expr::Binary {
+            op: BinOp::Add,
+            l,
+            r,
+            ..
+        } => {
+            map_loop_has_grounded_int(l, grounded, maps)
+                || map_loop_has_grounded_int(r, grounded, maps)
+        }
+        _ => false,
+    }
+}
+
+fn map_loop_is_obviously_int_idx(e: &Expr, known_int_vars: &HashSet<String>) -> bool {
+    match e {
+        Expr::Int(_, _) => true,
+        Expr::Ident(n, _) => known_int_vars.contains(n),
+        Expr::Unary { op: UnOp::Neg, .. } => true,
+        Expr::Binary { op, l, r, .. } => match op {
+            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => true,
+            BinOp::Add => {
+                map_loop_is_obviously_int_idx(l, known_int_vars)
+                    && map_loop_is_obviously_int_idx(r, known_int_vars)
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn collect_shadowed_builtins_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Assign { target, value, .. } => {
@@ -4319,12 +4704,14 @@ impl<'ctx> Ir<'ctx> {
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
-                    if matches!(
-                        self.lookup(name),
+                    match self.lookup(name) {
                         Some(VarLoc::UListI64(_)) | Some(VarLoc::RowViewI64 { .. })
-                    ) && self.is_int_expr(index)
-                    {
-                        return true;
+                            if self.is_int_expr(index) =>
+                        {
+                            return true;
+                        }
+                        Some(VarLoc::MapViewSsoI64 { .. }) => return true,
+                        _ => {}
                     }
                 }
                 false
@@ -4783,6 +5170,229 @@ impl<'ctx> Ir<'ctx> {
             index_expr,
             Expr::Ident(id, _) if self.row_bce_vars.get(list_name) == Some(id)
         )
+    }
+
+    /// Inline open-addressed lookup on a hoisted `MapViewSsoI64` (`<= 15`-byte
+    /// string key -> `i64`), falling back to `spid3r_index_get_chk` on miss/non-SSO.
+    fn emit_map_view_sso_i64_get(
+        &mut self,
+        slots: PointerValue<'ctx>,
+        mask: inkwell::values::IntValue<'ctx>,
+        orig_slot: PointerValue<'ctx>,
+        index_expr: &Expr,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        let slot_ty = self.ctx.struct_type(
+            &[
+                self.i64_ty().into(),
+                self.i64_ty().into(),
+                self.i64_ty().into(),
+            ],
+            false,
+        );
+        let slow_bb = self.new_block("mv.slow");
+        let cont_bb = self.new_block("mv.cont");
+        let probe_init_bb = self.new_block("mv.pinit");
+        let probe_bb = self.new_block("mv.probe");
+        let chk_pay_bb = self.new_block("mv.pay");
+        let hit_bb = self.new_block("mv.hit");
+        let chk_empty_bb = self.new_block("mv.empty");
+        let step_bb = self.new_block("mv.step");
+
+        let (k_tag, k_pay, pos0, idx_v2_opt) = match index_expr {
+            Expr::Str(lit, _) if lit.len() <= 15 => {
+                let v2 = crate::value::ValueV2::from_sso_bytes(lit.as_bytes());
+                let x = v2.tag ^ v2.payload;
+                let h = x.wrapping_mul(0x517c_c1b7_2722_0a95);
+                let h_mix = (h >> 32) ^ h;
+                self.br_to(probe_init_bb);
+                self.builder.position_at_end(probe_init_bb);
+                let pos0 = self
+                    .builder
+                    .build_and(self.i64c(h_mix as i64), mask, "mv.p0")
+                    .unwrap();
+                self.br_to(probe_bb);
+                (
+                    self.i64c(v2.tag as i64),
+                    self.i64c(v2.payload as i64),
+                    pos0,
+                    None,
+                )
+            }
+            _ => {
+                let idx_v2 = self.compile_expr(index_expr)?;
+                let v2_ty = self.val_v2_ty();
+                let kt_p = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(v2_ty, idx_v2, &[self.i64c(0), self.i32c(0)], "mv.ktp")
+                        .unwrap()
+                };
+                let kp_p = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(v2_ty, idx_v2, &[self.i64c(0), self.i32c(1)], "mv.kpp")
+                        .unwrap()
+                };
+                let k_tag = self
+                    .builder
+                    .build_load(self.i64_ty(), kt_p, "mv.kt")
+                    .unwrap()
+                    .into_int_value();
+                let k_pay = self
+                    .builder
+                    .build_load(self.i64_ty(), kp_p, "mv.kp")
+                    .unwrap()
+                    .into_int_value();
+                let lo = self
+                    .builder
+                    .build_and(k_tag, self.i64c(0xFF), "mv.klo")
+                    .unwrap();
+                let sso_len = self
+                    .builder
+                    .build_int_sub(
+                        lo,
+                        self.i64c(crate::value::ValueV2::TAG_SSO_BASE as i64),
+                        "mv.klen",
+                    )
+                    .unwrap();
+                let is_sso_raw = self
+                    .builder
+                    .build_int_compare(IntPredicate::ULT, sso_len, self.i64c(16), "mv.sso")
+                    .unwrap();
+                let is_sso = self.expect_i1(is_sso_raw, true);
+                self.builder
+                    .build_conditional_branch(is_sso, probe_init_bb, slow_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(probe_init_bb);
+                let x = self.builder.build_xor(k_tag, k_pay, "mv.x").unwrap();
+                let h = self
+                    .builder
+                    .build_int_mul(x, self.i64c(0x517c_c1b7_2722_0a95u64 as i64), "mv.h")
+                    .unwrap();
+                let h_hi = self
+                    .builder
+                    .build_right_shift(h, self.i64c(32), false, "mv.hhi")
+                    .unwrap();
+                let h_mix = self.builder.build_xor(h_hi, h, "mv.hmix").unwrap();
+                let pos0 = self.builder.build_and(h_mix, mask, "mv.p0").unwrap();
+                self.br_to(probe_bb);
+                (k_tag, k_pay, pos0, Some(idx_v2))
+            }
+        };
+
+        self.builder.position_at_end(probe_bb);
+        let pos_phi = self.builder.build_phi(self.i64_ty(), "mv.pos").unwrap();
+        let pos = pos_phi.as_basic_value().into_int_value();
+        let slot_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(slot_ty, slots, &[pos], "mv.sp")
+                .unwrap()
+        };
+        let st_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(0)], "mv.stp")
+                .unwrap()
+        };
+        let s_tag = self
+            .builder
+            .build_load(self.i64_ty(), st_p, "mv.st")
+            .unwrap()
+            .into_int_value();
+        let tag_eq = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, s_tag, k_tag, "mv.teq")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(tag_eq, chk_pay_bb, chk_empty_bb)
+            .unwrap();
+
+        self.builder.position_at_end(chk_pay_bb);
+        let sp_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(1)], "mv.spp")
+                .unwrap()
+        };
+        let s_pay = self
+            .builder
+            .build_load(self.i64_ty(), sp_p, "mv.spay")
+            .unwrap()
+            .into_int_value();
+        let pay_eq = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, s_pay, k_pay, "mv.peq")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(pay_eq, hit_bb, step_bb)
+            .unwrap();
+
+        self.builder.position_at_end(hit_bb);
+        let sv_p = unsafe {
+            self.builder
+                .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(2)], "mv.svp")
+                .unwrap()
+        };
+        let fast_val = self
+            .builder
+            .build_load(self.i64_ty(), sv_p, "mv.val")
+            .unwrap()
+            .into_int_value();
+        let hit_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(chk_empty_bb);
+        let is_empty_raw = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, s_tag, self.i64c(0), "mv.emp")
+            .unwrap();
+        let is_empty = self.expect_i1(is_empty_raw, false);
+        self.builder
+            .build_conditional_branch(is_empty, slow_bb, step_bb)
+            .unwrap();
+
+        self.builder.position_at_end(step_bb);
+        let pos_p1 = self
+            .builder
+            .build_int_add(pos, self.i64c(1), "mv.inc")
+            .unwrap();
+        let pos_next = self.builder.build_and(pos_p1, mask, "mv.next").unwrap();
+        pos_phi.add_incoming(&[(&pos0, probe_init_bb), (&pos_next, step_bb)]);
+        self.br_to(probe_bb);
+
+        self.builder.position_at_end(slow_bb);
+        let idx_v2 = match idx_v2_opt {
+            Some(p) => p,
+            None => match index_expr {
+                Expr::Str(lit, _) => self.v_str(lit),
+                _ => self.compile_expr(index_expr)?,
+            },
+        };
+        let out = self.alloc_v2_slot();
+        let f_chk = self.tramp(
+            "spid3r_index_get_chk",
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+            ],
+            Some(self.i8_ty().into()),
+        );
+        let call_r = self
+            .builder
+            .build_call(
+                f_chk,
+                &[out.into(), orig_slot.into(), idx_v2.into()],
+                "mv.chk",
+            )
+            .unwrap();
+        self.throw_guard_i8_call(call_r);
+        let slow_val = self.call1p_to_i64("spid3r_to_i64", out);
+        let slow_from = self.cur_block().unwrap();
+        self.br_to(cont_bb);
+
+        self.builder.position_at_end(cont_bb);
+        let phi = self.builder.build_phi(self.i64_ty(), "mv.res").unwrap();
+        phi.add_incoming(&[(&fast_val, hit_from), (&slow_val, slow_from)]);
+        self.expr_guarded = true;
+        Ok(phi.as_basic_value().into_int_value())
     }
 
     /// Phase 1: emit inline slice read for a hoisted `RowViewI64`, eliding the
@@ -5329,6 +5939,7 @@ impl<'ctx> Ir<'ctx> {
             if w.loop_declared.contains(name)
                 || w.assigned_vars.contains(name)
                 || w.standalone_uses.contains(name)
+                || self.str_locals.as_ref().is_some_and(|s| s.contains(name))
             {
                 continue;
             }
@@ -5360,6 +5971,7 @@ impl<'ctx> Ir<'ctx> {
             if rows.contains_key(name)
                 || w.loop_declared.contains(name)
                 || w.nested_assigned.contains(name)
+                || self.str_locals.as_ref().is_some_and(|s| s.contains(name))
             {
                 continue;
             }
@@ -5514,18 +6126,12 @@ impl<'ctx> Ir<'ctx> {
             }
         }
         for e in &w.all_exprs {
-            if let Expr::Binary {
-                op: BinOp::Mod,
-                l,
-                r,
-                ..
-            } = e
+            if matches!(e, Expr::Unary { .. } | Expr::Binary { .. })
+                && self
+                    .sim_expr_kind(e, &rows, &promoted, &w.loop_declared)
+                    .is_none()
             {
-                let lk = self.sim_expr_kind(l, &rows, &promoted, &w.loop_declared);
-                let rk = self.sim_expr_kind(r, &rows, &promoted, &w.loop_declared);
-                if matches!(lk, Some(SimKind::Float)) || matches!(rk, Some(SimKind::Float)) {
-                    return None;
-                }
+                return None;
             }
         }
 
@@ -5644,7 +6250,431 @@ impl<'ctx> Ir<'ctx> {
         })
     }
 
-    fn emit_while_loop_plain(&mut self, cond: &Expr, body: &Block) -> IrResult<()> {
+    fn stmt_uses_safe_non_escaping_ident(s: &Stmt, target: &str) -> bool {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                name != target
+                    && value
+                        .as_ref()
+                        .is_none_or(|v| Self::expr_uses_safe_non_escaping_ident(v, target))
+            }
+            Stmt::Const { name, value, .. } => {
+                name != target && Self::expr_uses_safe_non_escaping_ident(value, target)
+            }
+            Stmt::Expr(e) => Self::expr_uses_safe_non_escaping_ident(e, target),
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                ..
+            } => {
+                Self::expr_uses_safe_non_escaping_ident(cond, target)
+                    && then
+                        .stmts
+                        .iter()
+                        .all(|st| Self::stmt_uses_safe_non_escaping_ident(st, target))
+                    && elifs.iter().all(|(c, b)| {
+                        Self::expr_uses_safe_non_escaping_ident(c, target)
+                            && b.stmts
+                                .iter()
+                                .all(|st| Self::stmt_uses_safe_non_escaping_ident(st, target))
+                    })
+                    && els.as_ref().is_none_or(|b| {
+                        b.stmts
+                            .iter()
+                            .all(|st| Self::stmt_uses_safe_non_escaping_ident(st, target))
+                    })
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => true,
+            Stmt::Return { value: None, .. } => true,
+            Stmt::Return { value: Some(v), .. } => !Self::expr_uses_ident(v, target),
+            Stmt::Yield { value, .. } => !Self::expr_uses_ident(value, target),
+            Stmt::Block(b) => b
+                .stmts
+                .iter()
+                .all(|st| Self::stmt_uses_safe_non_escaping_ident(st, target)),
+            Stmt::Throw { value, .. } => !Self::expr_uses_ident(value, target),
+            Stmt::While { cond, body, .. } => {
+                !Self::expr_uses_ident(cond, target) && !Self::stmts_use_ident(&body.stmts, target)
+            }
+            Stmt::ForIn {
+                var, iter, body, ..
+            } => {
+                var != target
+                    && !Self::expr_uses_ident(iter, target)
+                    && !Self::stmts_use_ident(&body.stmts, target)
+            }
+            Stmt::ForC {
+                init,
+                cond,
+                post,
+                body,
+                ..
+            } => {
+                !Self::stmt_uses_ident(init, target)
+                    && !Self::expr_uses_ident(cond, target)
+                    && !Self::expr_uses_ident(post, target)
+                    && !Self::stmts_use_ident(&body.stmts, target)
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                !Self::stmts_use_ident(&body.stmts, target)
+                    && catch.as_ref().is_none_or(|c| {
+                        c.name != target && !Self::stmts_use_ident(&c.body.stmts, target)
+                    })
+                    && finally
+                        .as_ref()
+                        .is_none_or(|f| !Self::stmts_use_ident(&f.stmts, target))
+            }
+            Stmt::Fn(p) => {
+                p.name.as_deref() != Some(target) && !Self::stmts_use_ident(&p.body.stmts, target)
+            }
+            Stmt::Class(c) => c
+                .methods
+                .iter()
+                .all(|m| !Self::stmts_use_ident(&m.body.stmts, target)),
+            Stmt::LetTuple { value, .. } => !Self::expr_uses_ident(value, target),
+            Stmt::Spawn { callable, .. } => !Self::expr_uses_ident(callable, target),
+            Stmt::Enum(_) | Stmt::Interface(_) | Stmt::Import { .. } => true,
+        }
+    }
+
+    fn expr_uses_safe_non_escaping_ident(e: &Expr, target: &str) -> bool {
+        match e {
+            Expr::Ident(n, _) => n != target,
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Null(_) => {
+                true
+            }
+            Expr::Unary { expr, .. } => Self::expr_uses_safe_non_escaping_ident(expr, target),
+            Expr::Binary { l, r, .. } | Expr::Logical { l, r, .. } => {
+                Self::expr_uses_safe_non_escaping_ident(l, target)
+                    && Self::expr_uses_safe_non_escaping_ident(r, target)
+            }
+            Expr::Assign {
+                target: lhs, value, ..
+            } => {
+                !Self::expr_uses_ident(lhs, target)
+                    && Self::expr_uses_safe_non_escaping_ident(value, target)
+            }
+            Expr::Index { object, index, .. } => {
+                let obj_ok = matches!(&**object, Expr::Ident(n, _) if n == target)
+                    || Self::expr_uses_safe_non_escaping_ident(object, target);
+                obj_ok && Self::expr_uses_safe_non_escaping_ident(index, target)
+            }
+            Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+                matches!(&**object, Expr::Ident(n, _) if n == target)
+                    || Self::expr_uses_safe_non_escaping_ident(object, target)
+            }
+            Expr::Method {
+                object, name, args, ..
+            } => {
+                let obj_ok = (name == "len"
+                    && args.is_empty()
+                    && matches!(&**object, Expr::Ident(n, _) if n == target))
+                    || Self::expr_uses_safe_non_escaping_ident(object, target);
+                obj_ok
+                    && args
+                        .iter()
+                        .all(|a| Self::expr_uses_safe_non_escaping_ident(a, target))
+            }
+            Expr::Call { callee, args, .. } => {
+                Self::expr_uses_safe_non_escaping_ident(callee, target)
+                    && args
+                        .iter()
+                        .all(|a| Self::expr_uses_safe_non_escaping_ident(a, target))
+            }
+            Expr::List(items, _) | Expr::New { args: items, .. } => items
+                .iter()
+                .all(|a| Self::expr_uses_safe_non_escaping_ident(a, target)),
+            Expr::Coalesce { l, r, .. } => {
+                !Self::expr_uses_ident(l, target) && !Self::expr_uses_ident(r, target)
+            }
+            Expr::Propagate(inner, _)
+            | Expr::Await(inner, _)
+            | Expr::Spawn {
+                callable: inner, ..
+            }
+            | Expr::NamedArg { value: inner, .. } => !Self::expr_uses_ident(inner, target),
+            Expr::Super { .. } => true,
+            Expr::SuperCall { args, .. } => !args.iter().any(|a| Self::expr_uses_ident(a, target)),
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                !Self::expr_uses_ident(cond, target)
+                    && !Self::stmts_use_ident(&then.stmts, target)
+                    && els
+                        .as_ref()
+                        .is_none_or(|b| !Self::stmts_use_ident(&b.stmts, target))
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                !Self::expr_uses_ident(scrutinee, target)
+                    && arms.iter().all(|a| {
+                        a.guard
+                            .as_ref()
+                            .is_none_or(|g| !Self::expr_uses_ident(g, target))
+                            && !Self::stmts_use_ident(&a.body.stmts, target)
+                    })
+            }
+            Expr::Fn(p) => !Self::stmts_use_ident(&p.body.stmts, target),
+        }
+    }
+
+    fn stmt_uses_ident(s: &Stmt, target: &str) -> bool {
+        let mut dummy = HashSet::new();
+        match s {
+            Stmt::Let { name, value, .. } => {
+                name == target
+                    || value
+                        .as_ref()
+                        .is_some_and(|v| Self::expr_uses_ident(v, target))
+            }
+            Stmt::Const { name, value, .. } => {
+                name == target || Self::expr_uses_ident(value, target)
+            }
+            _ => {
+                collect_declared_stmt(s, &mut dummy);
+                !Self::stmt_uses_safe_non_escaping_ident(s, target) || dummy.contains(target)
+            }
+        }
+    }
+
+    fn stmts_use_ident(stmts: &[Stmt], target: &str) -> bool {
+        let mut decl = HashSet::new();
+        collect_declared(stmts, &mut decl);
+        if decl.contains(target) {
+            return true;
+        }
+        let mut outer = HashSet::new();
+        let mut frames = Vec::new();
+        collect_outer_uses(stmts, &mut frames, &mut outer);
+        outer.contains(target)
+    }
+
+    fn expr_uses_ident(e: &Expr, target: &str) -> bool {
+        let mut outer = HashSet::new();
+        let mut frames = Vec::new();
+        collect_outer_uses_expr(e, &mut frames, &mut outer);
+        let mut decl = HashSet::new();
+        collect_declared_expr(e, &mut decl);
+        outer.contains(target) || decl.contains(target)
+    }
+
+    fn find_non_escaping_loop_index_lets(stmts: &[Stmt]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (idx, s) in stmts.iter().enumerate() {
+            let Stmt::Let {
+                name,
+                value: Some(Expr::Index { object, index, .. }),
+                ..
+            } = s
+            else {
+                continue;
+            };
+            if out.contains(name)
+                || Self::expr_uses_ident(object, name)
+                || Self::expr_uses_ident(index, name)
+            {
+                continue;
+            }
+            if stmts[..idx].iter().any(|st| {
+                !Self::stmt_uses_safe_non_escaping_ident(st, name)
+                    || Self::stmt_uses_ident_simple(st, name)
+            }) {
+                continue;
+            }
+            if stmts[idx + 1..]
+                .iter()
+                .all(|st| Self::stmt_uses_safe_non_escaping_ident(st, name))
+            {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
+    fn stmt_uses_ident_simple(s: &Stmt, target: &str) -> bool {
+        let mut outer = HashSet::new();
+        let mut frames = Vec::new();
+        collect_outer_uses(std::slice::from_ref(s), &mut frames, &mut outer);
+        let mut decl = HashSet::new();
+        collect_declared_stmt(s, &mut decl);
+        outer.contains(target) || decl.contains(target)
+    }
+
+    fn is_read_only_loop_body(&self, stmts: &[Stmt], container_name: &str) -> bool {
+        fn is_prim_expr(ir: &Ir<'_>, e: &Expr, target: &str) -> bool {
+            match e {
+                Expr::Int(..)
+                | Expr::Float(..)
+                | Expr::Str(..)
+                | Expr::Bool(..)
+                | Expr::Null(_) => true,
+                Expr::Ident(n, _) => {
+                    n != target
+                        && (ir.int_locals.as_ref().is_some_and(|s| s.contains(n))
+                            || ir.float_locals.as_ref().is_some_and(|s| s.contains(n))
+                            || ir.str_locals.as_ref().is_some_and(|s| s.contains(n))
+                            || ir.top_ints.contains_key(n)
+                            || matches!(
+                                ir.lookup(n),
+                                Some(VarLoc::LocalInt(_) | VarLoc::LocalFloat(_))
+                            ))
+                }
+                Expr::Unary {
+                    op: UnOp::Not,
+                    expr,
+                    ..
+                } => walk_expr(ir, expr, target),
+                Expr::Unary {
+                    op: UnOp::Neg,
+                    expr,
+                    ..
+                } => is_prim_expr(ir, expr, target),
+                Expr::Logical { l, r, .. } => walk_expr(ir, l, target) && walk_expr(ir, r, target),
+                Expr::Binary { op, l, r, .. } => match op {
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        walk_expr(ir, l, target) && walk_expr(ir, r, target)
+                    }
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                        is_prim_expr(ir, l, target) && is_prim_expr(ir, r, target)
+                    }
+                },
+                Expr::Method {
+                    object, name, args, ..
+                } => {
+                    name == "len"
+                        && args.is_empty()
+                        && matches!(object.as_ref(), Expr::Ident(n, _) if n == target)
+                }
+                _ => false,
+            }
+        }
+        fn walk_expr(ir: &Ir<'_>, e: &Expr, target: &str) -> bool {
+            match e {
+                Expr::Int(..)
+                | Expr::Float(..)
+                | Expr::Str(..)
+                | Expr::Bool(..)
+                | Expr::Null(_) => true,
+                Expr::Ident(n, _) => n != target,
+                Expr::Unary {
+                    op: UnOp::Not,
+                    expr,
+                    ..
+                }
+                | Expr::NamedArg { value: expr, .. } => walk_expr(ir, expr, target),
+                Expr::Unary {
+                    op: UnOp::Neg,
+                    expr,
+                    ..
+                } => is_prim_expr(ir, expr, target),
+                Expr::Logical { l, r, .. } => walk_expr(ir, l, target) && walk_expr(ir, r, target),
+                Expr::Binary { op, l, r, .. } => match op {
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        walk_expr(ir, l, target) && walk_expr(ir, r, target)
+                    }
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                        is_prim_expr(ir, l, target) && is_prim_expr(ir, r, target)
+                    }
+                },
+                Expr::Assign {
+                    target: lhs,
+                    op,
+                    value,
+                    ..
+                } => {
+                    let lhs_ok = match lhs.as_ref() {
+                        Expr::Ident(n, _) => n != target,
+                        _ => false,
+                    };
+                    let op_ok = *op == AssignOp::Assign
+                        || (is_prim_expr(ir, lhs, target) && is_prim_expr(ir, value, target));
+                    lhs_ok && op_ok && walk_expr(ir, value, target)
+                }
+                Expr::Index { object, index, .. } => {
+                    let obj_ok = matches!(object.as_ref(), Expr::Ident(n, _) if n == target)
+                        || walk_expr(ir, object, target);
+                    obj_ok && walk_expr(ir, index, target)
+                }
+                Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+                    walk_expr(ir, object, target)
+                }
+                Expr::Method {
+                    object, name, args, ..
+                } => {
+                    name == "len"
+                        && args.is_empty()
+                        && matches!(object.as_ref(), Expr::Ident(n, _) if n == target)
+                }
+                _ => false,
+            }
+        }
+        fn walk_stmt(ir: &Ir<'_>, s: &Stmt, target: &str) -> bool {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    name != target && value.as_ref().is_none_or(|v| walk_expr(ir, v, target))
+                }
+                Stmt::Const { name, value, .. } => name != target && walk_expr(ir, value, target),
+                Stmt::Expr(e) => walk_expr(ir, e, target),
+                Stmt::If {
+                    cond,
+                    then,
+                    elifs,
+                    els,
+                    ..
+                } => {
+                    walk_expr(ir, cond, target)
+                        && then.stmts.iter().all(|st| walk_stmt(ir, st, target))
+                        && elifs.iter().all(|(c, b)| {
+                            walk_expr(ir, c, target)
+                                && b.stmts.iter().all(|st| walk_stmt(ir, st, target))
+                        })
+                        && els
+                            .as_ref()
+                            .is_none_or(|b| b.stmts.iter().all(|st| walk_stmt(ir, st, target)))
+                }
+                Stmt::Block(b) => b.stmts.iter().all(|st| walk_stmt(ir, st, target)),
+                Stmt::Break { .. } | Stmt::Continue { .. } => true,
+                _ => false,
+            }
+        }
+        !self
+            .boxed
+            .as_ref()
+            .is_some_and(|b| b.contains(container_name))
+            && stmts.iter().all(|st| walk_stmt(self, st, container_name))
+    }
+
+    fn emit_while_loop_body(&mut self, cond: &Expr, body: &Block) -> IrResult<()> {
+        let candidates = Self::find_non_escaping_loop_index_lets(&body.stmts);
+        let mut prev_holders: Vec<(String, Option<PointerValue<'ctx>>)> = Vec::new();
+        for name in candidates {
+            let eligible = !(self.is_entry && self.scopes.len() == 1)
+                && !self.boxed.as_ref().is_some_and(|b| b.contains(&name))
+                && !self.int_locals.as_ref().is_some_and(|s| s.contains(&name))
+                && !self
+                    .float_locals
+                    .as_ref()
+                    .is_some_and(|s| s.contains(&name))
+                && !self
+                    .unboxed_lists
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key(&name));
+            if eligible {
+                let holder = self.alloc_v2_slot();
+                let f = self.tramp("spid3r_reuse_box_new", &[self.ptr_ty().into()], None);
+                self.builder.build_call(f, &[holder.into()], "").unwrap();
+                let prev = self.loop_reuse_holders.insert(name.clone(), holder);
+                prev_holders.push((name, prev));
+            }
+        }
         let cond_bb = self.new_block("while.cond");
         let body_bb = self.new_block("while.body");
         let end_bb = self.new_block("while.end");
@@ -5656,17 +6686,183 @@ impl<'ctx> Ir<'ctx> {
         // entry block, so it is live for the whole loop.
         let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
         self.init_entry_slot(counter, self.i64c(0));
-        self.emit_cancel_poll(counter);
+        let poll_interval = if block_contains_call_or_alloc(&body.stmts) {
+            64
+        } else {
+            2048
+        };
+        self.emit_cancel_poll_interval(counter, poll_interval);
         self.loops.push(LoopFrame {
             break_bb: end_bb,
             continue_bb: cond_bb,
         });
         let res = self.compile_block(&body.stmts);
         self.loops.pop();
+        for (name, prev) in prev_holders.into_iter().rev() {
+            match prev {
+                Some(p) => {
+                    self.loop_reuse_holders.insert(name, p);
+                }
+                None => {
+                    self.loop_reuse_holders.remove(&name);
+                }
+            }
+        }
         res?;
         self.br_to(cond_bb);
         self.builder.position_at_end(end_bb);
         Ok(())
+    }
+
+    fn emit_while_loop_plain(&mut self, cond: &Expr, body: &Block) -> IrResult<()> {
+        if let Expr::Binary {
+            op: cmp_op @ (BinOp::Lt | BinOp::Le),
+            l,
+            r,
+            ..
+        } = cond
+        {
+            if let (
+                Expr::Ident(idx_var, _),
+                Expr::Method {
+                    object, name, args, ..
+                },
+            ) = (l.as_ref(), r.as_ref())
+            {
+                if name == "len" && args.is_empty() {
+                    if let Expr::Ident(xs_name, _) = object.as_ref() {
+                        if let (Some(VarLoc::LocalInt(idx_slot)), Some(VarLoc::Local(xs_slot))) =
+                            (self.lookup(idx_var), self.lookup(xs_name))
+                        {
+                            if self.is_read_only_loop_body(&body.stmts, xs_name) {
+                                let f_len = self.tramp(
+                                    "spid3r_fast_len_i64",
+                                    &[self.ptr_ty().into()],
+                                    Some(self.i64_ty().into()),
+                                );
+                                let len_i64 =
+                                    call_int(self.emit_call(f_len, &[xs_slot.into()], "len.hoist"));
+                                let len_ok_raw = self
+                                    .builder
+                                    .build_int_compare(
+                                        IntPredicate::SGE,
+                                        len_i64,
+                                        self.i64c(0),
+                                        "len.ok",
+                                    )
+                                    .unwrap();
+                                let len_ok = self.expect_i1(len_ok_raw, true);
+                                let fast_prep_bb = self.new_block("whlen.fast.prep");
+                                let fast_cond_bb = self.new_block("whlen.fast.cond");
+                                let fast_body_bb = self.new_block("whlen.fast.body");
+                                let slow_bb = self.new_block("whlen.slow");
+                                let after_bb = self.new_block("whlen.after");
+                                self.builder
+                                    .build_conditional_branch(len_ok, fast_prep_bb, slow_bb)
+                                    .unwrap();
+
+                                self.builder.position_at_end(fast_prep_bb);
+                                let candidates =
+                                    Self::find_non_escaping_loop_index_lets(&body.stmts);
+                                let mut prev_holders: Vec<(String, Option<PointerValue<'ctx>>)> =
+                                    Vec::new();
+                                for cand in candidates {
+                                    let eligible = !(self.is_entry && self.scopes.len() == 1)
+                                        && !self.boxed.as_ref().is_some_and(|b| b.contains(&cand))
+                                        && !self
+                                            .int_locals
+                                            .as_ref()
+                                            .is_some_and(|s| s.contains(&cand))
+                                        && !self
+                                            .float_locals
+                                            .as_ref()
+                                            .is_some_and(|s| s.contains(&cand))
+                                        && !self
+                                            .unboxed_lists
+                                            .as_ref()
+                                            .is_some_and(|m| m.contains_key(&cand));
+                                    if eligible {
+                                        let holder = self.alloc_v2_slot();
+                                        let f = self.tramp(
+                                            "spid3r_reuse_box_new",
+                                            &[self.ptr_ty().into()],
+                                            None,
+                                        );
+                                        self.builder.build_call(f, &[holder.into()], "").unwrap();
+                                        let prev =
+                                            self.loop_reuse_holders.insert(cand.clone(), holder);
+                                        prev_holders.push((cand, prev));
+                                    }
+                                }
+                                let inserted_ro =
+                                    self.loop_readonly_containers.insert(xs_name.clone());
+                                self.br_to(fast_cond_bb);
+
+                                self.builder.position_at_end(fast_cond_bb);
+                                let iv = self
+                                    .builder
+                                    .build_load(self.i64_ty(), idx_slot, "whlen.i")
+                                    .unwrap()
+                                    .into_int_value();
+                                let pred = if *cmp_op == BinOp::Lt {
+                                    IntPredicate::SLT
+                                } else {
+                                    IntPredicate::SLE
+                                };
+                                let go = self
+                                    .builder
+                                    .build_int_compare(pred, iv, len_i64, "whlen.go")
+                                    .unwrap();
+                                self.builder
+                                    .build_conditional_branch(go, fast_body_bb, after_bb)
+                                    .unwrap();
+
+                                self.builder.position_at_end(fast_body_bb);
+                                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+                                self.init_entry_slot(counter, self.i64c(0));
+                                let poll_interval = if block_contains_call_or_alloc(&body.stmts) {
+                                    64
+                                } else {
+                                    2048
+                                };
+                                self.emit_cancel_poll_interval(counter, poll_interval);
+                                self.loops.push(LoopFrame {
+                                    break_bb: after_bb,
+                                    continue_bb: fast_cond_bb,
+                                });
+                                let res = self.compile_block(&body.stmts);
+                                self.loops.pop();
+                                if inserted_ro {
+                                    self.loop_readonly_containers.remove(xs_name);
+                                }
+                                for (cname, prev) in prev_holders.into_iter().rev() {
+                                    match prev {
+                                        Some(p) => {
+                                            self.loop_reuse_holders.insert(cname, p);
+                                        }
+                                        None => {
+                                            self.loop_reuse_holders.remove(&cname);
+                                        }
+                                    }
+                                }
+                                res?;
+                                if !self.sealed() {
+                                    self.br_to(fast_cond_bb);
+                                }
+
+                                self.builder.position_at_end(slow_bb);
+                                self.emit_while_loop_body(cond, body)?;
+                                self.br_to(after_bb);
+
+                                self.builder.position_at_end(after_bb);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.emit_while_loop_body(cond, body)
     }
 
     /// Phase 1: emit multiversioned `while` loop with hoisted `RowView*` slice
@@ -6236,6 +7432,635 @@ impl<'ctx> Ir<'ctx> {
         }
         if let Some(outer) = outer_exc {
             self.br_to(outer);
+        } else {
+            self.builder.build_unreachable().unwrap();
+        }
+
+        // Slow fallback path (guards failed).
+        self.builder.position_at_end(slow_loop_bb);
+        self.emit_while_loop_plain(cond, body)?;
+        self.br_to(after_bb);
+
+        self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
+    fn analyze_hoisted_map_loop(&self, cond: &Expr, body: &[Stmt]) -> Option<HoistedMapLoopPlan> {
+        let mut scan = MapLoopScan::default();
+        if !scan.visit_cond(cond) || !scan.visit_stmts(body) {
+            return None;
+        }
+        if scan.index_sites.is_empty() {
+            return None;
+        }
+        if scan.has_string_call
+            && (!self.is_unshadowed_builtin("string") || scan.inner_decls.contains("string"))
+        {
+            return None;
+        }
+
+        // 1. Collect definitely-string variables to a fixed point so neither
+        //    maps' key hints nor scalar promotion confuse strings with ints.
+        let mut str_tainted: HashSet<String> = self.str_locals.clone().unwrap_or_default();
+        loop {
+            let mut changed = false;
+            for (name, init_opt) in &scan.written_inits {
+                if !str_tainted.contains(name)
+                    && init_opt.is_some_and(|e| map_loop_is_str_expr(e, &str_tainted))
+                {
+                    str_tainted.insert(name.clone());
+                    changed = true;
+                }
+            }
+            for (name, _, val) in &scan.assigns {
+                if !str_tainted.contains(*name) && map_loop_is_str_expr(val, &str_tainted) {
+                    str_tainted.insert((*name).to_string());
+                    changed = true;
+                }
+            }
+            for (op, l, r) in &scan.binary_ops {
+                if !matches!(op, BinOp::Add) {
+                    continue;
+                }
+                let l_str = map_loop_is_str_expr(l, &str_tainted);
+                let r_str = map_loop_is_str_expr(r, &str_tainted);
+                if l_str {
+                    if let Expr::Ident(n, _) = r {
+                        changed |= str_tainted.insert(n.clone());
+                    }
+                }
+                if r_str {
+                    if let Expr::Ident(n, _) = l {
+                        changed |= str_tainted.insert(n.clone());
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // Identify variables initialized/used strictly as obvious ints for index filtering.
+        let mut idx_int_vars: HashSet<String> = self.int_locals.clone().unwrap_or_default();
+        for (name, _) in &scan.written_inits {
+            if matches!(self.lookup(name), Some(VarLoc::LocalInt(_))) {
+                idx_int_vars.insert(name.clone());
+            }
+        }
+        for name in &scan.outer_refs {
+            if matches!(self.lookup(name), Some(VarLoc::LocalInt(_))) {
+                idx_int_vars.insert(name.clone());
+            }
+        }
+        for (name, init_opt) in &scan.written_inits {
+            if !str_tainted.contains(name)
+                && init_opt.is_some_and(|e| map_loop_is_obviously_int_idx(e, &idx_int_vars))
+            {
+                idx_int_vars.insert(name.clone());
+            }
+        }
+
+        // 2. Select unboxed outer `VarLoc::Local` variables only used as string-keyed `m[k]`.
+        let mut non_int_index_objs: HashSet<String> = HashSet::new();
+        let mut rejected_index_objs: HashSet<String> = HashSet::new();
+        for (obj, idx) in &scan.index_sites {
+            if map_loop_is_obviously_int_idx(idx, &idx_int_vars) {
+                rejected_index_objs.insert(obj.clone());
+            } else {
+                non_int_index_objs.insert(obj.clone());
+            }
+        }
+
+        let mut maps = BTreeSet::new();
+        for m in non_int_index_objs {
+            if rejected_index_objs.contains(&m)
+                || scan.outer_refs.contains(&m)
+                || scan.inner_decls.contains(&m)
+                || !matches!(self.lookup(&m), Some(VarLoc::Local(_)))
+                || self.boxed.as_ref().is_some_and(|b| b.contains(&m))
+                || self.int_locals.as_ref().is_some_and(|s| s.contains(&m))
+                || self.float_locals.as_ref().is_some_and(|s| s.contains(&m))
+                || str_tainted.contains(&m)
+            {
+                continue;
+            }
+            maps.insert(m);
+        }
+        if maps.is_empty() {
+            return None;
+        }
+
+        // 3. Taint variables touched by floats, booleans, nulls, or comparisons.
+        let mut non_int_tainted: HashSet<String> = self.float_locals.clone().unwrap_or_default();
+        non_int_tainted.extend(self.float_hint_vars.iter().cloned());
+        non_int_tainted.extend(scan.bare_bool_vars.iter().cloned());
+        loop {
+            let mut changed = false;
+            let empty_ints = HashSet::new();
+            for (name, init_opt) in &scan.written_inits {
+                if !non_int_tainted.contains(name)
+                    && init_opt.is_some_and(|e| {
+                        map_loop_is_float_or_bool_expr(e, &non_int_tainted, &empty_ints, &maps)
+                    })
+                {
+                    non_int_tainted.insert(name.clone());
+                    changed = true;
+                }
+            }
+            for (name, _, val) in &scan.assigns {
+                if !non_int_tainted.contains(*name)
+                    && map_loop_is_float_or_bool_expr(val, &non_int_tainted, &empty_ints, &maps)
+                {
+                    non_int_tainted.insert((*name).to_string());
+                    changed = true;
+                }
+            }
+            for (op, l, r) in &scan.binary_ops {
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                ) {
+                    let lf =
+                        map_loop_is_float_or_bool_expr(l, &non_int_tainted, &empty_ints, &maps);
+                    let rf =
+                        map_loop_is_float_or_bool_expr(r, &non_int_tainted, &empty_ints, &maps);
+                    if lf || rf {
+                        if let Expr::Ident(n, _) = l {
+                            changed |= non_int_tainted.insert(n.clone());
+                        }
+                        if let Expr::Ident(n, _) = r {
+                            changed |= non_int_tainted.insert(n.clone());
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // 4. Optimistic fixed-point inference of integer-promoted outer `VarLoc::Local` scalars.
+        let mut cand: HashSet<String> = HashSet::new();
+        for v in &scan.outer_refs {
+            if matches!(self.lookup(v), Some(VarLoc::Local(_)))
+                && !self.boxed.as_ref().is_some_and(|b| b.contains(v))
+                && !scan.inner_decls.contains(v)
+                && !maps.contains(v)
+                && !self.int_locals.as_ref().is_some_and(|s| s.contains(v))
+                && !str_tainted.contains(v)
+                && !non_int_tainted.contains(v)
+            {
+                cand.insert(v.clone());
+            }
+        }
+
+        let is_inner_int_local =
+            |name: &str| -> bool { self.int_locals.as_ref().is_some_and(|s| s.contains(name)) };
+        let outer_local_ints: HashSet<String> = scan
+            .outer_refs
+            .iter()
+            .filter(|v| {
+                !scan.inner_decls.contains(*v)
+                    && matches!(self.lookup(v), Some(VarLoc::LocalInt(_)))
+            })
+            .cloned()
+            .collect();
+
+        loop {
+            let mut int_vars = outer_local_ints.clone();
+            int_vars.extend(cand.iter().cloned());
+
+            // Collect inner variables that are initialized/assigned solely with int exprs
+            // and were actually lowered as `VarLoc::LocalInt` (`self.int_locals`).
+            let mut inner_bad: HashSet<String> = HashSet::new();
+            let mut inner_has_init: HashSet<String> = HashSet::new();
+            for (name, init_opt) in &scan.written_inits {
+                inner_has_init.insert(name.clone());
+                if !is_inner_int_local(name)
+                    || !init_opt.is_some_and(|e| map_loop_is_def_int(e, &int_vars, &maps))
+                {
+                    inner_bad.insert(name.clone());
+                }
+            }
+            for (name, _, val) in &scan.assigns {
+                if scan.inner_decls.contains(*name)
+                    && (!is_inner_int_local(name) || !map_loop_is_def_int(val, &int_vars, &maps))
+                {
+                    inner_bad.insert((*name).to_string());
+                }
+            }
+            for name in &inner_has_init {
+                if !inner_bad.contains(name) {
+                    int_vars.insert(name.clone());
+                }
+            }
+
+            // Compute grounded integer evidence so non-int outer vars (e.g., strings passed to `string(u)`)
+            // are never optimistically promoted into failing TAG_INT guards.
+            let mut grounded = outer_local_ints.clone();
+            let allow_grounded =
+                |n: &str| -> bool { !scan.inner_decls.contains(n) || is_inner_int_local(n) };
+            loop {
+                let mut gchanged = false;
+                for (name, init_opt) in &scan.written_inits {
+                    if !grounded.contains(name)
+                        && !inner_bad.contains(name)
+                        && is_inner_int_local(name)
+                        && init_opt.is_some_and(|e| map_loop_has_grounded_int(e, &grounded, &maps))
+                    {
+                        grounded.insert(name.clone());
+                        gchanged = true;
+                    }
+                }
+                for (name, _, val) in &scan.assigns {
+                    if !grounded.contains(*name)
+                        && allow_grounded(name)
+                        && map_loop_has_grounded_int(val, &grounded, &maps)
+                        && map_loop_is_def_int(val, &int_vars, &maps)
+                    {
+                        grounded.insert((*name).to_string());
+                        gchanged = true;
+                    }
+                }
+                for (op, l, r) in &scan.binary_ops {
+                    let lg = map_loop_has_grounded_int(l, &grounded, &maps);
+                    let rg = map_loop_has_grounded_int(r, &grounded, &maps);
+                    match op {
+                        BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                            if let Expr::Ident(n, _) = l {
+                                if allow_grounded(n) {
+                                    gchanged |= grounded.insert(n.clone());
+                                }
+                            }
+                            if let Expr::Ident(n, _) = r {
+                                if allow_grounded(n) {
+                                    gchanged |= grounded.insert(n.clone());
+                                }
+                            }
+                        }
+                        BinOp::Add
+                        | BinOp::Eq
+                        | BinOp::Ne
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge => {
+                            if lg {
+                                if let Expr::Ident(n, _) = r {
+                                    if allow_grounded(n) {
+                                        gchanged |= grounded.insert(n.clone());
+                                    }
+                                }
+                            }
+                            if rg {
+                                if let Expr::Ident(n, _) = l {
+                                    if allow_grounded(n) {
+                                        gchanged |= grounded.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !gchanged {
+                    break;
+                }
+            }
+
+            let mut prune: HashSet<String> = HashSet::new();
+            for v in &cand {
+                if !grounded.contains(v) {
+                    prune.insert(v.clone());
+                }
+            }
+            for (name, _, val) in &scan.assigns {
+                if cand.contains(*name) && !map_loop_is_def_int(val, &int_vars, &maps) {
+                    prune.insert((*name).to_string());
+                }
+            }
+            for (op, l, r) in &scan.binary_ops {
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                ) {
+                    if let Expr::Ident(n, _) = l {
+                        if cand.contains(n) && !map_loop_is_def_int(r, &int_vars, &maps) {
+                            prune.insert(n.clone());
+                        }
+                    }
+                    if let Expr::Ident(n, _) = r {
+                        if cand.contains(n) && !map_loop_is_def_int(l, &int_vars, &maps) {
+                            prune.insert(n.clone());
+                        }
+                    }
+                }
+            }
+
+            if prune.is_empty() {
+                break;
+            }
+            for p in prune {
+                cand.remove(&p);
+            }
+        }
+
+        // 5. Reject any unary `-` or binary operator that is not proven to
+        //    operate on `int` or `string` scalars (preventing dunder overloads
+        //    such as `__neg__` / `__add__` from running mid-loop and mutating `m`).
+        let mut final_ints = outer_local_ints;
+        final_ints.extend(cand.iter().cloned());
+        let mut inner_bad_final: HashSet<String> = HashSet::new();
+        let mut inner_init_final: HashSet<String> = HashSet::new();
+        for (name, init_opt) in &scan.written_inits {
+            inner_init_final.insert(name.clone());
+            if !is_inner_int_local(name)
+                || !init_opt.is_some_and(|e| map_loop_is_def_int(e, &final_ints, &maps))
+            {
+                inner_bad_final.insert(name.clone());
+            }
+        }
+        for (name, _, val) in &scan.assigns {
+            if scan.inner_decls.contains(*name)
+                && (!is_inner_int_local(name) || !map_loop_is_def_int(val, &final_ints, &maps))
+            {
+                inner_bad_final.insert((*name).to_string());
+            }
+        }
+        for name in inner_init_final {
+            if !inner_bad_final.contains(&name) {
+                final_ints.insert(name);
+            }
+        }
+
+        let mut proven_strs: HashSet<String> = self
+            .str_locals
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| !scan.inner_decls.contains(n))
+            .collect();
+        loop {
+            let mut schanged = false;
+            for (name, init_opt) in &scan.written_inits {
+                if !proven_strs.contains(name)
+                    && init_opt.is_some_and(|e| map_loop_is_str_expr(e, &proven_strs))
+                    && scan
+                        .assigns
+                        .iter()
+                        .all(|(an, _, av)| *an != name || map_loop_is_str_expr(av, &proven_strs))
+                {
+                    proven_strs.insert(name.clone());
+                    schanged = true;
+                }
+            }
+            if !schanged {
+                break;
+            }
+        }
+
+        for neg_e in &scan.unary_negs {
+            if !map_loop_is_def_int(neg_e, &final_ints, &maps) {
+                return None;
+            }
+        }
+        for (op, l, r) in &scan.binary_ops {
+            let both_int = map_loop_is_def_int(l, &final_ints, &maps)
+                && map_loop_is_def_int(r, &final_ints, &maps);
+            let both_str = matches!(
+                op,
+                BinOp::Add | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) && map_loop_is_str_expr(l, &proven_strs)
+                && map_loop_is_str_expr(r, &proven_strs);
+            if !both_int && !both_str {
+                return None;
+            }
+        }
+
+        let mut promoted = BTreeMap::new();
+        for v in cand {
+            let written = scan.assigned.contains(&v);
+            promoted.insert(v, written);
+        }
+
+        Some(HoistedMapLoopPlan { maps, promoted })
+    }
+
+    fn emit_hoisted_map_loop(
+        &mut self,
+        cond: &Expr,
+        body: &Block,
+        plan: HoistedMapLoopPlan,
+    ) -> IrResult<()> {
+        let v2_ty = self.val_v2_ty();
+        let mv_ty = self
+            .ctx
+            .struct_type(&[self.ptr_ty().into(), self.i64_ty().into()], false);
+        let prep_bb = self.new_block("map.prep");
+        let fast_run_bb = self.new_block("map.fast.run");
+        let fast_cond_bb = self.new_block("map.fast.cond");
+        let fast_body_bb = self.new_block("map.fast.body");
+        let fast_end_bb = self.new_block("map.fast.end");
+        let fast_exc_bb = self.new_block("map.fast.exc");
+        let slow_loop_bb = self.new_block("map.slow");
+        let after_bb = self.new_block("map.after");
+
+        self.br_to(prep_bb);
+        self.builder.position_at_end(prep_bb);
+
+        // Acquire SSO+i64 open-addressed views for each hoisted map before entering the loop.
+        let f_mv = self.tramp(
+            "spid3r_map_view_sso_i64",
+            &[self.ptr_ty().into(), self.ptr_ty().into()],
+            Some(self.i8_ty().into()),
+        );
+        let mut acquired_maps: Vec<(String, VarLoc<'ctx>)> = Vec::with_capacity(plan.maps.len());
+        for name in &plan.maps {
+            let Some(VarLoc::Local(orig_slot)) = self.lookup(name) else {
+                unreachable!("analyze_hoisted_map_loop checked Local for map");
+            };
+            let view_tmp = self.alloca_entry_ty(mv_ty, "mv.tmp");
+            let ok_r = self.emit_call(f_mv, &[orig_slot.into(), view_tmp.into()], "mv.ok");
+            let ok_i8 = call_int(ok_r);
+            let ok_raw = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    ok_i8,
+                    self.i8_ty().const_int(0, false),
+                    "mv.chk",
+                )
+                .unwrap();
+            let ok = self.expect_i1(ok_raw, true);
+            let next_bb = self.new_block("map.mv.ok");
+            self.builder
+                .build_conditional_branch(ok, next_bb, slow_loop_bb)
+                .unwrap();
+            self.builder.position_at_end(next_bb);
+
+            let slots_p = self
+                .builder
+                .build_struct_gep(mv_ty, view_tmp, 0, "mv.sp")
+                .unwrap();
+            let slots = self
+                .builder
+                .build_load(self.ptr_ty(), slots_p, "mv.slots")
+                .unwrap()
+                .into_pointer_value();
+            let mask_p = self
+                .builder
+                .build_struct_gep(mv_ty, view_tmp, 1, "mv.mp")
+                .unwrap();
+            let mask = self
+                .builder
+                .build_load(self.i64_ty(), mask_p, "mv.mask")
+                .unwrap()
+                .into_int_value();
+            acquired_maps.push((
+                name.clone(),
+                VarLoc::MapViewSsoI64 {
+                    slots,
+                    mask,
+                    orig_slot,
+                },
+            ));
+        }
+
+        // Guard and unbox each promoted `ValueV2` scalar integer before entering the loop.
+        struct MapPromotedSlot<'ctx> {
+            name: String,
+            written: bool,
+            orig_slot: PointerValue<'ctx>,
+            fast_slot: PointerValue<'ctx>,
+        }
+        let mut promoted_slots: Vec<MapPromotedSlot<'ctx>> =
+            Vec::with_capacity(plan.promoted.len());
+        for (name, &written) in &plan.promoted {
+            let Some(VarLoc::Local(orig_slot)) = self.lookup(name) else {
+                unreachable!("analyze_hoisted_map_loop checked Local for promoted scalar");
+            };
+            let tag_p = unsafe {
+                self.builder
+                    .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(0)], "mp.tp")
+                    .unwrap()
+            };
+            let tag = self
+                .builder
+                .build_load(self.i64_ty(), tag_p, "mp.tag")
+                .unwrap()
+                .into_int_value();
+            let tag_ok_raw = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    tag,
+                    self.i64c(crate::value::ValueV2::TAG_INT as i64),
+                    "mp.tok",
+                )
+                .unwrap();
+            let tag_ok = self.expect_i1(tag_ok_raw, true);
+            let next_bb = self.new_block("map.pm.ok");
+            self.builder
+                .build_conditional_branch(tag_ok, next_bb, slow_loop_bb)
+                .unwrap();
+            self.builder.position_at_end(next_bb);
+
+            let pay_p = unsafe {
+                self.builder
+                    .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(1)], "mp.pp")
+                    .unwrap()
+            };
+            let pay = self
+                .builder
+                .build_load(self.i64_ty(), pay_p, "mp.pay")
+                .unwrap()
+                .into_int_value();
+            let fast_slot = self.alloca_entry_ty(self.i64_ty(), "mp.i");
+            self.builder.build_store(fast_slot, pay).unwrap();
+            promoted_slots.push(MapPromotedSlot {
+                name: name.clone(),
+                written,
+                orig_slot,
+                fast_slot,
+            });
+        }
+
+        let cancel_counter = self.alloca_entry_ty(self.i64_ty(), "map.cancel.cnt");
+        self.init_entry_slot(cancel_counter, self.i64c(0));
+
+        self.br_to(fast_run_bb);
+        self.builder.position_at_end(fast_run_bb);
+
+        self.push_scope();
+        for (name, loc) in &acquired_maps {
+            self.declare(name, *loc);
+        }
+        for ps in &promoted_slots {
+            self.declare(&ps.name, VarLoc::LocalInt(ps.fast_slot));
+        }
+
+        let outer_exc = self.exc.last().copied();
+        if outer_exc.is_some() {
+            self.exc.push(fast_exc_bb);
+        }
+
+        let loop_res: IrResult<()> = {
+            self.br_to(fast_cond_bb);
+            self.builder.position_at_end(fast_cond_bb);
+            let cond_r = self.emit_cond_branch(cond, fast_body_bb, fast_end_bb);
+            if cond_r.is_ok() {
+                self.builder.position_at_end(fast_body_bb);
+                self.emit_cancel_poll(cancel_counter);
+                self.loops.push(LoopFrame {
+                    break_bb: fast_end_bb,
+                    continue_bb: fast_cond_bb,
+                });
+                let r = self.compile_block(&body.stmts);
+                self.loops.pop();
+                if r.is_ok() && !self.sealed() {
+                    self.br_to(fast_cond_bb);
+                }
+                r
+            } else {
+                cond_r
+            }
+        };
+
+        if outer_exc.is_some() {
+            self.exc.pop();
+        }
+        self.pop_scope();
+        loop_res?;
+
+        // Normal / break exit: write back updated promoted scalars to `ValueV2`.
+        self.builder.position_at_end(fast_end_bb);
+        for ps in &promoted_slots {
+            if !ps.written {
+                continue;
+            }
+            let v = self
+                .builder
+                .build_load(self.i64_ty(), ps.fast_slot, "mwb.i")
+                .unwrap()
+                .into_int_value();
+            self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_INT, v);
+        }
+        self.br_to(after_bb);
+
+        // Exception exit: write back updated promoted scalars before propagating.
+        self.builder.position_at_end(fast_exc_bb);
+        for ps in &promoted_slots {
+            if !ps.written {
+                continue;
+            }
+            let v = self
+                .builder
+                .build_load(self.i64_ty(), ps.fast_slot, "mewb.i")
+                .unwrap()
+                .into_int_value();
+            self.store_v2_inline(ps.orig_slot, crate::value::ValueV2::TAG_INT, v);
+        }
+        if let Some(oe) = outer_exc {
+            self.br_to(oe);
         } else {
             self.builder.build_unreachable().unwrap();
         }
@@ -7133,6 +8958,13 @@ impl<'ctx> Ir<'ctx> {
                                 bce_hit, data, len, orig_slot, is_ulist, idx,
                             );
                         }
+                        Some(VarLoc::MapViewSsoI64 {
+                            slots,
+                            mask,
+                            orig_slot,
+                        }) => {
+                            return self.emit_map_view_sso_i64_get(slots, mask, orig_slot, index);
+                        }
                         _ => {}
                     }
                 }
@@ -7348,6 +9180,41 @@ impl<'ctx> Ir<'ctx> {
                     self.builder.build_store(slot, fv).unwrap();
                     self.declare(name, VarLoc::LocalFloat(slot));
                     Ok(())
+                } else if let (Some(Expr::Index { object, index, .. }), Some(holder)) =
+                    (value.as_ref(), self.loop_reuse_holders.get(name).copied())
+                {
+                    let obj = self.compile_expr(object)?;
+                    let idx = self.compile_expr(index)?;
+                    let out = self.alloc_v2_slot();
+                    let tramp_name = if matches!(
+                        object.as_ref(),
+                        Expr::Ident(oname, _) if self.loop_readonly_containers.contains(oname)
+                    ) {
+                        "spid3r_index_get_borrow_chk"
+                    } else {
+                        "spid3r_index_get_reuse_chk"
+                    };
+                    let f = self.tramp(
+                        tramp_name,
+                        &[
+                            self.ptr_ty().into(),
+                            self.ptr_ty().into(),
+                            self.ptr_ty().into(),
+                            self.ptr_ty().into(),
+                        ],
+                        Some(self.i8_ty().into()),
+                    );
+                    let call_r = self
+                        .builder
+                        .build_call(
+                            f,
+                            &[out.into(), holder.into(), obj.into(), idx.into()],
+                            "idx.reuse.threw",
+                        )
+                        .unwrap();
+                    self.throw_guard_i8_call(call_r);
+                    self.bind_declaration(name, out)?;
+                    Ok(())
                 } else {
                     let v = match value {
                         Some(e) => self.compile_expr(e)?,
@@ -7444,6 +9311,8 @@ impl<'ctx> Ir<'ctx> {
             Stmt::While { cond, body, .. } => {
                 if let Some(plan) = self.analyze_hoisted_while_loop(cond, &body.stmts) {
                     self.emit_hoisted_while_loop(cond, body, plan)
+                } else if let Some(mplan) = self.analyze_hoisted_map_loop(cond, &body.stmts) {
+                    self.emit_hoisted_map_loop(cond, body, mplan)
                 } else {
                     self.emit_while_loop_plain(cond, body)
                 }
@@ -7494,7 +9363,12 @@ impl<'ctx> Ir<'ctx> {
                                 self.builder.position_at_end(body_bb);
                                 let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
                                 self.init_entry_slot(counter, self.i64c(0));
-                                self.emit_cancel_poll(counter);
+                                let poll_interval = if block_contains_call_or_alloc(&body.stmts) {
+                                    64
+                                } else {
+                                    2048
+                                };
+                                self.emit_cancel_poll_interval(counter, poll_interval);
 
                                 let forin_boxed = self
                                     .boxed
@@ -7670,7 +9544,12 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.position_at_end(body_bb);
                 let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
                 self.init_entry_slot(counter, self.i64c(0));
-                self.emit_cancel_poll(counter);
+                let poll_interval = if block_contains_call_or_alloc(&body.stmts) {
+                    64
+                } else {
+                    2048
+                };
+                self.emit_cancel_poll_interval(counter, poll_interval);
                 self.loops.push(LoopFrame {
                     break_bb: end_bb,
                     continue_bb: post_bb,
@@ -8875,6 +10754,166 @@ impl<'ctx> Ir<'ctx> {
                         ],
                         None,
                     );
+                    #[cfg(target_endian = "little")]
+                    if lit.len() <= 13 {
+                        let lb = lit.as_bytes();
+                        let l = lb.len();
+                        let mut tag_bytes = [0u8; 8];
+                        let mut pay_bytes = [0u8; 8];
+                        tag_bytes[0] = (crate::value::ValueV2::TAG_SSO_BASE as u8) + (l as u8);
+                        for (i, &b) in lb.iter().enumerate() {
+                            let off = 1 + i;
+                            if off < 8 {
+                                tag_bytes[off] = b;
+                            } else {
+                                pay_bytes[off - 8] = b;
+                            }
+                        }
+                        let base_tag = u64::from_le_bytes(tag_bytes) as i64;
+                        let base_pay = u64::from_le_bytes(pay_bytes) as i64;
+
+                        let is_sso_raw = self
+                            .builder
+                            .build_int_compare(IntPredicate::ULT, iv, self.i64c(100), "slit.sso")
+                            .unwrap();
+                        let is_sso = self.expect_i1(is_sso_raw, true);
+                        let fast_bb = self.new_block("slit.fast");
+                        let slow_bb = self.new_block("slit.slow");
+                        let cont_bb = self.new_block("slit.cont");
+                        self.builder
+                            .build_conditional_branch(is_sso, fast_bb, slow_bb)
+                            .unwrap();
+
+                        self.builder.position_at_end(fast_bb);
+                        let is_one = self
+                            .builder
+                            .build_int_compare(IntPredicate::ULT, iv, self.i64c(10), "slit.one")
+                            .unwrap();
+                        let dlen = self
+                            .builder
+                            .build_select(is_one, self.i64c(1), self.i64c(2), "slit.dlen")
+                            .unwrap()
+                            .into_int_value();
+                        let mut tag_w = self
+                            .builder
+                            .build_int_add(self.i64c(base_tag), dlen, "slit.tw")
+                            .unwrap();
+                        let mut pay_w = self.i64c(base_pay);
+
+                        let tens = self
+                            .builder
+                            .build_int_unsigned_div(iv, self.i64c(10), "slit.tens")
+                            .unwrap();
+                        let ones = self
+                            .builder
+                            .build_int_unsigned_rem(iv, self.i64c(10), "slit.ones")
+                            .unwrap();
+                        let d0_n = self
+                            .builder
+                            .build_select(is_one, iv, tens, "slit.d0n")
+                            .unwrap()
+                            .into_int_value();
+                        let d0 = self
+                            .builder
+                            .build_int_add(d0_n, self.i64c(b'0' as i64), "slit.d0")
+                            .unwrap();
+                        let d1_two = self
+                            .builder
+                            .build_int_add(ones, self.i64c(b'0' as i64), "slit.d1t")
+                            .unwrap();
+                        let d1 = self
+                            .builder
+                            .build_select(is_one, self.i64c(0), d1_two, "slit.d1")
+                            .unwrap()
+                            .into_int_value();
+
+                        let off0 = l + 1;
+                        if off0 < 8 {
+                            let s0 = if off0 == 0 {
+                                d0
+                            } else {
+                                self.builder
+                                    .build_left_shift(d0, self.i64c((off0 * 8) as i64), "slit.s0")
+                                    .unwrap()
+                            };
+                            tag_w = self.builder.build_or(tag_w, s0, "slit.tw0").unwrap();
+                        } else {
+                            let sh = (off0 - 8) * 8;
+                            let s0 = if sh == 0 {
+                                d0
+                            } else {
+                                self.builder
+                                    .build_left_shift(d0, self.i64c(sh as i64), "slit.s0")
+                                    .unwrap()
+                            };
+                            pay_w = self.builder.build_or(pay_w, s0, "slit.pw0").unwrap();
+                        }
+
+                        let off1 = l + 2;
+                        if off1 < 8 {
+                            let s1 = self
+                                .builder
+                                .build_left_shift(d1, self.i64c((off1 * 8) as i64), "slit.s1")
+                                .unwrap();
+                            tag_w = self.builder.build_or(tag_w, s1, "slit.tw1").unwrap();
+                        } else {
+                            let sh = (off1 - 8) * 8;
+                            let s1 = if sh == 0 {
+                                d1
+                            } else {
+                                self.builder
+                                    .build_left_shift(d1, self.i64c(sh as i64), "slit.s1")
+                                    .unwrap()
+                            };
+                            pay_w = self.builder.build_or(pay_w, s1, "slit.pw1").unwrap();
+                        }
+
+                        let v2_ty = self.val_v2_ty();
+                        let tp = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    v2_ty,
+                                    out,
+                                    &[self.i64c(0), self.i32c(0)],
+                                    "slit.tp",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(tp, tag_w).unwrap();
+                        let pp = unsafe {
+                            self.builder
+                                .build_in_bounds_gep(
+                                    v2_ty,
+                                    out,
+                                    &[self.i64c(0), self.i32c(1)],
+                                    "slit.pp",
+                                )
+                                .unwrap()
+                        };
+                        self.builder.build_store(pp, pay_w).unwrap();
+                        self.br_to(cont_bb);
+
+                        self.builder.position_at_end(slow_bb);
+                        self.builder
+                            .build_call(
+                                f,
+                                &[
+                                    out.into(),
+                                    gp.into(),
+                                    self.i64c(glen as i64).into(),
+                                    iv.into(),
+                                ],
+                                "",
+                            )
+                            .unwrap();
+                        self.br_to(cont_bb);
+
+                        self.builder.position_at_end(cont_bb);
+                        if !Self::expr_contains_generic_call(arg) {
+                            self.expr_guarded = true;
+                        }
+                        return Ok(Some(out));
+                    }
                     self.builder
                         .build_call(
                             f,
@@ -9126,10 +11165,16 @@ impl<'ctx> Ir<'ctx> {
             Expr::Unary { op, expr, .. } => {
                 if *op == UnOp::Neg && self.is_int_expr(e) {
                     let iv = self.compile_expr_i64(e)?;
+                    if !Self::expr_contains_generic_call(e) {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_int_from_i64(iv));
                 }
                 if *op == UnOp::Neg && self.is_float_expr(e) {
                     let fv = self.compile_expr_f64(e)?;
+                    if !Self::expr_contains_generic_call(e) {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_float_from_f64(fv));
                 }
                 let v = self.compile_expr(expr)?;
@@ -9192,10 +11237,16 @@ impl<'ctx> Ir<'ctx> {
                 }
                 if self.is_int_expr(e) {
                     let iv = self.compile_expr_i64(e)?;
+                    if !Self::expr_contains_generic_call(e) {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_int_from_i64(iv));
                 }
                 if self.is_float_expr(e) {
                     let fv = self.compile_expr_f64(e)?;
+                    if !Self::expr_contains_generic_call(e) {
+                        self.expr_guarded = true;
+                    }
                     return Ok(self.v_float_from_f64(fv));
                 }
                 if *op == BinOp::Add {
@@ -9580,6 +11631,15 @@ impl<'ctx> Ir<'ctx> {
                             )?;
                             return Ok(self.v_float_from_f64(fv));
                         }
+                        Some(VarLoc::MapViewSsoI64 {
+                            slots,
+                            mask,
+                            orig_slot,
+                        }) => {
+                            let iv =
+                                self.emit_map_view_sso_i64_get(slots, mask, orig_slot, index)?;
+                            return Ok(self.v_int_from_i64(iv));
+                        }
                         _ => {}
                     }
                 }
@@ -9761,7 +11821,8 @@ impl<'ctx> Ir<'ctx> {
             Some(VarLoc::UListI64(_))
             | Some(VarLoc::UListF64(_))
             | Some(VarLoc::RowViewI64 { .. })
-            | Some(VarLoc::RowViewF64 { .. }) => {
+            | Some(VarLoc::RowViewF64 { .. })
+            | Some(VarLoc::MapViewSsoI64 { .. }) => {
                 Err(self.err("internal: unboxed list identifier escaped"))
             }
             None => {
@@ -11541,6 +13602,9 @@ impl<'ctx> Ir<'ctx> {
                     self.emit_i64_binop(cur, rhs, bin)?
                 };
                 self.builder.build_store(slot, iv).unwrap();
+                if !Self::expr_contains_generic_call(value) {
+                    self.expr_guarded = true;
+                }
                 return Ok(self.v_int_from_i64(iv));
             } else if let Some(VarLoc::LocalFloat(slot)) = self.lookup(name) {
                 let fv = if op == AssignOp::Assign {
@@ -11562,6 +13626,9 @@ impl<'ctx> Ir<'ctx> {
                     self.emit_f64_binop(cur, rhs, bin)?
                 };
                 self.builder.build_store(slot, fv).unwrap();
+                if !Self::expr_contains_generic_call(value) {
+                    self.expr_guarded = true;
+                }
                 return Ok(self.v_float_from_f64(fv));
             }
         }
@@ -11643,7 +13710,14 @@ impl<'ctx> Ir<'ctx> {
             return self.store_assign(target, result);
         }
         let v = self.compile_expr(value)?;
-        self.store_assign(target, v)
+        let r = self.store_assign(target, v)?;
+        if matches!(
+            target,
+            Expr::Ident(name, _) if matches!(self.lookup(name), Some(VarLoc::Local(_)))
+        ) {
+            self.expr_guarded = true;
+        }
+        Ok(r)
     }
 
     fn store_assign(
@@ -11706,7 +13780,8 @@ impl<'ctx> Ir<'ctx> {
                 Some(VarLoc::UListI64(_))
                 | Some(VarLoc::UListF64(_))
                 | Some(VarLoc::RowViewI64 { .. })
-                | Some(VarLoc::RowViewF64 { .. }) => {
+                | Some(VarLoc::RowViewF64 { .. })
+                | Some(VarLoc::MapViewSsoI64 { .. }) => {
                     Err(self.err("internal: cannot reassign unboxed list"))
                 }
                 None => {
@@ -12014,7 +14089,8 @@ impl<'ctx> Ir<'ctx> {
                 | Some(VarLoc::UListI64(_))
                 | Some(VarLoc::UListF64(_))
                 | Some(VarLoc::RowViewI64 { .. })
-                | Some(VarLoc::RowViewF64 { .. }) => {} // global or uncaptured unboxed list
+                | Some(VarLoc::RowViewF64 { .. })
+                | Some(VarLoc::MapViewSsoI64 { .. }) => {} // global or uncaptured unboxed list
             }
         }
         let name_hint = proto.name.clone().unwrap_or_else(|| "anon".to_string());
@@ -12061,7 +14137,8 @@ impl<'ctx> Ir<'ctx> {
                     VarLoc::UListI64(_)
                     | VarLoc::UListF64(_)
                     | VarLoc::RowViewI64 { .. }
-                    | VarLoc::RowViewF64 { .. } => unreachable!(),
+                    | VarLoc::RowViewF64 { .. }
+                    | VarLoc::MapViewSsoI64 { .. } => unreachable!(),
                 };
                 self.call_env_set_slot(env, i, cell);
             }
@@ -12230,8 +14307,6 @@ impl<'ctx> Ir<'ctx> {
         self.push_scope();
 
         if !self.freestanding {
-            let core_reg = self.tramp("spid3r_reg_core", &[], None);
-            self.builder.build_call(core_reg, &[], "").unwrap();
             for group in collect_used_stdlib_groups(program) {
                 let sym = format!("spid3r_reg_{}", group);
                 let g_reg = self.tramp(&sym, &[], None);
@@ -12514,6 +14589,8 @@ fn collect_used_stdlib_groups(program: &Program) -> Vec<&'static str> {
             Expr::Ident(name, _) => {
                 if let Some(g) = crate::stdlib::stdlib_group_for_name(name) {
                     out.insert(g);
+                } else if crate::stdlib::is_known_builtin_name(name) {
+                    out.insert("core");
                 }
             }
             Expr::List(items, _) => {
@@ -12676,8 +14753,8 @@ fn collect_used_stdlib_groups(program: &Program) -> Vec<&'static str> {
         }
     }
 
-    const ALL_GROUPS: [&str; 10] = [
-        "json", "fs", "net", "db", "media", "tz", "unicode", "crypto", "data", "info",
+    const ALL_GROUPS: [&str; 11] = [
+        "core", "json", "fs", "net", "db", "media", "tz", "unicode", "crypto", "data", "info",
     ];
     let mut used = HashSet::new();
     for s in &program.stmts {
@@ -12687,6 +14764,139 @@ fn collect_used_stdlib_groups(program: &Program) -> Vec<&'static str> {
         .into_iter()
         .filter(|g| used.contains(g))
         .collect()
+}
+
+fn expr_contains_call_or_alloc(e: &Expr) -> bool {
+    match e {
+        Expr::Call { .. }
+        | Expr::Method { .. }
+        | Expr::New { .. }
+        | Expr::Spawn { .. }
+        | Expr::List(_, _)
+        | Expr::SuperCall { .. } => true,
+        Expr::Unary { expr, .. }
+        | Expr::Await(expr, _)
+        | Expr::Propagate(expr, _)
+        | Expr::NamedArg { value: expr, .. }
+        | Expr::Field { object: expr, .. }
+        | Expr::OptField { object: expr, .. } => expr_contains_call_or_alloc(expr),
+        Expr::Binary { l, r, .. }
+        | Expr::Logical { l, r, .. }
+        | Expr::Index {
+            object: l,
+            index: r,
+            ..
+        }
+        | Expr::Assign {
+            target: l,
+            value: r,
+            ..
+        }
+        | Expr::Coalesce { l, r, .. } => {
+            expr_contains_call_or_alloc(l) || expr_contains_call_or_alloc(r)
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            expr_contains_call_or_alloc(cond)
+                || block_contains_call_or_alloc(&then.stmts)
+                || els
+                    .as_ref()
+                    .is_some_and(|eb| block_contains_call_or_alloc(&eb.stmts))
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_contains_call_or_alloc(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_call_or_alloc)
+                        || block_contains_call_or_alloc(&arm.body.stmts)
+                })
+        }
+        Expr::Fn(_)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::Bool(_, _)
+        | Expr::Null(_)
+        | Expr::Ident(_, _)
+        | Expr::Super { .. } => false,
+    }
+}
+
+fn stmt_contains_call_or_alloc(s: &Stmt) -> bool {
+    match s {
+        Stmt::Spawn { .. } => true,
+        Stmt::Let { value: Some(e), .. }
+        | Stmt::Const { value: e, .. }
+        | Stmt::LetTuple { value: e, .. }
+        | Stmt::Expr(e)
+        | Stmt::Throw { value: e, .. }
+        | Stmt::Return { value: Some(e), .. } => expr_contains_call_or_alloc(e),
+        Stmt::Yield { value: e, .. } => expr_contains_call_or_alloc(e),
+        Stmt::If {
+            cond,
+            then,
+            elifs,
+            els,
+            ..
+        } => {
+            expr_contains_call_or_alloc(cond)
+                || block_contains_call_or_alloc(&then.stmts)
+                || elifs.iter().any(|(c, b)| {
+                    expr_contains_call_or_alloc(c) || block_contains_call_or_alloc(&b.stmts)
+                })
+                || els
+                    .as_ref()
+                    .is_some_and(|eb| block_contains_call_or_alloc(&eb.stmts))
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_contains_call_or_alloc(cond) || block_contains_call_or_alloc(&body.stmts)
+        }
+        Stmt::ForIn { iter, body, .. } => {
+            expr_contains_call_or_alloc(iter) || block_contains_call_or_alloc(&body.stmts)
+        }
+        Stmt::ForC {
+            init,
+            cond,
+            post,
+            body,
+            ..
+        } => {
+            stmt_contains_call_or_alloc(init)
+                || expr_contains_call_or_alloc(cond)
+                || expr_contains_call_or_alloc(post)
+                || block_contains_call_or_alloc(&body.stmts)
+        }
+        Stmt::Block(b) => block_contains_call_or_alloc(&b.stmts),
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            block_contains_call_or_alloc(&body.stmts)
+                || catch
+                    .as_ref()
+                    .is_some_and(|c| block_contains_call_or_alloc(&c.body.stmts))
+                || finally
+                    .as_ref()
+                    .is_some_and(|f| block_contains_call_or_alloc(&f.stmts))
+        }
+        Stmt::Import { .. }
+        | Stmt::Enum(_)
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. }
+        | Stmt::Fn(_)
+        | Stmt::Class(_)
+        | Stmt::Interface(_)
+        | Stmt::Let { value: None, .. }
+        | Stmt::Return { value: None, .. } => false,
+    }
+}
+
+fn block_contains_call_or_alloc(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_contains_call_or_alloc)
 }
 
 /// Compile a checked program to an LLVM module.

@@ -234,6 +234,11 @@ fn shared_scheduler_restarts_after_shutdown() {
         !Arc::ptr_eq(&first, &second),
         "shared() must hand out a fresh pool after shutdown"
     );
+    assert_eq!(
+        second.worker_count(),
+        0,
+        "fresh shared pool must start workers lazily on first spawn"
+    );
     let done2 = Arc::new(AtomicUsize::new(0));
     second
         .spawn_job(ok_job(done2.clone()))
