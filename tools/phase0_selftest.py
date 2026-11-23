@@ -15,7 +15,7 @@ primitives (the same code path the real baselines use):
       (+/-1% jitter, n=21). Asserts exact median / p95 / MAD behaviour and
       that a 5% delta is detected while a no-delta control is NOT.
   (b) PIPELINE: the REAL spid3r release binary runs the SAME verbatim HLC
-      source (map.matrix, pinned RESULT 44432313 100000) in BOTH arms. Arm P
+      source (json.matrix, pinned RESULT 249868800 9163) in BOTH arms. Arm P
       adds a perf_counter_ns-bounded busy spin of ~5% of the measured COMPUTE
       median INSIDE the externally timed region. Arms B (baseline), P
       (injected) and C (no-delta control) are interleaved in ONE session with
@@ -96,8 +96,8 @@ def logic_selftest() -> dict:
 
 def pipeline_once(binp: Path) -> dict:
     session = h.Session(binp, 120.0)
-    cmd = [binp, "run", "--engine", "vm", str(COMPARE / "map.matrix")]
-    expected = h.PINS["map"]
+    cmd = [binp, "run", "--engine", "vm", str(COMPARE / "json.matrix")]
+    expected = h.PINS["json"]
     try:
         # Pilot: measure the REAL workload, then size the injection at 5% of
         # COMPUTE (wall minus startup), not 5% of wall.
@@ -162,7 +162,7 @@ def pipeline_once(binp: Path) -> dict:
             "pass": ok,
             "arm_binary": str(binp),
             "arm_command": [str(x) for x in cmd],
-            "arm_workload": "benchmarks/compare/map.matrix (verbatim, pinned RESULT 44432313 100000)",
+            "arm_workload": "benchmarks/compare/json.matrix (verbatim, pinned RESULT 249868800 9163)",
             "warmup": WARMUP, "measured": MEASURED,
             "injected_ns": injected_ns,
             "injection_basis": "5% of pilot COMPUTE median (wall - startup)",
