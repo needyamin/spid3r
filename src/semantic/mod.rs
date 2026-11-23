@@ -140,6 +140,11 @@ struct Checker {
     /// Flow-sensitive type narrowing overlay stack (R6.3). Pushed/popped per
     /// lexical scope and per guarded branch (`if`/`while`/`try-catch`).
     narrowed: Vec<HashMap<String, Ty>>,
+    /// Imported public function signatures (plain and selective imports), kept
+    /// separate from `funcs` so `--dump-registry-json` stays local-only.
+    imported_funcs: HashMap<String, FuncInfo>,
+    /// Imported namespace-aliased function signatures (`alias -> fn -> info`).
+    imported_ns_funcs: HashMap<String, HashMap<String, FuncInfo>>,
 }
 
 pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
@@ -543,6 +548,21 @@ impl Checker {
             unexported_module_names: HashMap::new(),
             gui_handler_depth: 0,
             narrowed: vec![HashMap::new()],
+            imported_funcs: HashMap::new(),
+            imported_ns_funcs: HashMap::new(),
+        }
+    }
+
+    fn func_info_from_proto(f: &FnProto) -> FuncInfo {
+        FuncInfo {
+            arity: f.params.len(),
+            min_arity: f.min_arity(),
+            is_variadic: f.is_variadic,
+            params: f.params.iter().map(|p| p.ty.clone()).collect(),
+            param_names: f.params.iter().map(|p| p.name.clone()).collect(),
+            ret: f.ret.clone(),
+            type_params: f.type_params.clone(),
+            type_bounds: f.type_bounds.clone(),
         }
     }
 }
@@ -1228,7 +1248,7 @@ impl Checker {
                     }
                 }
                 Stmt::Let { name, span, .. } | Stmt::Const { name, span, .. }
-                    if !seen.insert(name.clone()) =>
+                    if name != "_" && !seen.insert(name.clone()) =>
                 {
                     return Err(self.err(span, format!("'{}' is declared twice", name)));
                 }
@@ -1630,6 +1650,9 @@ impl Checker {
     }
 
     fn declare(&mut self, name: &str, span: &Span, mut info: VarInfo) -> SpidResult<()> {
+        if name == "_" {
+            return Ok(());
+        }
         // The lint needs the declaration site; every caller already has it.
         info.decl = Some(span.clone());
         let scope = self.scopes.last_mut().unwrap();
@@ -2253,12 +2276,18 @@ impl Checker {
                 Ok(())
             }
             Stmt::Import { path, alias, span } => {
-                let (names, unexported) = crate::modules::module_info_of_in(
+                let (names, unexported, mod_funcs) = crate::modules::module_info_with_funcs_in(
                     path,
                     &self.source_file,
                     span,
                     &self.module_dirs,
                 )?;
+                let mut func_map: HashMap<String, FuncInfo> = HashMap::new();
+                for f in &mod_funcs {
+                    if let Some(fname) = &f.name {
+                        func_map.insert(fname.clone(), Self::func_info_from_proto(f));
+                    }
+                }
                 for (u_name, mod_display, kind) in unexported {
                     self.unexported_module_names
                         .insert(u_name, (mod_display, kind));
@@ -2268,6 +2297,9 @@ impl Checker {
                     .and_then(crate::modules::parse_import_selections)
                 {
                     for (export_name, local_name) in selections {
+                        if let Some(fi) = func_map.get(&export_name) {
+                            self.imported_funcs.insert(local_name.clone(), fi.clone());
+                        }
                         let Some((_, is_const)) =
                             names.iter().find(|(n, _)| n == &export_name).cloned()
                         else {
@@ -2374,7 +2406,11 @@ impl Checker {
                             ..Default::default()
                         },
                     );
+                    self.imported_ns_funcs.insert(alias_name.clone(), func_map);
                 } else {
+                    for (fname, fi) in func_map {
+                        self.imported_funcs.insert(fname, fi);
+                    }
                     for (n, is_const) in names {
                         // Collision detection against a same-named LOCAL binding
                         // in this scope.
@@ -2476,7 +2512,7 @@ impl Checker {
                     return Err(self.err(&f.span, "too many parameters in one function (max 255)"));
                 }
                 for p in &f.params {
-                    if !names.insert(p.name.clone()) {
+                    if p.name != "_" && !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
                     }
                     if let Some(d) = &p.default {
@@ -2580,7 +2616,7 @@ impl Checker {
                         )?;
                         let mut names = HashSet::new();
                         for p in &m.params {
-                            if !names.insert(p.name.clone()) {
+                            if p.name != "_" && !names.insert(p.name.clone()) {
                                 return Err(
                                     self.err(&p.span, format!("duplicate parameter '{}'", p.name))
                                 );
@@ -2611,7 +2647,7 @@ impl Checker {
                         )?;
                         let mut names = HashSet::new();
                         for p in m.params.iter().skip(1) {
-                            if !names.insert(p.name.clone()) {
+                            if p.name != "_" && !names.insert(p.name.clone()) {
                                 return Err(
                                     self.err(&p.span, format!("duplicate parameter '{}'", p.name))
                                 );
@@ -3827,6 +3863,9 @@ impl Checker {
             | Expr::Bool(_, _)
             | Expr::Null(_) => Ok(()),
             Expr::Ident(name, span) => {
+                if name == "_" {
+                    return Err(self.err(span, "'_' is a discard pattern and cannot be read"));
+                }
                 if name == "self" && self.current_class.is_none() {
                     return Err(self.err(span, "self outside a method"));
                 }
@@ -3857,7 +3896,7 @@ impl Checker {
                     return Err(self.err(&f.span, "too many parameters in one function (max 255)"));
                 }
                 for p in &f.params {
-                    if !names.insert(p.name.clone()) {
+                    if p.name != "_" && !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
                     }
                     if let Some(d) = &p.default {
@@ -4107,6 +4146,29 @@ impl Checker {
                                 }
                             }
                         }
+                    } else if let Some(fi) = self
+                        .imported_funcs
+                        .get(name)
+                        .filter(|_| !self.lookup(name).is_some_and(|v| !v.is_import))
+                        .cloned()
+                    {
+                        if Self::has_named_args(args) {
+                            self.check_named_args(args, &fi.param_names, fi.min_arity, name, span)?;
+                        } else if args.len() < fi.min_arity
+                            || (!fi.is_variadic && args.len() > fi.arity)
+                        {
+                            let want = if fi.is_variadic {
+                                format!("at least {} argument(s)", fi.min_arity)
+                            } else if fi.min_arity == fi.arity {
+                                format!("{} argument(s)", fi.arity)
+                            } else {
+                                format!("{} to {} argument(s)", fi.min_arity, fi.arity)
+                            };
+                            return Err(self.err(
+                                span,
+                                format!("{} expects {}, got {}", name, want, args.len()),
+                            ));
+                        }
                     } else {
                         // F5: a signature-carrying function value bound to a
                         // name (`let g = f`, a nested fn, an imported fn
@@ -4204,6 +4266,31 @@ impl Checker {
                             name
                         ),
                     ));
+                }
+                // When calling through an import namespace alias (`ui.textarea(...)`),
+                // check the exported function's arity when known.
+                if let Expr::Ident(alias, _) = &**object {
+                    if self.lookup(alias).is_some_and(|v| v.is_import) {
+                        if let Some(fi) =
+                            self.imported_ns_funcs.get(alias).and_then(|m| m.get(name))
+                        {
+                            if args.len() < fi.min_arity
+                                || (!fi.is_variadic && args.len() > fi.arity)
+                            {
+                                let want = if fi.is_variadic {
+                                    format!("at least {} argument(s)", fi.min_arity)
+                                } else if fi.min_arity == fi.arity {
+                                    format!("{} argument(s)", fi.arity)
+                                } else {
+                                    format!("{} to {} argument(s)", fi.min_arity, fi.arity)
+                                };
+                                return Err(self.err(
+                                    span,
+                                    format!("{} expects {}, got {}", name, want, args.len()),
+                                ));
+                            }
+                        }
+                    }
                 }
                 // When the receiver class is statically known, check it — for
                 // ANY receiver expression (F6), not only bare Idents.

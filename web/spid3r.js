@@ -92,6 +92,51 @@
       const resPtr = this.exports.spid3r_wasm_version();
       return this._readPayload(resPtr);
     }
+
+    /**
+     * Register an in-memory module source so `import "<name>"` resolves inside WASM.
+     * Note: desktop `gui_*` (`tao`/`wry`) natives are desktop-only and are not part of browser WASM.
+     * @param {string} name
+     * @param {string} source
+     */
+    registerModule(name, source) {
+      const n = this._writeString(name || "");
+      const s = this._writeString(source || "");
+      const resPtr = this.exports.spid3r_wasm_register_module(n.ptr, n.len, s.ptr, s.len);
+      this.exports.spid3r_wasm_free(n.ptr, n.len);
+      this.exports.spid3r_wasm_free(s.ptr, s.len);
+      return this._readPayload(resPtr);
+    }
+
+    /**
+     * Clear all registered in-memory virtual modules.
+     */
+    clearModules() {
+      const resPtr = this.exports.spid3r_wasm_clear_modules();
+      return this._readPayload(resPtr);
+    }
+
+    /**
+     * Evaluate Spid3r source in a persistent session (stateful across calls).
+     * @param {string} source
+     * @param {string} [engine="vm"]
+     */
+    evalSession(source, engine = "vm") {
+      const s = this._writeString(source || "");
+      const e = this._writeString(engine || "vm");
+      const resPtr = this.exports.spid3r_wasm_session_eval(s.ptr, s.len, e.ptr, e.len);
+      this.exports.spid3r_wasm_free(s.ptr, s.len);
+      this.exports.spid3r_wasm_free(e.ptr, e.len);
+      return this._readPayload(resPtr);
+    }
+
+    /**
+     * Reset the persistent WASM session state.
+     */
+    resetSession() {
+      const resPtr = this.exports.spid3r_wasm_session_reset();
+      return this._readPayload(resPtr);
+    }
   }
 
   /**

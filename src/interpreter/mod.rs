@@ -143,7 +143,18 @@ pub struct Interp {
     /// Heap cap (`runtime.memory_limit_mb`); `None` = unlimited. Shared like
     /// the budget; exceeding it is a catchable runtime error.
     mem_limit: Option<crate::budget::MemLimit>,
+    /// Skip joining background tasks when `run_program` returns so a desktop
+    /// GUI window can keep running until the window loop tears down.
+    defer_task_drain: bool,
+    /// Host-installed extra natives (for example `gui_*`) propagated to every
+    /// imported module interpreter and spawned child interpreter.
+    extra_natives: Arc<Mutex<Vec<ExtraNativeDef>>>,
 }
+
+pub(crate) type ExtraNativeDef = (
+    &'static str,
+    fn(&crate::value::NativeCtx, Vec<Value>) -> Result<Value, String>,
+);
 
 /// Lets builtin collections call Spid3r functions back (higher-order methods
 /// such as `list.map(f)`, `filter`, `reduce`). The tree interpreter calls the
@@ -197,10 +208,35 @@ impl Interp {
             budget: None,
             wall_clock: None,
             mem_limit: None,
+            defer_task_drain: false,
+            extra_natives: Arc::new(Mutex::new(Vec::new())),
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
         interp.install_builtin_classes();
         interp
+    }
+
+    pub fn set_defer_task_drain(&mut self, defer: bool) {
+        self.defer_task_drain = defer;
+    }
+
+    pub fn install_extra_natives(&self, defs: &[ExtraNativeDef]) {
+        for (name, func) in defs {
+            let native = crate::value::NativeFn { name, func: *func };
+            environment::define(&self.globals, name, Value::Native(Arc::new(native)));
+        }
+        let mut guard = self.extra_natives.lock().unwrap();
+        for &(name, func) in defs {
+            if let Some(slot) = guard.iter_mut().find(|(n, _)| *n == name) {
+                slot.1 = func;
+            } else {
+                guard.push((name, func));
+            }
+        }
+    }
+
+    pub(crate) fn extra_natives_handle(&self) -> Arc<Mutex<Vec<ExtraNativeDef>>> {
+        self.extra_natives.clone()
     }
 
     /// The global environment this interpreter installed its builtins into.
@@ -243,6 +279,8 @@ impl Interp {
             budget,
             wall_clock,
             mem_limit,
+            defer_task_drain: false,
+            extra_natives: Arc::new(Mutex::new(Vec::new())),
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
         interp.install_builtin_classes();
@@ -273,6 +311,8 @@ impl Interp {
             budget: None,
             wall_clock: None,
             mem_limit: None,
+            defer_task_drain: false,
+            extra_natives: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -318,7 +358,10 @@ impl Interp {
             // Join-on-exit (audit A-3): wait for tasks `main` left running so
             // their output is not lost to process teardown — also on the error
             // path, where a failing program may still have live tasks.
-            crate::sched::join_tasks_at_exit();
+            // GUI mode defers this drain until the window event loop tears down.
+            if !self.defer_task_drain {
+                crate::sched::join_tasks_at_exit();
+            }
             result
         }
         #[cfg(target_arch = "wasm32")]
@@ -379,6 +422,7 @@ impl Interp {
         let wall_clock = self.wall_clock.clone();
         let mem_limit = self.mem_limit.clone();
         let max_depth = self.max_call_depth;
+        let extra_natives = self.extra_natives.clone();
         Arc::new(move |cb, args| {
             let fd = match cb {
                 Value::Function(f) => f,
@@ -396,6 +440,7 @@ impl Interp {
                 file.clone(),
                 module_dirs.clone(),
             );
+            interp.extra_natives = extra_natives.clone();
             interp.set_budget(budget.clone());
             interp.set_wall_clock(wall_clock.clone());
             interp.set_mem_limit(mem_limit.clone());
@@ -498,7 +543,7 @@ impl Interp {
         })
     }
 
-    fn invalid_flow(&self, f: &Flow, span: &Span) -> Diagnostic {
+    pub(crate) fn invalid_flow(&self, f: &Flow, span: &Span) -> Diagnostic {
         let what = match f {
             Flow::Return(_) => "return outside a function",
             Flow::Break => "break outside a loop",
@@ -1061,9 +1106,11 @@ impl Interp {
                 let wall_clock = self.wall_clock.clone();
                 let mem_limit = self.mem_limit.clone();
                 let max_depth = self.max_call_depth;
+                let extra_natives = self.extra_natives.clone();
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
+                    interp.extra_natives = extra_natives;
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
                     interp.set_wall_clock(wall_clock);
@@ -1488,9 +1535,11 @@ impl Interp {
                 let wall_clock = self.wall_clock.clone();
                 let mem_limit = self.mem_limit.clone();
                 let max_depth = self.max_call_depth;
+                let extra_natives = self.extra_natives.clone();
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
+                    interp.extra_natives = extra_natives;
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
                     interp.set_wall_clock(wall_clock);

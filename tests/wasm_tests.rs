@@ -1,5 +1,7 @@
 use spid3r_lang::wasm::{
-    spid3r_check_json, spid3r_eval_json, spid3r_format_json, spid3r_version_json,
+    spid3r_check_json, spid3r_clear_modules_json, spid3r_eval_json, spid3r_format_json,
+    spid3r_register_module_json, spid3r_session_eval_json, spid3r_session_reset_json,
+    spid3r_version_json,
 };
 
 #[test]
@@ -78,4 +80,40 @@ fn test_wasm_eval_fn_main_in_string_or_comment() {
             res
         );
     }
+}
+
+#[test]
+fn test_wasm_virtual_modules_and_persistent_session() {
+    assert_eq!(spid3r_clear_modules_json(), "{\"ok\":true}");
+    let reg = spid3r_register_module_json(
+        "kit/greeter",
+        "public fn hello(who) { return \"hi \" + who; }\n",
+    );
+    assert_eq!(reg, "{\"ok\":true}");
+
+    let prog = "import \"kit/greeter\" as g;\nprintln(g.hello(\"wasm\"));\n";
+    for engine in ["tree", "vm"] {
+        let res = spid3r_eval_json(prog, engine);
+        assert!(res.contains("\"ok\":true"), "[{engine}] {res}");
+        assert!(res.contains("hi wasm"), "[{engine}] {res}");
+    }
+
+    for engine in ["tree", "vm"] {
+        assert_eq!(spid3r_session_reset_json(), "{\"ok\":true}");
+        let r1 = spid3r_session_eval_json(
+            "let counter = 10;\nfn bump(n) { counter += n; return counter; }\n",
+            engine,
+        );
+        assert!(r1.contains("\"ok\":true"), "[{engine}] r1: {r1}");
+        let r2 = spid3r_session_eval_json(
+            "import \"kit/greeter\" as g;\nprintln(g.hello(\"sess\") + \":\" + string(bump(5)));\n",
+            engine,
+        );
+        assert!(r2.contains("\"ok\":true"), "[{engine}] r2: {r2}");
+        assert!(r2.contains("hi sess:15"), "[{engine}] r2: {r2}");
+        let r3 = spid3r_session_eval_json("println(counter);\n", engine);
+        assert!(r3.contains("15"), "[{engine}] r3: {r3}");
+    }
+    assert_eq!(spid3r_session_reset_json(), "{\"ok\":true}");
+    assert_eq!(spid3r_clear_modules_json(), "{\"ok\":true}");
 }

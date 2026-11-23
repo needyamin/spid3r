@@ -450,3 +450,139 @@ fn default_module_dirs_keeps_the_documented_roots() {
         "the relative ./stdlib root must stay on the search path: {dirs:?}"
     );
 }
+
+#[test]
+fn gh9_check_enforces_cross_module_call_arity() {
+    let dir = scratch("gh9_arity");
+    write(
+        &dir,
+        "ui.matrix",
+        "public fn textarea(id, val, rows = 3, cols = 40) { return id; }\n",
+    );
+    // Too many arguments via alias (`ui.textarea(..., 5 args)`).
+    write(
+        &dir,
+        "bad_alias.matrix",
+        "import \"ui\" as ui;\nfn main() { ui.textarea(\"a\", \"b\", 1, 2, 3); return 0; }\n",
+    );
+    // Too few arguments via selective import.
+    write(
+        &dir,
+        "bad_sel.matrix",
+        "import { textarea } from \"ui\";\nfn main() { textarea(\"a\"); return 0; }\n",
+    );
+    // Too many arguments via plain import.
+    write(
+        &dir,
+        "bad_plain.matrix",
+        "import \"ui\";\nfn main() { textarea(\"a\", \"b\", 1, 2, 3); return 0; }\n",
+    );
+    // Valid calls + namespace `.keys()` must pass.
+    write(
+        &dir,
+        "good.matrix",
+        "import \"ui\" as ui;\nfn main() { ui.textarea(\"a\", \"b\"); ui.textarea(\"a\", \"b\", 5); println(ui.keys()); return 0; }\n",
+    );
+
+    for (file, needle) in [
+        (
+            "bad_alias.matrix",
+            "textarea expects 2 to 4 argument(s), got 5",
+        ),
+        (
+            "bad_sel.matrix",
+            "textarea expects 2 to 4 argument(s), got 1",
+        ),
+        (
+            "bad_plain.matrix",
+            "textarea expects 2 to 4 argument(s), got 5",
+        ),
+    ] {
+        let o = Command::new(bin())
+            .args(["check", dir.join(file).to_str().unwrap()])
+            .current_dir(&dir)
+            .output()
+            .expect("spawn");
+        assert_ne!(o.status.code(), Some(0), "{file} must fail check");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            stderr.contains(needle),
+            "{file} expected {needle:?}, got:\n{stderr}"
+        );
+    }
+
+    let ok = Command::new(bin())
+        .args(["check", dir.join("good.matrix").to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn");
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "good.matrix failed: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gh8c_gh9c_subdirectory_imports_root_modules_without_spid3r_path_and_multi_file_check() {
+    let dir = scratch("gh8_cwd_root");
+    write(
+        &dir,
+        "core/util.matrix",
+        "public fn greet() -> string { return \"hi\"; }\n",
+    );
+    write(
+        &dir,
+        "gui/controllers/home.matrix",
+        "import \"core/util\" as u;\nfn main() -> int { println(u.greet()); return 0; }\n",
+    );
+
+    // Works without SPID3R_PATH and without spider.toml when run from project root.
+    for engine in ["tree", "vm"] {
+        let o = Command::new(bin())
+            .args(["run", "--engine", engine, "gui/controllers/home.matrix"])
+            .current_dir(&dir)
+            .output()
+            .expect("spawn");
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "[{engine}] failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "hi");
+    }
+
+    // GH-8d: spid3r check accepts multiple files and directories.
+    let chk_dir = Command::new(bin())
+        .args(["check", "core", "gui/controllers/home.matrix"])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn check");
+    assert_eq!(
+        chk_dir.status.code(),
+        Some(0),
+        "multi-target check failed: {}",
+        String::from_utf8_lossy(&chk_dir.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&chk_dir.stdout);
+    assert!(stdout.contains("util.matrix: ok"), "stdout:\n{stdout}");
+    assert!(stdout.contains("home.matrix: ok"), "stdout:\n{stdout}");
+
+    // Directory containing a broken file exits non-zero.
+    write(
+        &dir,
+        "gui/controllers/broken.matrix",
+        "fn main() { return nope; }\n",
+    );
+    let chk_bad = Command::new(bin())
+        .args(["check", "gui"])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn bad check");
+    assert_ne!(chk_bad.status.code(), Some(0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

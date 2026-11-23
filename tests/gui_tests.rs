@@ -296,3 +296,212 @@ fn payload_falls_back_to_a_matrix_beside_the_executable() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn gh2_gui_on_supports_one_and_two_arg_handlers_and_rejects_bad_arity() {
+    let ok_src = r#"
+        fn one_arg(payload) {
+            println("one:" + payload);
+            return null;
+        }
+        fn two_arg(ev, payload) {
+            println("two:" + ev + ":" + payload);
+            return null;
+        }
+        fn defaulted(ev, payload = "def") {
+            println("opt:" + ev + ":" + payload);
+            return null;
+        }
+        fn main() {
+            gui_on("a", one_arg);
+            gui_on("b", two_arg);
+            gui_on("c", defaulted);
+            gui_on("d", p => { println("arrow:" + p); return null; });
+            gui_emit("a", "alpha");
+            gui_emit("b", "beta");
+            gui_emit("c", "gamma");
+            gui_emit("d", "delta");
+            return 0;
+        }
+    "#;
+    let ok_path = write_case("gh2_arity_ok", ok_src);
+    for extra in [&[][..], &["--engine", "vm"][..]] {
+        let mut args = vec!["gui", ok_path.as_str(), "--dry-run"];
+        args.extend_from_slice(extra);
+        let out = gui(&args).expect("1-arg and 2-arg handlers must succeed");
+        assert_eq!(out, "one:alpha\ntwo:b:beta\nopt:c:gamma\narrow:delta\n");
+    }
+
+    let zero_src = r#"
+        fn bad0() { return null; }
+        fn main() { gui_on("x", bad0); return 0; }
+    "#;
+    let zero_path = write_case("gh2_arity_zero", zero_src);
+    let err0 = gui(&["gui", &zero_path, "--dry-run"]).expect_err("0-arg handler must fail");
+    assert!(err0.contains("1 argument"), "got: {}", err0);
+
+    let three_src = r#"
+        fn bad3(a, b, c) { return null; }
+        fn main() { gui_on("x", bad3); return 0; }
+    "#;
+    let three_path = write_case("gh2_arity_three", three_src);
+    let err3 = gui(&["gui", &three_path, "--dry-run"]).expect_err("3-arg handler must fail");
+    assert!(err3.contains("2 arguments"), "got: {}", err3);
+}
+
+#[test]
+fn gh2_handler_runtime_error_reports_real_source_span() {
+    let src = r#"
+        fn boom(payload) {
+            let x = 1 / 0;
+            return null;
+        }
+        fn main() {
+            gui_on("ready", boom);
+            return 0;
+        }
+    "#;
+    let path = write_case("gh2_span", src);
+    for extra in [&[][..], &["--engine", "vm"][..]] {
+        let mut args = vec!["gui", path.as_str(), "--dry-run"];
+        args.extend_from_slice(extra);
+        let out = Command::new(bin())
+            .args(&args)
+            .output()
+            .expect("spawn gui handler span");
+        assert!(out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("<gui>:0"),
+            "expected real file:line span, got:\n{}",
+            stderr
+        );
+        assert!(
+            stderr.contains("spid3r_gui_gh2_span.matrix"),
+            "expected source file name in stderr:\n{}",
+            stderr
+        );
+    }
+}
+
+#[test]
+fn gh3_spawned_worker_can_push_gui_updates() {
+    let src = r#"
+        fn worker() {
+            gui_title("worker-title");
+            gui_eval("window.fromWorker = true;");
+            return null;
+        }
+        fn main() {
+            spawn worker;
+            return 0;
+        }
+    "#;
+    let path = write_case("gh3_worker", src);
+    for extra in [&[][..], &["--engine", "vm"][..]] {
+        let mut args = vec!["gui", path.as_str(), "--dry-run"];
+        args.extend_from_slice(extra);
+        let out = gui(&args).expect("worker gui calls must succeed");
+        assert!(
+            out.contains("js: window.fromWorker = true;"),
+            "got:\n{}",
+            out
+        );
+    }
+}
+
+#[test]
+fn gh4_cooperative_shutdown_stops_spawned_loop_quickly() {
+    let src = r#"
+        fn poller() {
+            while not shutdown_requested() {
+                sleep_ms(10);
+            }
+            gui_eval("window.pollerDone = true;");
+            return null;
+        }
+        fn on_ready(ev, payload) {
+            request_shutdown();
+            return null;
+        }
+        fn main() {
+            gui_on("ready", on_ready);
+            spawn poller;
+            return 0;
+        }
+    "#;
+    let path = write_case("gh4_shutdown", src);
+    for extra in [&[][..], &["--engine", "vm"][..]] {
+        let mut args = vec!["gui", path.as_str(), "--dry-run"];
+        args.extend_from_slice(extra);
+        let start = std::time::Instant::now();
+        let out = gui(&args).expect("cooperative shutdown must succeed");
+        let elapsed = start.elapsed();
+        assert!(
+            out.contains("js: window.pollerDone = true;"),
+            "worker should finish and flush after request_shutdown, got:\n{}",
+            out
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "took {:?}; should not wait for 2000ms drain timeout",
+            elapsed
+        );
+    }
+}
+
+#[test]
+fn gh5_imported_module_can_call_gui_natives_in_gui_mode_only() {
+    let dir = std::env::temp_dir().join(format!("spid3r_gui_mod_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let ui_mod = dir.join("ui_helper.matrix");
+    std::fs::write(
+        &ui_mod,
+        r#"
+public fn setup_ui(msg: string) {
+    gui_title("from module");
+    gui_eval("window.modMsg = " + json_write(msg) + ";");
+    return null;
+}
+"#,
+    )
+    .expect("write ui_helper");
+    let main_file = dir.join("main.matrix");
+    std::fs::write(
+        &main_file,
+        r#"
+import "ui_helper" as ui;
+fn main() {
+    ui.setup_ui("hello-mod");
+    return 0;
+}
+"#,
+    )
+    .expect("write main");
+    let main_str = main_file.to_string_lossy().to_string();
+    for extra in [&[][..], &["--engine", "vm"][..]] {
+        let mut args = vec!["gui", main_str.as_str(), "--dry-run"];
+        args.extend_from_slice(extra);
+        let out = gui(&args).expect("module calling gui_* under gui mode must succeed");
+        assert!(
+            out.contains("js: window.modMsg = \"hello-mod\";"),
+            "got:\n{}",
+            out
+        );
+    }
+
+    // `spid3r run` must still fail cleanly with gui_* undefined.
+    let run_out = Command::new(bin())
+        .args(["run", &main_str])
+        .output()
+        .expect("spawn run");
+    assert!(!run_out.status.success());
+    let stderr = String::from_utf8_lossy(&run_out.stderr);
+    assert!(
+        stderr.contains("gui_title") || stderr.contains("gui_eval"),
+        "expected gui native error under run, got:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

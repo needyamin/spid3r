@@ -190,11 +190,13 @@ fn builtin_return_type(name) {
 // funcs:    map name -> [arity, min_arity, raw-params, param_names, raw-ret]
 // scopes:   list of maps name -> [is_const, cls-or-null, ty-or-null, is_import,
 //                                 kind, used, import_consts-or-null]
+// st[19] = imported_funcs, st[20] = imported_ns_funcs
 public fn new_checker(is_main, source_file) {
     builtin_maps();
     return [
     map(), map(), map(), [map()], 0, 0, false, false, null, null,
     is_main, source_file, map(), map(), map(), map(), [], 0, [],
+    map(), map(),
     ];
 }
 
@@ -377,6 +379,9 @@ fn common_type(a, b) {
 // -------------------------------------------------------- registry lookups
 
 fn declare(st, name, sp, info) {
+    if name == "_" {
+        return;
+    }
     info[6] = sp;
     let scope = st[3][st[3].len() - 1];
     if scope.has(name) {
@@ -832,6 +837,12 @@ public fn resolve_module_path(path, source_file) {
             i += 1;
         }
     }
+    for ext in [".matrix", ""] {
+        let p = path + ext;
+        if file_exists(p) {
+            return p;
+        }
+    }
     return null;
 }
 
@@ -1010,10 +1021,12 @@ public fn check_program(st, prog) {
             }
             seen[s[2]] = 1;
         } else if tag == "Let" or tag == "Const" {
-            if not seen.has(s[2]) {
-                seen[s[2]] = 1;
-            } else {
-                chk_err(st, s[5], "'" + s[2] + "' is declared twice");
+            if s[2] != "_" {
+                if not seen.has(s[2]) {
+                    seen[s[2]] = 1;
+                } else {
+                    chk_err(st, s[5], "'" + s[2] + "' is declared twice");
+                }
             }
         }
     }
@@ -1716,8 +1729,24 @@ fn check_import(st, s) {
     let alias = s[2];
     let sp = s[3];
     let info = module_info(path, st[11], st, sp);
+    let prog = info[0];
     let names = info[1];
     let unexported = info[2];
+    let mod_funcs = map();
+    for item in prog[0] {
+        if item[0] == "Fn" {
+            let f = item[1];
+            if f[1] == "public" and f[4] != null {
+                let raw_params = [];
+                let pnames = [];
+                for p in f[5] {
+                    raw_params.push(p[2]);
+                    pnames.push(p[1]);
+                }
+                mod_funcs[f[4]] = [f[5].len(), f[5].len() - count_defaults(f[5]), raw_params, pnames, f[6]];
+            }
+        }
+    }
     for u in unexported {
         st[15][u[0]] = [u[1], u[2]];
     }
@@ -1729,6 +1758,9 @@ fn check_import(st, s) {
         for pair in selections {
             let export_name = pair[0];
             let local_name = pair[1];
+            if mod_funcs.has(export_name) {
+                st[19][local_name] = mod_funcs[export_name];
+            }
             let found = null;
             for n in names {
                 if n[0] == export_name {
@@ -1791,7 +1823,11 @@ fn check_import(st, s) {
             ic = consts;
         }
         scope[alias] = [true, null, null, true, "import", false, ic, sp];
+        st[20][alias] = mod_funcs;
     } else {
+        for fn_k in mod_funcs.keys() {
+            st[19][fn_k] = mod_funcs[fn_k];
+        }
         for n in names {
             let scope = st[3][st[3].len() - 1];
             let local_here = false;
@@ -1863,7 +1899,7 @@ fn check_fn_stmt(st, s) {
         chk_err(st, f[9], "too many parameters in one function (max 255)");
     }
     for p in f[5] {
-        if names.has(p[1]) {
+        if p[1] != "_" and names.has(p[1]) {
             chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
         }
         names[p[1]] = 1;
@@ -1971,7 +2007,7 @@ fn check_class_stmt(st, s) {
             );
             let names = map();
             for p in m[5] {
-                if names.has(p[1]) {
+                if p[1] != "_" and names.has(p[1]) {
                     chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
                 }
                 names[p[1]] = 1;
@@ -2010,7 +2046,7 @@ fn check_class_stmt(st, s) {
             let i = 1;
             while i < m[5].len() {
                 let p = m[5][i];
-                if names.has(p[1]) {
+                if p[1] != "_" and names.has(p[1]) {
                     chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
                 }
                 names[p[1]] = 1;
@@ -2525,6 +2561,9 @@ fn check_expr(st, e) {
     }
     if tag == "Ident" {
         let name = e[1];
+        if name == "_" {
+            chk_err(st, e[2], "'_' is a discard pattern and cannot be read");
+        }
         if name == "self" and st[8] == null {
             chk_err(st, e[2], "self outside a method");
         }
@@ -2810,21 +2849,37 @@ fn check_call(st, e) {
                 i += 1;
             }
         } else {
-            let sig = null;
             let v = lookup(st, name);
-            if v != null and v[2] != null and v[2][0] == "Fn" and v[2][1] != null {
-                sig = v[2][1];
-            }
-            if sig != null {
-                check_sig_args(st, name, sig, args, sp);
-            } else if has_named_args(args) {
-                chk_err(
-                    st,
-                    sp,
-                    "named arguments on a call to '" + name + "' are not supported: the callee is not a statically-known function"
-                );
-            } else if not known(st, name) {
-                unknown_name(st, sp, name);
+            let shadowed_local = v != null and not v[3];
+            if st[19].has(name) and not shadowed_local {
+                let fi = st[19][name];
+                if has_named_args(args) {
+                    check_named_args(st, args, fi[3], fi[1], name, sp);
+                } else if args.len() < fi[1] or args.len() > fi[0] {
+                    let want = "";
+                    if fi[1] == fi[0] {
+                        want = string(fi[0]) + " argument(s)";
+                    } else {
+                        want = string(fi[1]) + " to " + string(fi[0]) + " argument(s)";
+                    }
+                    chk_err(st, sp, name + " expects " + want + ", got " + string(args.len()));
+                }
+            } else {
+                let sig = null;
+                if v != null and v[2] != null and v[2][0] == "Fn" and v[2][1] != null {
+                    sig = v[2][1];
+                }
+                if sig != null {
+                    check_sig_args(st, name, sig, args, sp);
+                } else if has_named_args(args) {
+                    chk_err(
+                        st,
+                        sp,
+                        "named arguments on a call to '" + name + "' are not supported: the callee is not a statically-known function"
+                    );
+                } else if not known(st, name) {
+                    unknown_name(st, sp, name);
+                }
             }
         }
     } else {
@@ -2887,6 +2942,25 @@ fn check_method(st, e) {
             sp,
             "named arguments on method calls are not supported yet (call " + name + " as a function, or pass arguments positionally)"
         );
+    }
+    if object[0] == "Ident" {
+        let alias = object[1];
+        let av = lookup(st, alias);
+        if av != null and av[3] and st[20].has(alias) {
+            let ns = st[20][alias];
+            if ns.has(name) {
+                let fi = ns[name];
+                if args.len() < fi[1] or args.len() > fi[0] {
+                    let want = "";
+                    if fi[1] == fi[0] {
+                        want = string(fi[0]) + " argument(s)";
+                    } else {
+                        want = string(fi[1]) + " to " + string(fi[0]) + " argument(s)";
+                    }
+                    chk_err(st, sp, name + " expects " + want + ", got " + string(args.len()));
+                }
+            }
+        }
     }
     let cls = receiver_class(st, object);
     if cls != null {

@@ -201,7 +201,7 @@ pub fn check_import_path(path: &str) -> Result<(), Diagnostic> {
         return Err(Diagnostic::new(
             Phase::Semantic,
             format!(
-                "invalid module path '{}': imports are relative to the importing file and the module search path (no absolute paths, drive letters, or '..')",
+                "invalid module path '{}': imports are relative to the importing file and the module search path (no absolute paths, drive letters, or '..'); use project-root-relative paths or SPID3R_PATH",
                 path
             ),
         ));
@@ -241,6 +241,53 @@ pub fn canonical_key(p: &std::path::Path) -> PathBuf {
 /// embedded stdlib table instead of the filesystem.
 pub const EMBEDDED_PREFIX: &str = "<stdlib>/";
 
+/// Prefix of the synthetic path a module gets when registered in the
+/// in-memory virtual module table (used by `spid3r.wasm` / browser hosts).
+pub const VIRTUAL_PREFIX: &str = "<vfs>/";
+
+static VIRTUAL_MODULES: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> =
+    std::sync::Mutex::new(None);
+
+fn normalize_virtual_key(name: &str) -> String {
+    let s = name.trim().replace('\\', "/");
+    let s = s.strip_prefix("./").unwrap_or(&s);
+    let s = s.strip_suffix(".matrix").unwrap_or(s);
+    s.to_string()
+}
+
+/// Register an in-memory module source for `import "<name>"` (used by WASM hosts).
+pub fn register_virtual_module(name: &str, src: &str) {
+    let key = normalize_virtual_key(name);
+    let mut g = VIRTUAL_MODULES.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(std::collections::HashMap::new);
+    map.insert(key, src.to_string());
+}
+
+/// Clear all registered virtual modules.
+pub fn clear_virtual_modules() {
+    let mut g = VIRTUAL_MODULES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(map) = g.as_mut() {
+        map.clear();
+    }
+}
+
+/// Synthetic path for a registered virtual module, if any.
+pub fn virtual_path(spec: &str) -> Option<PathBuf> {
+    let key = normalize_virtual_key(spec);
+    let g = VIRTUAL_MODULES.lock().unwrap_or_else(|e| e.into_inner());
+    if g.as_ref().is_some_and(|m| m.contains_key(&key)) {
+        Some(PathBuf::from(format!("{}{}.matrix", VIRTUAL_PREFIX, key)))
+    } else {
+        None
+    }
+}
+
+fn virtual_module_source(name: &str) -> Option<String> {
+    let key = normalize_virtual_key(name);
+    let g = VIRTUAL_MODULES.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref().and_then(|m| m.get(&key).cloned())
+}
+
 /// Embedded stdlib source for `name`.
 ///
 /// The table is compiled into every build, not just wasm32. On native targets
@@ -262,9 +309,15 @@ pub fn embedded_path(path: &str) -> Option<PathBuf> {
     embedded_module(path).map(|_| PathBuf::from(format!("{}{}.matrix", EMBEDDED_PREFIX, path)))
 }
 
-/// Read a module's source. Marker paths from [`embedded_path`] resolve to the
-/// embedded table; everything else is a normal file read.
+/// Read a module's source. Marker paths from [`virtual_path`] and
+/// [`embedded_path`] resolve to their in-memory tables; everything else is a
+/// normal file read.
 pub fn read_module_source(path: &std::path::Path) -> std::io::Result<String> {
+    if let Some(name) = path.to_str().and_then(|s| s.strip_prefix(VIRTUAL_PREFIX)) {
+        if let Some(src) = virtual_module_source(name.trim_end_matches(".matrix")) {
+            return Ok(src);
+        }
+    }
     if let Some(name) = path.to_str().and_then(|s| s.strip_prefix(EMBEDDED_PREFIX)) {
         if let Some(src) = embedded_module(name.trim_end_matches(".matrix")) {
             return Ok(src.to_string());
@@ -323,6 +376,13 @@ pub fn load(
         interp.wall_clock_handle(),
         interp.mem_limit_handle(),
     );
+    {
+        let extra = interp.extra_natives_handle();
+        let defs = extra.lock().unwrap().clone();
+        if !defs.is_empty() {
+            minterp.install_extra_natives(&defs);
+        }
+    }
     let mut result: Result<Vec<(String, Value)>, Diagnostic> = Ok(Vec::new());
     // A panic while the module body runs releases the module's mutexes (see
     // the interpreter's `GuardSweep`).
@@ -625,12 +685,32 @@ fn module_exports_inner(
     Ok(out)
 }
 
+/// What a module scan returns: the exported names (name, is_const), the
+/// unexported declarations found while scanning ((module display name, local
+/// name, declaration kind)), and the public function prototypes (for
+/// cross-module arity checking in `spid3r check`).
+pub type ModuleScanWithFuncs = (
+    Vec<(String, bool)>,
+    Vec<(String, String, &'static str)>,
+    Vec<crate::ast::FnProto>,
+);
+
 pub fn module_info_of_in(
     path: &str,
     importer_file: &str,
     span: &Span,
     extra_dirs: &[std::path::PathBuf],
 ) -> Result<ModuleScan, Diagnostic> {
+    module_info_with_funcs_in(path, importer_file, span, extra_dirs)
+        .map(|(names, unexported, _)| (names, unexported))
+}
+
+pub fn module_info_with_funcs_in(
+    path: &str,
+    importer_file: &str,
+    span: &Span,
+    extra_dirs: &[std::path::PathBuf],
+) -> Result<ModuleScanWithFuncs, Diagnostic> {
     // Same resolver as every backend, so the names the checker sees come from
     // the same file the engines will load. The diagnostic carries this
     // import's span instead of the module-internal one the resolver builds.
@@ -656,12 +736,14 @@ pub fn module_info_of_in(
         .to_string();
     let mut names = Vec::new();
     let mut unexported = Vec::new();
+    let mut funcs = Vec::new();
     for stmt in &program.stmts {
         match stmt {
             crate::ast::Stmt::Fn(f) => {
                 if let Some(n) = &f.name {
                     if f.vis == crate::ast::Vis::Public {
                         names.push((n.clone(), false));
+                        funcs.push(f.clone());
                     } else {
                         unexported.push((n.clone(), mod_display.clone(), "fn"));
                     }
@@ -709,7 +791,7 @@ pub fn module_info_of_in(
             _ => {}
         }
     }
-    Ok((names, unexported))
+    Ok((names, unexported, funcs))
 }
 
 /// Convenience for tests: a fresh interpreter with the default module dirs.

@@ -357,3 +357,57 @@ fn a_comma_after_a_closure_argument_stays_on_the_brace_line() {
     assert!(!out.contains("\n    , 2, 3);"), "orphaned comma:/n{}", out);
     check_roundtrip("closure-arg-comma", src);
 }
+
+#[test]
+fn gh8a_bom_files_format_and_check_cleanly() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("spid3r_fmt_bom_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let bom_ok = dir.join("bom_ok.matrix");
+    std::fs::write(&bom_ok, "\u{feff}fn main() {\n    return 0;\n}\n").expect("write");
+
+    let chk = Command::new(env!("CARGO_BIN_EXE_spid3r"))
+        .args(["fmt", "--check", bom_ok.to_str().unwrap()])
+        .output()
+        .expect("fmt --check");
+    assert!(
+        chk.status.success(),
+        "canonically formatted BOM file must pass fmt --check: {}",
+        String::from_utf8_lossy(&chk.stdout)
+    );
+
+    let bom_messy = dir.join("bom_messy.matrix");
+    std::fs::write(&bom_messy, "\u{feff}fn main(){return 0;}\n").expect("write");
+    let fmt_out = Command::new(env!("CARGO_BIN_EXE_spid3r"))
+        .args(["fmt", bom_messy.to_str().unwrap()])
+        .output()
+        .expect("fmt");
+    assert!(fmt_out.status.success());
+    let chk2 = Command::new(env!("CARGO_BIN_EXE_spid3r"))
+        .args(["fmt", "--check", bom_messy.to_str().unwrap()])
+        .output()
+        .expect("fmt --check 2");
+    assert!(chk2.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gh8b_multiline_map_literals_and_comments_converge_in_one_pass() {
+    let cases = [
+        (
+            "map-in-call",
+            "fn main() {\n    items.push(\n        {\n        \"a\": 1,\n        \"b\": 2,\n    }\n    );\n    return 0;\n}\n",
+        ),
+        (
+            "map-in-list",
+            "fn main() {\n    let xs = [\n        {\n            \"id\": \"x\",\n            \"ok\": true,\n        },\n        {\n            \"id\": \"y\",\n            \"ok\": false,\n        }\n    ];\n    return 0;\n}\n",
+        ),
+        (
+            "transparent-trailing-comment",
+            "fn main() {\n    f(1, fn(x) { // body\n        return x;\n    },\n    {\n        \"k\": 1,\n    });\n    return 0;\n}\n",
+        ),
+    ];
+    for (name, src) in cases {
+        check_roundtrip(name, src);
+    }
+}

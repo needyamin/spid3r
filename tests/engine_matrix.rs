@@ -1889,3 +1889,152 @@ fn main() {
         );
     }
 }
+
+/// GH-10: Lowering must not spill builtin constructor callees (`map`, `some`,
+/// `tuple`, `set`, `list`) when an argument contains `if`-expr, `??`, or
+/// `match`.
+#[test]
+fn gh10_if_expr_in_map_literal_and_constructors_across_engines() {
+    let src = r#"
+fn main() -> int {
+    let ok = true;
+    let items = [];
+    items.push({
+        "id": "xtool",
+        "status": if ok {
+            "cached"
+        } else {
+            "missing"
+        }
+        ,
+        "action": "install_xtool",
+    });
+    let m2 = { "a": if false { 1 } else { 2 }, "b": null ?? 9, "c": match (1) { 1 => 10, _ => 0 } };
+    let opt = some(if ok { "yes" } else { "no" });
+    let tup = tuple(if ok { 1 } else { 0 }, 2);
+    let st = set(if ok { "k" } else { "m" });
+    println(items[0]["id"] + ":" + items[0]["status"] + ":" + items[0]["action"]);
+    println(string(m2["a"]) + ":" + string(m2["b"]) + ":" + string(m2["c"]));
+    println(opt.unwrap() + ":" + string(tup[0]) + ":" + string(st.contains("k")));
+    return 0;
+}
+"#;
+    let expected = "xtool:cached:install_xtool\n2:9:10\nyes:1:true\n";
+    for engine in ["tree", "vm"] {
+        let (code, out, err) = run_engine(engine, "gh10_map_if", src);
+        assert_eq!(code, 0, "[{engine}] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[{engine}] stdout mismatch"
+        );
+    }
+    #[cfg(feature = "native")]
+    if let Some((code, out, err)) = run_aot("gh10_map_if", src) {
+        assert_eq!(code, 0, "[native] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[native] stdout mismatch"
+        );
+    }
+}
+
+/// GH-6 & GH-7: Expression-form `if ... elif ... else` and map literals directly
+/// inside `if`/`else` expression branches must agree across tree, VM, and AOT.
+#[test]
+fn gh6_gh7_if_expr_elif_and_map_branches_across_engines() {
+    let src = r#"
+fn classify(n: int) -> string {
+    return if n == 1 { "one" } elif n == 2 { "two" } elif n == 3 { "three" } else { "other" };
+}
+fn main() -> int {
+    println(classify(1) + ":" + classify(2) + ":" + classify(3) + ":" + classify(9));
+    let x = if true { { "a": 1 } } else { { "a": 2 } };
+    let e = if false { {} } else { { "ok": true } };
+    println(string(x["a"]) + ":" + string(e["ok"]));
+    return 0;
+}
+"#;
+    let expected = "one:two:three:other\n1:true\n";
+    for engine in ["tree", "vm"] {
+        let (code, out, err) = run_engine(engine, "gh6_gh7_if_expr", src);
+        assert_eq!(code, 0, "[{engine}] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[{engine}] stdout mismatch"
+        );
+    }
+    #[cfg(feature = "native")]
+    if let Some((code, out, err)) = run_aot("gh6_gh7_if_expr", src) {
+        assert_eq!(code, 0, "[native] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[native] stdout mismatch"
+        );
+    }
+}
+
+/// GH-9a: `_` is a true discard pattern in `let _ = ...`, destructuring,
+/// `for` loops, and function/lambda parameters across tree, VM, and AOT.
+/// Reading `_` as a value must fail `spid3r check`.
+#[test]
+fn gh9_underscore_discard_across_engines() {
+    let src = r#"
+let _ = 10;
+let _ = 20;
+fn side(v: string) -> string {
+    println(v);
+    return v;
+}
+fn keep_second(_, b, _) -> int {
+    return b;
+}
+fn main() -> int {
+    let _ = side("first");
+    let _ = side("second");
+    let (_, _, x) = [1, 2, 3];
+    let sum = 0;
+    for _ in [1, 2, 3] {
+        sum += 1;
+    }
+    let m = { "a": 5, "b": 6 };
+    for (_, _) in m {
+        sum += 10;
+    }
+    let cb = (_, _, z) => z * 2;
+    println(string(x) + ":" + string(sum) + ":" + string(keep_second(1, 7, 9)) + ":" + string(cb(1, 2, 4)));
+    return 0;
+}
+"#;
+    let expected = "first\nsecond\n3:23:7:8\n";
+    for engine in ["tree", "vm"] {
+        let (code, out, err) = run_engine(engine, "gh9_discard", src);
+        assert_eq!(code, 0, "[{engine}] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[{engine}] stdout mismatch"
+        );
+    }
+    #[cfg(feature = "native")]
+    if let Some((code, out, err)) = run_aot("gh9_discard", src) {
+        assert_eq!(code, 0, "[native] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[native] stdout mismatch"
+        );
+    }
+
+    // Reading `_` must fail check.
+    let bad = "fn main() -> int { let _ = 1; println(_); return 0; }\n";
+    let (code, _out, err) = run_engine("tree", "gh9_read_discard", bad);
+    assert_ne!(code, 0);
+    assert!(
+        err.contains("discard pattern"),
+        "expected discard error, got: {err}"
+    );
+}

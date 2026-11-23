@@ -120,7 +120,7 @@ fn is_scalar_default(e: &Expr) -> bool {
 fn fn_needs_lowering(f: &FnProto) -> bool {
     f.params
         .iter()
-        .any(|p| p.default.as_ref().is_some_and(|d| !is_scalar_default(d)))
+        .any(|p| p.name == "_" || p.default.as_ref().is_some_and(|d| !is_scalar_default(d)))
         || block_needs_lowering(&f.body)
 }
 
@@ -136,8 +136,10 @@ fn stmt_needs_lowering(s: &Stmt) -> bool {
         Stmt::Enum(_) => true,
         Stmt::Fn(f) => fn_needs_lowering(f),
         Stmt::Class(c) => !c.interfaces.is_empty() || c.methods.iter().any(fn_needs_lowering),
-        Stmt::Let { value, .. } => value.as_ref().map(expr_needs_lowering).unwrap_or(false),
-        Stmt::Const { value, .. } => expr_needs_lowering(value),
+        Stmt::Let { name, value, .. } => {
+            name == "_" || value.as_ref().map(expr_needs_lowering).unwrap_or(false)
+        }
+        Stmt::Const { name, value, .. } => name == "_" || expr_needs_lowering(value),
         // Both always need lowering: they expand into ordinary statements.
         Stmt::LetTuple { .. } => true,
         Stmt::If {
@@ -159,8 +161,14 @@ fn stmt_needs_lowering(s: &Stmt) -> bool {
         // the engines only know the one-variable form, and the value binding is
         // synthesized here.
         Stmt::ForIn {
-            var2, iter, body, ..
-        } => var2.is_some() || expr_needs_lowering(iter) || block_needs_lowering(body),
+            var,
+            var2,
+            iter,
+            body,
+            ..
+        } => {
+            var == "_" || var2.is_some() || expr_needs_lowering(iter) || block_needs_lowering(body)
+        }
         Stmt::ForC {
             init,
             cond,
@@ -549,21 +557,33 @@ impl Lower {
                 ty,
                 value,
                 span,
-            } => match value {
-                Some(v) => {
-                    let (value, pre) = self.expr(v);
-                    let mut out = pre;
-                    out.push(Stmt::Let {
-                        vis: *vis,
-                        name: name.clone(),
-                        ty: ty.clone(),
-                        value: Some(value),
-                        span: span.clone(),
-                    });
-                    out
+            } => {
+                if name == "_" {
+                    return match value {
+                        Some(v) => {
+                            let (value, mut pre) = self.expr(v);
+                            pre.push(Stmt::Expr(value));
+                            pre
+                        }
+                        None => Vec::new(),
+                    };
                 }
-                None => vec![s.clone()],
-            },
+                match value {
+                    Some(v) => {
+                        let (value, pre) = self.expr(v);
+                        let mut out = pre;
+                        out.push(Stmt::Let {
+                            vis: *vis,
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            value: Some(value),
+                            span: span.clone(),
+                        });
+                        out
+                    }
+                    None => vec![s.clone()],
+                }
+            }
             // `let (a, b) = e;` -> `let __d = e; let a = __d[0]; let b = __d[1];`
             Stmt::LetTuple {
                 vis,
@@ -575,17 +595,22 @@ impl Lower {
                 let d = self.fresh();
                 pre.push(let_stmt(&d, value, span.clone()));
                 for (i, n) in names.iter().enumerate() {
-                    pre.push(Stmt::Let {
-                        vis: *vis,
-                        name: n.clone(),
-                        ty: None,
-                        value: Some(Expr::Index {
-                            object: Box::new(Expr::Ident(d.clone(), span.clone())),
-                            index: Box::new(Expr::Int(i as i64, span.clone())),
-                            span: span.clone(),
-                        }),
+                    let elem = Expr::Index {
+                        object: Box::new(Expr::Ident(d.clone(), span.clone())),
+                        index: Box::new(Expr::Int(i as i64, span.clone())),
                         span: span.clone(),
-                    });
+                    };
+                    if n == "_" {
+                        pre.push(Stmt::Expr(elem));
+                    } else {
+                        pre.push(Stmt::Let {
+                            vis: *vis,
+                            name: n.clone(),
+                            ty: None,
+                            value: Some(elem),
+                            span: span.clone(),
+                        });
+                    }
                 }
                 pre
             }
@@ -596,16 +621,19 @@ impl Lower {
                 value,
                 span,
             } => {
-                let (value, pre) = self.expr(value);
-                let mut out = pre;
-                out.push(Stmt::Const {
+                let (value, mut pre) = self.expr(value);
+                if name == "_" {
+                    pre.push(Stmt::Expr(value));
+                    return pre;
+                }
+                pre.push(Stmt::Const {
                     vis: *vis,
                     name: name.clone(),
                     ty: ty.clone(),
                     value,
                     span: span.clone(),
                 });
-                out
+                pre
             }
             Stmt::If {
                 cond,
@@ -624,10 +652,18 @@ impl Lower {
             } => {
                 let (iter, mut pre) = self.expr(iter);
                 let body = self.block(body);
+                let var = if var == "_" {
+                    self.fresh()
+                } else {
+                    var.clone()
+                };
+                let var2 = var2
+                    .as_ref()
+                    .map(|v2| if v2 == "_" { self.fresh() } else { v2.clone() });
                 // `for (k, v) in m` -> `for k in m { let v = m[k]; … }`. The
                 // iterable expression is evaluated once into a temp so the
                 // lookup does not repeat it.
-                if let Some(v2) = var2 {
+                if let Some(ref v2) = var2 {
                     let src = self.fresh();
                     let idx = self.fresh();
                     let item = self.fresh();
@@ -676,7 +712,7 @@ impl Lower {
                     );
                     body_seq.stmts.insert(
                         0,
-                        let_stmt(var, Expr::Ident(idx.clone(), span.clone()), span.clone()),
+                        let_stmt(&var, Expr::Ident(idx.clone(), span.clone()), span.clone()),
                     );
                     let for_seq = Stmt::ForIn {
                         var: item,
@@ -844,6 +880,11 @@ impl Lower {
                 span: f.span.clone(),
             };
             let mut out = f.clone();
+            for p in &mut out.params {
+                if p.name == "_" {
+                    p.name = self.fresh();
+                }
+            }
             out.body = crate::ast::Block {
                 stmts: vec![wrapped],
                 span: f.body.span.clone(),
@@ -856,6 +897,9 @@ impl Lower {
         let mut params = f.params.clone();
         let mut init_stmts = Vec::new();
         for p in &mut params {
+            if p.name == "_" {
+                p.name = self.fresh();
+            }
             if let Some(d) = p.default.take() {
                 if is_scalar_default(&d) {
                     p.default = Some(d);
@@ -1539,6 +1583,25 @@ impl Lower {
                 } else {
                     args.clone()
                 };
+                // Builtin constructors (`map`, `list`, `some`, ...) are
+                // dispatched syntactically by direct `Expr::Ident` across tree,
+                // VM, and AOT backends; spilling the callee into a temp
+                // (`let __t = map; __t(...)`) makes it evaluate to `null`.
+                if matches!(
+                    &**callee,
+                    Expr::Ident(n, _) if crate::value::collections::is_constructor(n)
+                ) {
+                    let (args, pre) = self.seq_list(&args);
+                    return (
+                        Expr::Call {
+                            callee: callee.clone(),
+                            type_args: type_args.clone(),
+                            args,
+                            span: span.clone(),
+                        },
+                        pre,
+                    );
+                }
                 let mut parts: Vec<&Expr> = vec![callee];
                 parts.extend(args.iter());
                 let (v, pre) = self.seq(&parts);

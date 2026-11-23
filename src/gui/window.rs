@@ -9,6 +9,7 @@ use wry::http::{Request as HttpRequest, Response as HttpResponse};
 
 use crate::diagnostics::Span;
 use crate::interpreter::Flow;
+use crate::stdlib::shutdown;
 use crate::value::Value;
 
 use super::{bridge, Runtime};
@@ -39,15 +40,24 @@ const INIT_SCRIPT: &str = r#"window.spid3r = {
   }
 };"#;
 
-/// Wakes the window's event loop when the page emits an event.
+/// Wakes the window's event loop when the page, a worker thread, or shutdown notifies it.
 pub enum Msg {
     Event,
+    Shutdown,
 }
 
 /// Replay the bridge without a window: the `ready` event is dispatched and
 /// the queued JavaScript is printed (`js: …`) instead of evaluated.
 pub fn dry_run(runtime: &Runtime) {
     bridge::push_event("ready", "");
+    dispatch(runtime);
+    for js in bridge::take_out() {
+        println!("js: {}", js);
+    }
+    // Wait for background `spawn` tasks after `ready` runs (so handlers that call
+    // `request_shutdown()` stop cooperative worker loops cleanly) and drain any
+    // JS or events those workers pushed.
+    crate::sched::join_tasks_at_exit();
     dispatch(runtime);
     for js in bridge::take_out() {
         println!("js: {}", js);
@@ -85,6 +95,11 @@ pub fn open(
     ephemeral: bool,
     app_id: &str,
 ) -> Result<(), String> {
+    if shutdown::is_requested() {
+        bridge::mark_closed();
+        crate::sched::join_tasks_at_exit();
+        return Ok(());
+    }
     let title = bridge::take_title().unwrap_or_else(|| "spid3r gui".to_string());
 
     // The CLI runs every subcommand on a big-stack worker thread (deep AST
@@ -121,11 +136,16 @@ pub fn open(
             let proxy = proxy.clone();
             move |request: wry::http::Request<String>| {
                 let body = request.into_body();
-                let event = bridge::json_field(&body, "event").unwrap_or_default();
-                let payload = bridge::json_field(&body, "payload").unwrap_or_default();
-                bridge::push_event(&event, &payload);
-                // The loop is waiting; nudge it to dispatch.
-                let _ = proxy.send_event(Msg::Event);
+                match bridge::decode_ipc_message(&body) {
+                    Ok((event, payload)) => {
+                        bridge::push_event(&event, &payload);
+                        // The loop is waiting; nudge it to dispatch.
+                        let _ = proxy.send_event(Msg::Event);
+                    }
+                    Err(err) => {
+                        eprintln!("error[runtime]: {}", err);
+                    }
+                }
             }
         })
         .with_on_page_load_handler({
@@ -162,6 +182,16 @@ pub fn open(
         format!("cannot start the webview (is the WebView2 runtime installed?): {e}")
     })?;
 
+    let waker_proxy = proxy.clone();
+    bridge::set_waker(Some(Arc::new(move || {
+        let _ = waker_proxy.send_event(Msg::Event);
+    })));
+    let shutdown_proxy = proxy.clone();
+    shutdown::set_hook(Some(Arc::new(move || {
+        let _ = shutdown_proxy.send_event(Msg::Shutdown);
+    })));
+    let _ = proxy.send_event(Msg::Event);
+
     // The loop owns the engine handle and the webview from here on.
     event_loop.run(move |event, _, control_flow| {
         *control_flow = tao::event_loop::ControlFlow::Wait;
@@ -169,10 +199,34 @@ pub fn open(
             tao::event::Event::WindowEvent {
                 event: tao::event::WindowEvent::CloseRequested,
                 ..
-            } => *control_flow = tao::event_loop::ControlFlow::Exit,
+            } => {
+                shutdown::set_hook(None);
+                shutdown::request();
+                *control_flow = tao::event_loop::ControlFlow::Exit;
+            }
+            tao::event::Event::UserEvent(Msg::Shutdown) => {
+                shutdown::set_hook(None);
+                *control_flow = tao::event_loop::ControlFlow::Exit;
+            }
             tao::event::Event::UserEvent(Msg::Event) => {
+                if let Some(new_title) = bridge::take_title() {
+                    window.set_title(&new_title);
+                }
                 dispatch(&runtime);
+                if let Some(new_title) = bridge::take_title() {
+                    window.set_title(&new_title);
+                }
                 flush(&webview);
+                if shutdown::is_requested() {
+                    shutdown::set_hook(None);
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                }
+            }
+            tao::event::Event::LoopDestroyed => {
+                shutdown::set_hook(None);
+                shutdown::request();
+                bridge::mark_closed();
+                crate::sched::join_tasks_at_exit();
             }
             _ => {}
         }
@@ -252,24 +306,32 @@ fn prune_stale_ephemeral(ephemeral_root: &Path) {
 /// handlers queued (handlers may queue more UI updates).
 fn dispatch(runtime: &Runtime) {
     for _ in 0..256 {
-        let events = bridge::take_events();
+        let events = bridge::take_event_entries();
         if events.is_empty() {
             break;
         }
-        for (event, payload, handler) in events {
-            let span = Span::new(Arc::from("<gui>"), 0, 0, 0);
-            let args = vec![Value::Str(event.into()), Value::Str(payload.into())];
+        for (event, payload, entry) in events {
+            let fallback_span = Span::new(Arc::from("<gui>"), 0, 0, 0);
+            let span = entry.span.clone().unwrap_or(fallback_span);
+            let args = match entry.arity {
+                bridge::HandlerArity::OneArg => vec![Value::Str(payload.into())],
+                bridge::HandlerArity::TwoArgs => {
+                    vec![Value::Str(event.into()), Value::Str(payload.into())]
+                }
+            };
             match runtime {
-                Runtime::Tree(interp) => match interp.call_value(handler, args, &span) {
+                Runtime::Tree(interp) => match interp.call_value(entry.handler, args, &span) {
                     Ok(_) => {}
                     Err(flow) => report_flow(flow),
                 },
-                // The VM reports failures as a message; there is no `Flow`
-                // channel to unwind through because the handler is a compiled
-                // function, not a tree node.
                 Runtime::Vm(vm) => {
-                    if let Err(msg) = vm.borrow_mut().call_value(&handler, args) {
-                        eprintln!("error[runtime]: {}", msg);
+                    if let Err(mut diag) = vm.borrow_mut().call_value_diag(&entry.handler, args) {
+                        if diag.span.as_ref().is_none_or(|s| s.line == 0) {
+                            if let Some(ref handler_span) = entry.span {
+                                diag.span = Some(handler_span.clone());
+                            }
+                        }
+                        eprintln!("{}", diag);
                     }
                 }
             }

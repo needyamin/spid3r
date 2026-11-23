@@ -27,9 +27,11 @@ cargo run -- gui app.matrix
 3. **`ready` fires.** When the page finishes loading, every queued JavaScript
    command is evaluated in order.
 4. **The page talks back.** JS calls `window.spid3r.emit(event, payload)`;
-   the window's event loop dispatches each event to the registered handler as
-   `handler(event, payload)` on the interpreter's thread and evaluates any
-   JavaScript the handler queues.
+   the window's event loop decodes string payloads directly and preserves
+   non-string JSON values (objects, arrays, numbers, booleans, `null`) as JSON
+   text strings (parseable with `json_parse(payload)`), then dispatches each event
+   to the registered handler as `handler(event, payload)` (or `handler(payload)`
+   for a 1-arg handler) on the UI thread and evaluates any queued JavaScript.
 
 Because the interpreter runs before the window exists, `gui_*` calls made
 during setup are queued and replayed at step 3.
@@ -74,7 +76,7 @@ The built-in page contains `<div id="spid3r-root">`, the element
 | --- | --- |
 | `gui_eval(js)` | Evaluate `js` in the page, in order. |
 | `gui_set_html(html)` | Set `#spid3r-root`'s content (JSON-quoted into the JS command). |
-| `gui_on(event, handler)` | Call `handler(event, payload)` for every `event` the page emits. Re-registering replaces. Parameters the handler does not read never trigger the unused-parameter lint — the (event, payload) signature is imposed by the runtime; prefixing unused parameters with `_` also works. |
+| `gui_on(event, handler)` | Call `handler(event, payload)` (or `handler(payload)` when `handler` takes 1 parameter) for every `event` the page emits. Re-registering replaces. Handlers taking 0 or >= 3 required parameters are rejected at registration. Parameters the handler does not read never trigger the unused-parameter lint; prefixing unused parameters with `_` also works. |
 | `gui_emit(event, payload)` | Queue an event as if the page emitted it (program-driven UI updates; also how tests drive handlers). |
 | `gui_title(text)` | Window title (read when the window opens; default `spid3r gui`). |
 
@@ -109,14 +111,17 @@ GUI programs are kept **outside** the flat `examples/` set on purpose:
 on all three engines (tree, VM, `exec`), and a GUI program cannot run without
 a window.
 
-## Threading and safety
+## Threading, lifecycle, and safety
 
-The webview IPC callback may run on a different OS thread than the
-interpreter, so the bridge is a `Mutex`-guarded process-global. Every runtime
-value is `Arc`-based, so handler closures cross that boundary safely. The
-event loop wakes through a user event (`Msg::Event`), and all handler
-invocation happens on the window's thread — no `unsafe`, no data races. A
-handler that fails prints its diagnostic to stderr; the window stays up.
+The webview IPC callback and background `spawn` tasks may run on different OS
+threads than the UI loop, so the bridge is a `Mutex`-guarded process-global
+whose pushes (`gui_eval`, `gui_emit`, `gui_title`) wake the window loop directly.
+Every runtime value is `Arc`-based, so handler closures cross that boundary
+safely. All handler invocation happens on the window's thread — no `unsafe`, no
+data races. A handler that fails prints its diagnostic (with source file and
+line) to stderr; the window stays up. Closing the window sets
+`shutdown_requested()`, and calling `request_shutdown()` closes the window loop
+and waits for background tasks to finish.
 
 ## Packaging a desktop app
 

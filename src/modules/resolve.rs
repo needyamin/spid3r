@@ -26,7 +26,7 @@ use std::path::PathBuf;
 
 use crate::diagnostics::{Diagnostic, Phase};
 
-use super::{canonical_key, check_import_path, embedded_path};
+use super::{canonical_key, check_import_path, embedded_path, virtual_path};
 
 /// Where a resolved module came from. Reported by `spidr modules` so the
 /// precedence above is inspectable instead of guessable.
@@ -215,6 +215,14 @@ pub fn resolve_module(
             roots.push((pkg_root, ModuleOrigin::Disk));
         }
     }
+    // Current working directory fallback so subdirectory modules (e.g.
+    // `gui/controllers/*`) can import root-relative modules (`core/*`) without
+    // requiring `SPID3R_PATH=.` even when no `spider.toml` is present.
+    if let Ok(cwd) = std::env::current_dir() {
+        if !roots.iter().any(|(existing, _)| existing == &cwd) {
+            roots.push((cwd, ModuleOrigin::Disk));
+        }
+    }
 
     for (dir, origin) in roots {
         // As written first, then with the `.matrix` suffix: `import "util"`
@@ -232,6 +240,12 @@ pub fn resolve_module(
                 });
             }
         }
+    }
+    if let Some(path) = virtual_path(spec) {
+        return Ok(ResolvedModule {
+            path,
+            origin: ModuleOrigin::Disk,
+        });
     }
     if let Some(path) = embedded_path(spec) {
         return Ok(ResolvedModule {

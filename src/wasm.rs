@@ -4,14 +4,15 @@
 //! format Spid3r programs in browser environments, Node.js, Deno, or Workers.
 
 use crate::fmt;
-use crate::interpreter::Interp;
+use crate::interpreter::{Flow, Interp};
 use crate::modules;
 use crate::parser;
 use crate::semantic;
 use crate::stdlib;
-use crate::value::display_value;
+use crate::value::{display_value, Value};
 use crate::vm::Vm;
 use crate::{LANGUAGE_VERSION, VERSION};
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// Escape a string for JSON output without external crates.
@@ -190,6 +191,161 @@ pub fn spid3r_format_json(src: &str) -> String {
     }
 }
 
+/// Register an in-memory module so `import "<name>"` resolves in WASM/browser runs.
+pub fn spid3r_register_module_json(name: &str, src: &str) -> String {
+    if name.trim().is_empty() {
+        return "{\"ok\":false,\"error\":\"module name must not be empty\"}".to_string();
+    }
+    modules::register_virtual_module(name, src);
+    "{\"ok\":true}".to_string()
+}
+
+/// Clear all registered in-memory virtual modules.
+pub fn spid3r_clear_modules_json() -> String {
+    modules::clear_virtual_modules();
+    "{\"ok\":true}".to_string()
+}
+
+struct WasmSession {
+    engine: String,
+    interp: Option<Interp>,
+    vm: Option<Vm>,
+    known: Vec<String>,
+}
+
+impl WasmSession {
+    fn new(engine: &str) -> Self {
+        let file_id: Arc<str> = Arc::from("<browser>");
+        let dirs = modules::default_module_dirs();
+        if engine == "vm" {
+            Self {
+                engine: "vm".to_string(),
+                interp: None,
+                vm: Some(Vm::new(file_id, dirs)),
+                known: Vec::new(),
+            }
+        } else {
+            Self {
+                engine: "tree".to_string(),
+                interp: Some(Interp::new(file_id, dirs)),
+                vm: None,
+                known: Vec::new(),
+            }
+        }
+    }
+}
+
+thread_local! {
+    static WASM_SESSION: RefCell<Option<WasmSession>> = const { RefCell::new(None) };
+}
+
+/// Evaluate Spid3r source in a persistent browser session (preserving top-level
+/// bindings, functions, and imports across calls).
+pub fn spid3r_session_eval_json(src: &str, engine: &str) -> String {
+    stdlib::start_capture();
+    let file_id: Arc<str> = Arc::from("<browser>");
+    let program = match parser::parse_file(src, file_id.clone()) {
+        Ok(p) => p,
+        Err(d) => {
+            let stdout = stdlib::take_capture();
+            let line = d.span.as_ref().map(|s| s.line).unwrap_or(0);
+            let col = d.span.as_ref().map(|s| s.col).unwrap_or(0);
+            return format!(
+                "{{\"ok\":false,\"phase\":\"{:?}\",\"error\":\"{}\",\"line\":{},\"col\":{},\"stdout\":\"{}\"}}",
+                d.phase,
+                json_escape(&d.message),
+                line,
+                col,
+                json_escape(&stdout)
+            );
+        }
+    };
+    let has_main = program.stmts.iter().any(|s| match s {
+        crate::ast::Stmt::Fn(f) => f.name.as_deref() == Some("main"),
+        _ => false,
+    });
+    let norm_engine = if engine == "vm" { "vm" } else { "tree" };
+
+    let result: Result<i32, crate::diagnostics::Diagnostic> = WASM_SESSION.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|s| s.engine != norm_engine) {
+            *slot = Some(WasmSession::new(norm_engine));
+        }
+        let sess = slot.as_mut().unwrap();
+        semantic::check_repl_in(&program, &sess.known, "<browser>")?;
+        let code = if let Some(vm) = sess.vm.as_mut() {
+            vm.run_chunk(&program, has_main)?
+        } else if let Some(interp) = sess.interp.as_ref() {
+            let lowered = crate::lower::lower(&program);
+            let env = interp.globals.clone();
+            for stmt in &lowered.as_ref().stmts {
+                match interp.exec_stmt(stmt, &env) {
+                    Flow::Value(_) | Flow::Return(_) => {}
+                    Flow::Error(d) | Flow::Fatal(d) => return Err(*d),
+                    other => return Err(interp.invalid_flow(&other, stmt.span())),
+                }
+            }
+            if has_main {
+                if let Some(Value::Function(fd)) = crate::environment::get(&interp.globals, "main")
+                {
+                    let sp = crate::diagnostics::Span::new(file_id.clone(), 0, 0, 0);
+                    match interp.call_function(&fd, Vec::new(), &sp) {
+                        Ok(Value::Int(i)) => i as i32,
+                        Ok(_) => 0,
+                        Err(Flow::Return(Value::Int(i))) => i as i32,
+                        Err(Flow::Return(_)) => 0,
+                        Err(Flow::Error(d)) | Err(Flow::Fatal(d)) => return Err(*d),
+                        Err(_) => 0,
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        for name in semantic::declared_names(&program) {
+            if !sess.known.contains(&name) {
+                sess.known.push(name);
+            }
+        }
+        Ok(code)
+    });
+
+    let stdout = stdlib::take_capture();
+    match result {
+        Ok(code) => format!(
+            "{{\"ok\":true,\"exit_code\":{},\"stdout\":\"{}\"}}",
+            code,
+            json_escape(&stdout)
+        ),
+        Err(d) => {
+            let line = d.span.as_ref().map(|s| s.line).unwrap_or(0);
+            let col = d.span.as_ref().map(|s| s.col).unwrap_or(0);
+            let thrown_str = d.thrown.as_ref().map(display_value).unwrap_or_default();
+            format!(
+                "{{\"ok\":false,\"phase\":\"{:?}\",\"error\":\"{}\",\"thrown\":\"{}\",\"line\":{},\"col\":{},\"stdout\":\"{}\"}}",
+                d.phase,
+                json_escape(&d.message),
+                json_escape(&thrown_str),
+                line,
+                col,
+                json_escape(&stdout)
+            )
+        }
+    }
+}
+
+/// Reset the persistent WASM session state.
+pub fn spid3r_session_reset_json() -> String {
+    WASM_SESSION.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    "{\"ok\":true}".to_string()
+}
+
 // ---------------------------------------------------------------- C-ABI API
 // Zero-dependency C-ABI interface for WebAssembly:
 // All returned buffers are prepended with a 4-byte little-endian length.
@@ -303,4 +459,62 @@ pub unsafe extern "C" fn spid3r_wasm_format(src_ptr: *const u8, src_len: usize) 
 #[no_mangle]
 pub extern "C" fn spid3r_wasm_version() -> *mut u8 {
     alloc_payload(spid3r_version_json())
+}
+
+/// Register an in-memory virtual module for `import "<name>"`.
+///
+/// # Safety
+/// `name_ptr` must point to `name_len` readable bytes and `src_ptr` to `src_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn spid3r_wasm_register_module(
+    name_ptr: *const u8,
+    name_len: usize,
+    src_ptr: *const u8,
+    src_len: usize,
+) -> *mut u8 {
+    let name = if name_ptr.is_null() || name_len == 0 {
+        ""
+    } else {
+        std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)).unwrap_or("")
+    };
+    let src = if src_ptr.is_null() || src_len == 0 {
+        ""
+    } else {
+        std::str::from_utf8(std::slice::from_raw_parts(src_ptr, src_len)).unwrap_or("")
+    };
+    alloc_payload(spid3r_register_module_json(name, src))
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_wasm_clear_modules() -> *mut u8 {
+    alloc_payload(spid3r_clear_modules_json())
+}
+
+/// Evaluate Spid3r source in the persistent WASM session.
+///
+/// # Safety
+/// `src_ptr` must point to `src_len` readable bytes and `eng_ptr` to `eng_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn spid3r_wasm_session_eval(
+    src_ptr: *const u8,
+    src_len: usize,
+    eng_ptr: *const u8,
+    eng_len: usize,
+) -> *mut u8 {
+    let src = if src_ptr.is_null() || src_len == 0 {
+        ""
+    } else {
+        std::str::from_utf8(std::slice::from_raw_parts(src_ptr, src_len)).unwrap_or("")
+    };
+    let eng = if eng_ptr.is_null() || eng_len == 0 {
+        "tree"
+    } else {
+        std::str::from_utf8(std::slice::from_raw_parts(eng_ptr, eng_len)).unwrap_or("tree")
+    };
+    alloc_payload(spid3r_session_eval_json(src, eng))
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_wasm_session_reset() -> *mut u8 {
+    alloc_payload(spid3r_session_reset_json())
 }

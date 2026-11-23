@@ -564,7 +564,7 @@ OPTIONS:
 spid3r check - Lex, parse, and semantic-check without running
 
 USAGE:
-    spid3r check <file.matrix> [options]
+    spid3r check <file.matrix|dir>... [options]
 
 OPTIONS:
     --json                 Emit diagnostics as JSON objects
@@ -1688,41 +1688,30 @@ fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {
     cmd_check_with(args, false)
 }
 
-fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
-    // `--dump-lowered` prints what the backends actually receive. With an
-    // identity lowering pass that is the same tree, but it is the only way to
-    // see a desugaring rule's output without reading engine code.
-    let mut dump = false;
-    let mut dump_registry = false;
-    let mut deny_warnings = false;
-    let mut allow: Vec<String> = Vec::new();
-    let mut positional: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--dump-lowered" => dump = true,
-            "--dump-registry-json" => dump_registry = true,
-            "--deny-warnings" => deny_warnings = true,
-            "--allow" => {
-                let name = args
-                    .get(i + 1)
-                    .ok_or_else(|| usage("--allow needs a lint name (e.g. unused-variable)"))?;
-                allow.push(name.clone());
-                i += 1;
-            }
-            other if other.starts_with("--") => {
-                return Err(usage(&format!(
-                    "check: unknown flag '{}' (supported: --json, --dump-lowered, \
-                     --dump-registry-json, --deny-warnings, --allow LINT)",
-                    other
-                )))
-            }
-            other => positional.push(other.to_string()),
+fn collect_matrix_files_recursive(dir: &Path, out: &mut Vec<String>) -> Result<(), Diagnostic> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| usage(&format!("cannot read '{}': {}", dir.display(), e)))?;
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+    for p in paths {
+        if p.is_dir() {
+            collect_matrix_files_recursive(&p, out)?;
+        } else if p.is_file() && p.extension().is_some_and(|x| x == "matrix") {
+            out.push(p.to_string_lossy().to_string());
         }
-        i += 1;
     }
-    let file = single_file(&positional, "check")?;
-    let (src, file_name) = read_source(&file)?;
+    Ok(())
+}
+
+fn check_single_file(
+    file: &str,
+    json: bool,
+    dump: bool,
+    dump_registry: bool,
+    deny_warnings: bool,
+    allow: &[String],
+) -> Result<i32, Diagnostic> {
+    let (src, file_name) = read_source(file)?;
     let program = if dump_registry {
         parser::parse_file(&src, file_name)?
     } else {
@@ -1750,11 +1739,11 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
         // SH-5 oracle tooling (roadmap 3.1): the declaration registry as
         // deterministic JSON, for the self-host checker's parity harness.
         // The check runs first; a file that does not check errors out here.
-        let registry = semantic::registry_json(&program, has_main, &file)?;
+        let registry = semantic::registry_json(&program, has_main, file)?;
         print!("{}", registry);
         return Ok(EXIT_OK);
     }
-    let warnings = semantic::check_file_with_warnings(&program, has_main, &file)?;
+    let warnings = semantic::check_file_with_warnings(&program, has_main, file)?;
     let mut reported = 0usize;
     for w in &warnings {
         if allow.iter().any(|a| a == w.lint.as_str()) {
@@ -1788,6 +1777,88 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
         println!("{}: ok", file);
     }
     Ok(EXIT_OK)
+}
+
+fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
+    // `--dump-lowered` prints what the backends actually receive. With an
+    // identity lowering pass that is the same tree, but it is the only way to
+    // see a desugaring rule's output without reading engine code.
+    let mut dump = false;
+    let mut dump_registry = false;
+    let mut deny_warnings = false;
+    let mut allow: Vec<String> = Vec::new();
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dump-lowered" => dump = true,
+            "--dump-registry-json" => dump_registry = true,
+            "--deny-warnings" => deny_warnings = true,
+            "--allow" => {
+                let name = args
+                    .get(i + 1)
+                    .ok_or_else(|| usage("--allow needs a lint name (e.g. unused-variable)"))?;
+                allow.push(name.clone());
+                i += 1;
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "check: unknown flag '{}' (supported: --json, --dump-lowered, \
+                     --dump-registry-json, --deny-warnings, --allow LINT)",
+                    other
+                )))
+            }
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+    if positional.is_empty() {
+        return Err(usage("check needs at least one file or directory"));
+    }
+    let mut files: Vec<String> = Vec::new();
+    for arg in &positional {
+        let path = Path::new(arg);
+        if path.is_dir() {
+            let before = files.len();
+            collect_matrix_files_recursive(path, &mut files)?;
+            if files.len() == before {
+                return Err(usage(&format!(
+                    "no .matrix files found in directory '{}'",
+                    arg
+                )));
+            }
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    if files.len() > 1 && (dump || dump_registry) {
+        return Err(usage(
+            "check --dump-lowered and --dump-registry-json accept a single file",
+        ));
+    }
+    if files.len() == 1 {
+        return check_single_file(&files[0], json, dump, dump_registry, deny_warnings, &allow);
+    }
+    let mut failed = false;
+    for file in &files {
+        match check_single_file(file, json, false, false, deny_warnings, &allow) {
+            Ok(EXIT_OK) => {}
+            Ok(_) => failed = true,
+            Err(d) => {
+                if json {
+                    println!("{}", d.to_json());
+                } else {
+                    eprintln!("{}", d.render_stderr());
+                }
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        Ok(EXIT_USER_ERROR)
+    } else {
+        Ok(EXIT_OK)
+    }
 }
 
 // ------------------------------------------------------------------ build
@@ -3348,10 +3419,11 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
                 continue;
             }
         };
-        let src_lf = if src.contains('\r') {
-            src.replace("\r\n", "\n").replace('\r', "\n")
+        let src_no_bom = src.strip_prefix('\u{feff}').unwrap_or(&src);
+        let src_lf = if src_no_bom.contains('\r') {
+            src_no_bom.replace("\r\n", "\n").replace('\r', "\n")
         } else {
-            src.clone()
+            src_no_bom.to_string()
         };
         if formatted == src_lf {
             println!("unchanged {}", f);

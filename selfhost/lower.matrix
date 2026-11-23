@@ -50,6 +50,9 @@ fn is_scalar_default(e) {
 
 fn fn_needs_lowering(f) {
     for p in f[5] {
+        if p[1] == "_" {
+            return true;
+        }
         if p[3] != null {
             if not is_scalar_default(p[3]) {
                 return true;
@@ -91,12 +94,18 @@ fn stmt_needs_lowering(s) {
         return false;
     }
     if tag == "Let" {
+        if s[2] == "_" {
+            return true;
+        }
         if s[4] != null {
             return expr_needs_lowering(s[4]);
         }
         return false;
     }
     if tag == "Const" {
+        if s[2] == "_" {
+            return true;
+        }
         return expr_needs_lowering(s[4]);
     }
     if tag == "LetTuple" {
@@ -120,7 +129,7 @@ fn stmt_needs_lowering(s) {
         return expr_needs_lowering(s[1]) or block_needs_lowering(s[2]);
     }
     if tag == "ForIn" {
-        if s[2] != null {
+        if s[1] == "_" or s[2] != null {
             return true;
         }
         return expr_needs_lowering(s[3]) or block_needs_lowering(s[4]);
@@ -606,6 +615,15 @@ fn lower_stmt(st, s) {
         return [s];
     }
     if tag == "Let" {
+        if s[2] == "_" {
+            if s[4] != null {
+                let pair = lower_expr(st, s[4]);
+                let pre = pair[1];
+                pre.push(n_expr_stmt(pair[0]));
+                return pre;
+            }
+            return [];
+        }
         if s[4] != null {
             let pair = lower_expr(st, s[4]);
             let pre = pair[1];
@@ -622,8 +640,12 @@ fn lower_stmt(st, s) {
         let names = s[2];
         let i = 0;
         while i < names.len() {
-            pre.push(n_let(s[1], names[i], null,
-                n_index(n_ident(d, s[4]), n_int(i, s[4]), s[4]), s[4]));
+            let elem = n_index(n_ident(d, s[4]), n_int(i, s[4]), s[4]);
+            if names[i] == "_" {
+                pre.push(n_expr_stmt(elem));
+            } else {
+                pre.push(n_let(s[1], names[i], null, elem, s[4]));
+            }
             i += 1;
         }
         return pre;
@@ -631,6 +653,10 @@ fn lower_stmt(st, s) {
     if tag == "Const" {
         let pair = lower_expr(st, s[4]);
         let pre = pair[1];
+        if s[2] == "_" {
+            pre.push(n_expr_stmt(pair[0]));
+            return pre;
+        }
         pre.push(n_const(s[1], s[2], s[3], pair[0], s[5]));
         return pre;
     }
@@ -699,6 +725,14 @@ fn lower_fn_proto(st, f) {
     // Generators: a body containing `yield` becomes an `emit` closure handed
     // to __gen.gen, and the function returns the generator object.
     if contains_yield(f[8][1]) {
+        let params = [];
+        for p in f[5] {
+            if p[1] == "_" {
+                params.push(n_param(fresh(st), p[2], p[3], p[4]));
+            } else {
+                params.push(p);
+            }
+        }
         let body = f[8];
         let new_stmts = replace_yields(body[1]);
         let inner_body = n_block(new_stmts, body[2]);
@@ -707,28 +741,32 @@ fn lower_fn_proto(st, f) {
         let gen_call = n_method("gen", n_ident("__gen", f[9]), [inner], f[9]);
         let wrapped = n_return(gen_call, f[9]);
         let out_body = n_block([wrapped], body[2]);
-        return n_fnproto(f[1], f[2], f[3], f[4], f[5], f[6], f[7], lower_block(st, out_body), f[9]);
+        return n_fnproto(f[1], f[2], f[3], f[4], params, f[6], f[7], lower_block(st, out_body), f[9]);
     }
     let params = [];
     let init_stmts = [];
     for p in f[5] {
+        let pname = p[1];
+        if pname == "_" {
+            pname = fresh(st);
+        }
         if p[3] != null {
             if is_scalar_default(p[3]) {
-                params.push(p);
+                params.push(n_param(pname, p[2], p[3], p[4]));
             } else {
                 let pair = lower_expr(st, p[3]);
                 let d_low = pair[0];
                 let pre = pair[1];
                 let sp = p[4];
-                let p2 = n_param(p[1], p[2], n_null(sp), sp);
+                let p2 = n_param(pname, p[2], n_null(sp), sp);
                 params.push(p2);
-                pre.push(n_expr_stmt(n_assign("Assign", n_ident(p[1], sp), d_low, sp)));
+                pre.push(n_expr_stmt(n_assign("Assign", n_ident(pname, sp), d_low, sp)));
                 init_stmts.push(n_if(
-                    n_binary("Eq", n_ident(p[1], sp), n_null(sp), sp),
+                    n_binary("Eq", n_ident(pname, sp), n_null(sp), sp),
                     n_block(pre, sp), [], null, sp));
             }
         } else {
-            params.push(p);
+            params.push(n_param(pname, p[2], null, p[4]));
         }
     }
     let body = lower_block(st, f[8]);
@@ -1199,6 +1237,42 @@ fn lower_assign(st, e) {
     return [n_assign(e[1], tpair[0], value_l, e[4]), pre];
 }
 
+fn lower_is_constructor(name) {
+    return name == "list"
+        or name == "vec"
+        or name == "stack"
+        or name == "queue"
+        or name == "deque"
+        or name == "linked_list"
+        or name == "singly_linked_list"
+        or name == "doubly_linked_list"
+        or name == "map"
+        or name == "module_namespace"
+        or name == "set"
+        or name == "tuple"
+        or name == "binary_tree"
+        or name == "bst"
+        or name == "heap"
+        or name == "priority_queue"
+        or name == "graph"
+        or name == "hash_table"
+        or name == "trie"
+        or name == "matrix"
+        or name == "matrix_from_list"
+        or name == "vector"
+        or name == "bytes"
+        or name == "ring_buffer"
+        or name == "bag"
+        or name == "ref"
+        or name == "channel"
+        or name == "mutex"
+        or name == "atomic_int"
+        or name == "some"
+        or name == "none"
+        or name == "ok"
+        or name == "err";
+}
+
 fn lower_call(st, e) {
     let sp = e[3];
     let callee = e[1];
@@ -1235,6 +1309,12 @@ fn lower_call(st, e) {
                 }
             }
         }
+    }
+    // Builtin constructors are dispatched syntactically by direct Ident;
+    // spilling the callee into a temp would evaluate it to null.
+    if callee[0] == "Ident" and lower_is_constructor(callee[1]) {
+        let pair = lower_seq_list(st, args);
+        return [n_call(callee, pair[0], sp), pair[1]];
     }
     // The shared spill rule spans callee and arguments: one prelude spills
     // EVERY part into a temporary in source order.
@@ -1363,8 +1443,15 @@ fn lower_for_in(st, s) {
     let iter = pair[0];
     let body = lower_block(st, s[4]);
     let sp = s[5];
+    let var = s[1];
+    if var == "_" {
+        var = fresh(st);
+    }
     if s[2] != null {
         let v2 = s[2];
+        if v2 == "_" {
+            v2 = fresh(st);
+        }
         let src = fresh(st);
         let idx = fresh(st);
         let item = fresh(st);
@@ -1375,8 +1462,8 @@ fn lower_for_in(st, s) {
             body_map_stmts.push(x);
         }
         body_map_stmts.insert(0, n_let("private", v2, null,
-            n_index(n_ident(src, sp), n_ident(s[1], sp), sp), sp));
-        let for_map = n_for_in(s[1], null, n_ident(src, sp), n_block(body_map_stmts, body[2]), sp);
+            n_index(n_ident(src, sp), n_ident(var, sp), sp), sp));
+        let for_map = n_for_in(var, null, n_ident(src, sp), n_block(body_map_stmts, body[2]), sp);
 
         let body_seq_stmts = [];
         for x in body[1] {
@@ -1385,7 +1472,7 @@ fn lower_for_in(st, s) {
         body_seq_stmts.insert(0, set_local(idx,
             n_binary("Add", n_ident(idx, sp), n_int(1, sp), sp), sp));
         body_seq_stmts.insert(0, let_stmt_n(v2, n_ident(item, sp), sp));
-        body_seq_stmts.insert(0, let_stmt_n(s[1], n_ident(idx, sp), sp));
+        body_seq_stmts.insert(0, let_stmt_n(var, n_ident(idx, sp), sp));
         let for_seq = n_for_in(item, null, n_ident(src, sp), n_block(body_seq_stmts, body[2]), sp);
 
         let type_call = n_call(n_ident("type_of", sp), [n_ident(src, sp)], sp);
@@ -1399,7 +1486,7 @@ fn lower_for_in(st, s) {
             n_block([let_stmt_n(idx, n_int(0, sp), sp), for_seq], sp), sp));
         return pre;
     }
-    pre.push(n_for_in(s[1], null, iter, body, sp));
+    pre.push(n_for_in(var, null, iter, body, sp));
     return pre;
 }
 

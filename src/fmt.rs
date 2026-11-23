@@ -57,6 +57,7 @@ fn tok_kind<'x>(it: &'x Item<'x>) -> Option<&'x TokenKind> {
 /// Format `src`. Errors on a lexer failure; returns the formatted text
 /// (already-formatted input → identical output).
 pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let normalized;
     let src = if src.contains('\r') {
         normalized = src.replace("\r\n", "\n").replace('\r', "\n");
@@ -134,6 +135,7 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
         last_src_line: 0,
         cur_out_src_line: 0,
         first: true,
+        last_was_comment: false,
     };
 
     for idx in 0..stream.len() {
@@ -157,10 +159,12 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
             Item::Com(c) => {
                 let text = c.text.trim_end();
                 if f.line_open && c.line == f.cur_out_src_line {
-                    // Trailing comment: attach to the line just written; a
-                    // pending break from `;`/`{` stays pending.
+                    // Trailing comment: attach to the line just written; force
+                    // a break before the next token so nothing gets appended
+                    // inside the line comment even inside a transparent group.
                     f.out.push_str("  ");
                     f.out.push_str(text);
+                    f.pending_break = true;
                 } else {
                     // Own-line comment. Break only if the current line still
                     // has open content or a break is pending — a comment that
@@ -179,6 +183,7 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                 }
                 f.last_src_line = f.last_src_line.max(c.line);
                 f.first = false;
+                f.last_was_comment = true;
             }
             Item::Tok(tok, ti) => {
                 let tline = tok.span.line;
@@ -202,7 +207,11 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                         g.transparent && g.paren_level == f.paren && g.brace_at_open == f.brace
                     })
                     .unwrap_or(false);
-                if !must_break && !transparent_level && !f.first && tline > f.last_src_line {
+                if !must_break
+                    && (!transparent_level || f.last_was_comment)
+                    && !f.first
+                    && tline > f.last_src_line
+                {
                     must_break = true;
                 }
                 // In a transparent (closure-argument) group the call closes on
@@ -212,7 +221,10 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                 // argument list continues (`f(1, fn() { ... }, 2)` must stay
                 // `}, 2)`, not break the comma onto its own line, which is
                 // what a `pending_break` from the brace used to do).
-                if transparent_level && matches!(tok.kind, TokenKind::RParen | TokenKind::Comma) {
+                if transparent_level
+                    && !f.last_was_comment
+                    && matches!(tok.kind, TokenKind::RParen | TokenKind::Comma)
+                {
                     must_break = false;
                     f.pending_break = false;
                 }
@@ -244,7 +256,7 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                     Some(p) => needs_space(p, &tok.kind),
                     None => false,
                 };
-                if f.line_open && spaced && f.cur_out_src_line == tline && !f.after_unary {
+                if f.line_open && spaced && !f.after_unary {
                     f.out.push(' ');
                 }
                 f.after_unary = false;
@@ -347,6 +359,7 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                 f.cur_out_src_line = tline;
                 f.last_src_line = tline;
                 f.first = false;
+                f.last_was_comment = false;
             }
         }
     }
@@ -429,6 +442,7 @@ struct Formatter<'a> {
     /// Source line whose content is on the current output line.
     cur_out_src_line: u32,
     first: bool,
+    last_was_comment: bool,
 }
 
 impl Formatter<'_> {

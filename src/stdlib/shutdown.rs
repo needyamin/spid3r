@@ -19,6 +19,7 @@
 //! is a worse failure than an ungraceful exit.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::NativeDef;
 use crate::value::{type_name, NativeCtx, Value};
@@ -32,6 +33,10 @@ static SIG_USR1: AtomicBool = AtomicBool::new(false);
 static SIG_USR2: AtomicBool = AtomicBool::new(false);
 /// Guards against installing the handler twice.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+/// Cooperative wakeup callback registered by active event loops (such as the
+/// desktop GUI window) so `request_shutdown()` exits without waiting on idle I/O.
+/// Signal handlers never touch this lock — only `request()` does.
+static SHUTDOWN_HOOK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
 #[cfg(unix)]
 const SIGHUP: i32 = 1;
@@ -220,6 +225,25 @@ pub fn is_requested() -> bool {
     REQUESTED.load(Ordering::SeqCst)
 }
 
+/// Register or clear a callback invoked when `request()` marks shutdown.
+pub fn set_hook(hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+    let mut guard = SHUTDOWN_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = hook;
+}
+
+/// Request cooperative shutdown from non-signal code and wake any registered
+/// shutdown hook (for example, the GUI event loop).
+pub fn request() {
+    REQUESTED.store(true, Ordering::SeqCst);
+    let hook = {
+        let guard = SHUTDOWN_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+    if let Some(h) = hook {
+        h();
+    }
+}
+
 /// `shutdown_requested()` -> bool. Installs the signal handler on first call,
 /// so a program that never serves anything is unaffected.
 fn n_requested(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -242,7 +266,7 @@ fn n_request(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         ));
     }
     install();
-    REQUESTED.store(true, Ordering::SeqCst);
+    request();
     Ok(Value::Null)
 }
 

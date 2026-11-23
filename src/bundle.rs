@@ -380,6 +380,66 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
+fn uses_gui_natives_with_imports(
+    program: &crate::ast::Program,
+    source_file: &Path,
+    module_dirs: &[PathBuf],
+) -> bool {
+    if uses_gui_natives(program) {
+        return true;
+    }
+    let mut visited = std::collections::HashSet::new();
+    if let Ok(canon) = source_file.canonicalize() {
+        visited.insert(canon);
+    }
+    let collect_imports = |prog: &crate::ast::Program| -> Vec<String> {
+        prog.stmts
+            .iter()
+            .filter_map(|s| match s {
+                crate::ast::Stmt::Import { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut queue: Vec<(String, Vec<String>)> = vec![(
+        source_file.to_string_lossy().to_string(),
+        collect_imports(program),
+    )];
+
+    while let Some((importer, imports)) = queue.pop() {
+        for imp in imports {
+            let Ok(resolved) =
+                crate::modules::resolve::resolve_module(&importer, &imp, module_dirs)
+            else {
+                continue;
+            };
+            let canon = resolved
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| resolved.path.clone());
+            if !visited.insert(canon) {
+                continue;
+            }
+            let Ok(src) = crate::modules::read_module_source(&resolved.path) else {
+                continue;
+            };
+            let resolved_str = resolved.path.to_string_lossy().to_string();
+            let file: std::sync::Arc<str> = std::sync::Arc::from(resolved_str.as_str());
+            let Ok(mod_prog) = crate::parser::parse_file(&src, file) else {
+                continue;
+            };
+            if uses_gui_natives(&mod_prog) {
+                return true;
+            }
+            let mod_imports = collect_imports(&mod_prog);
+            if !mod_imports.is_empty() {
+                queue.push((resolved_str, mod_imports));
+            }
+        }
+    }
+    false
+}
+
 fn uses_gui_natives(program: &crate::ast::Program) -> bool {
     const GUI_NATIVES: &[&str] = &[
         "gui_eval",
@@ -606,7 +666,8 @@ fn bundle_desktop(
         }
     }
 
-    let is_gui = html_arg.is_some() || uses_gui_natives(program);
+    let is_gui =
+        html_arg.is_some() || uses_gui_natives_with_imports(program, &opts.source_file, &dirs);
 
     // B4: `--self-contained` copies the runtime executable next to the app
     // and points the launcher at the local copy, so the bundle runs on a

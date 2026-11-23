@@ -307,6 +307,12 @@ pub struct Vm {
     pending_str: Option<(usize, usize, String)>,
     /// Reusable scratch buffer for `EvalStrTemplate` and `PrefixStrModSet`.
     scratch_str: String,
+    /// Skip joining background tasks at the end of `run_compiled` (used by
+    /// desktop GUI mode until the window loop tears down).
+    defer_task_drain: bool,
+    /// Extra host-registered natives (for example `gui_*`) propagated to child
+    /// module VMs and spawned task VMs.
+    extra_natives: Arc<Mutex<Vec<(&'static str, NativeImpl)>>>,
 }
 
 /// Global mutation generation counter for `Vm::global_cache` (Track 4 VM-4).
@@ -657,6 +663,8 @@ impl Vm {
             max_depth: MAX_CALL_DEPTH,
             pending_str: None,
             scratch_str: String::with_capacity(128),
+            defer_task_drain: false,
+            extra_natives: Arc::new(Mutex::new(Vec::new())),
         };
         vm.install_stdlib();
         vm
@@ -711,6 +719,10 @@ impl Vm {
         self.opt_enabled = enabled;
     }
 
+    pub fn set_defer_task_drain(&mut self, defer: bool) {
+        self.defer_task_drain = defer;
+    }
+
     /// A VM that shares globals/imported-const names/scheduler/module cache
     /// with another (used for spawned tasks and imported modules).
     #[allow(clippy::too_many_arguments)] // the shared handles a child VM needs
@@ -759,6 +771,8 @@ impl Vm {
             max_depth: MAX_CALL_DEPTH,
             pending_str: None,
             scratch_str: String::with_capacity(128),
+            defer_task_drain: false,
+            extra_natives: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -854,6 +868,55 @@ impl Vm {
         self.run_compiled(Arc::new(script))
     }
 
+    /// Compile and run an incremental program chunk against this VM's existing
+    /// globals (used by the stateful WASM session). When `invoke_main` is
+    /// true, also invokes `main()` after top-level statements finish.
+    pub fn run_chunk(&mut self, program: &Program, invoke_main: bool) -> Result<i32, Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
+        let (script, _public) = compile_program(program, self.file.as_ref(), &self.module_dirs)?;
+        let _inv_guard = crate::stdlib::eventloop::push_invoker(self.make_invoker());
+        let _active = crate::sched::enter_active();
+        {
+            let mut emb = self.embedded.lock().unwrap();
+            for m in &script.chunk.modules {
+                emb.insert(m.key.clone(), (m.func.clone(), m.public.clone()));
+            }
+        }
+        validate_chunk(&script.chunk)?;
+        self.frames.clear();
+        self.stop = 0;
+        self.call_vfunc_frame(Arc::new(script), Vec::new(), FrameLabel::Fn)
+            .map_err(|e| {
+                self.frames.clear();
+                e.to_diag()
+            })?;
+        let _ = self.run().map_err(|e| {
+            self.frames.clear();
+            e.to_diag()
+        })?;
+        if invoke_main {
+            let main = self.globals.lock().unwrap().get("main").cloned();
+            if let Some(Value::VFunc(f)) = main {
+                self.call_vfunc_frame(f, Vec::new(), FrameLabel::Fn)
+                    .map_err(|e| {
+                        self.frames.clear();
+                        e.to_diag()
+                    })?;
+                let ret = self.run().map_err(|e| {
+                    self.frames.clear();
+                    e.to_diag()
+                })?;
+                return Ok(match ret {
+                    Value::Int(i) => i as i32,
+                    _ => 0,
+                });
+            }
+        }
+        Ok(0)
+    }
+
     fn make_invoker(&self) -> crate::stdlib::eventloop::CallbackInvoker {
         let globals = self.globals.clone();
         let global_consts = self.global_consts.clone();
@@ -868,6 +931,7 @@ impl Vm {
         let mem_limit = self.mem_limit.clone();
         let max_depth = self.max_depth;
         let opt_enabled = self.opt_enabled;
+        let extra_natives = self.extra_natives.clone();
         Arc::new(move |cb, args| {
             let fd = match cb {
                 Value::VFunc(f) => f,
@@ -893,6 +957,7 @@ impl Vm {
             vm.mem_limit = mem_limit.clone();
             vm.max_depth = max_depth;
             vm.opt_enabled = opt_enabled;
+            vm.extra_natives = extra_natives.clone();
             let _inv_guard = crate::stdlib::eventloop::push_invoker(vm.make_invoker());
             vm.run_function(fd, args).map_err(|e| e.to_diag().message)
         })
@@ -947,7 +1012,10 @@ impl Vm {
         })();
         // Join-on-exit (audit A-3): the VM runs on the caller thread, so wait
         // for tasks `main` left running before reporting the exit code.
-        crate::sched::join_tasks_at_exit();
+        // GUI mode defers this drain until the window loop tears down.
+        if !self.defer_task_drain {
+            crate::sched::join_tasks_at_exit();
+        }
         result
     }
 
@@ -1064,10 +1132,20 @@ impl Vm {
     /// it does for the tree interpreter via `gui::install(&interp.globals)`.
     pub fn define_natives(&mut self, defs: &[(&'static str, NativeImpl)]) {
         bump_global_gen();
-        let mut globals = self.globals.lock().unwrap();
-        for (name, func) in defs {
-            let native = NativeFn { name, func: *func };
-            globals.insert(name.to_string(), Value::Native(Arc::new(native)));
+        {
+            let mut globals = self.globals.lock().unwrap();
+            for (name, func) in defs {
+                let native = NativeFn { name, func: *func };
+                globals.insert(name.to_string(), Value::Native(Arc::new(native)));
+            }
+        }
+        let mut extra = self.extra_natives.lock().unwrap();
+        for &(name, func) in defs {
+            if let Some(slot) = extra.iter_mut().find(|(n, _)| *n == name) {
+                slot.1 = func;
+            } else {
+                extra.push((name, func));
+            }
         }
     }
 
@@ -1078,6 +1156,12 @@ impl Vm {
     /// the same way operator dispatch reports them.
     pub fn call_value(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
         self.call_value_sync(f, args).map_err(|e| e.message)
+    }
+
+    /// Call a callable value from outside the VM, preserving full span and
+    /// stack-trace diagnostics on runtime error.
+    pub fn call_value_diag(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, Diagnostic> {
+        self.call_value_sync(f, args).map_err(|e| e.to_diag())
     }
 
     fn call_value_sync(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmError> {
@@ -4345,6 +4429,7 @@ impl Vm {
                     let mem_limit = self.mem_limit.clone();
                     let max_depth = self.max_depth;
                     let opt_enabled = self.opt_enabled;
+                    let extra_natives = self.extra_natives.clone();
                     let handle = self.sched.spawn_job(Box::new(move || {
                         let mut vm = Vm::with_shared(
                             globals,
@@ -4362,6 +4447,7 @@ impl Vm {
                         vm.mem_limit = mem_limit;
                         vm.max_depth = max_depth;
                         vm.opt_enabled = opt_enabled;
+                        vm.extra_natives = extra_natives;
                         // Carry the thrown value across the task boundary so
                         // `join`/`await` rethrow is structural: `catch` on the
                         // joining side rebinds the original value (audit A-9).
@@ -5435,6 +5521,12 @@ impl Vm {
                 // Seed the builtins into the module's own globals (see the
                 // source path's note).
                 mvm.install_stdlib();
+                {
+                    let extra = self.extra_natives.lock().unwrap().clone();
+                    if !extra.is_empty() {
+                        mvm.define_natives(&extra);
+                    }
+                }
                 let out = mvm.run_module_from_func(func, public);
                 match &out {
                     Ok(exports) => claim.complete(exports.clone()),
@@ -5511,6 +5603,12 @@ impl Vm {
         // module cannot even call `len` (they used to arrive via the shared
         // importer map).
         mvm.install_stdlib();
+        {
+            let extra = self.extra_natives.lock().unwrap().clone();
+            if !extra.is_empty() {
+                mvm.define_natives(&extra);
+            }
+        }
         // Module initialization draws from the importer's budget, and shares
         // its deadline/heap cap.
         mvm.budget = self.budget.clone();

@@ -250,6 +250,10 @@ fn fmt_group_mode(st, open) {
 }
 
 fn fmt_normalize_lf(src) {
+    let bs = bytes(src);
+    if bs.len() >= 3 and bs[0] == 239 and bs[1] == 187 and bs[2] == 191 {
+        src = src.slice(1, src.len());
+    }
     if src.contains("\r") {
         return src.replace("\r\n", "\n").replace("\r", "\n");
     }
@@ -365,6 +369,7 @@ public fn fmt_format_source(src, path) {
         "last_src_line": 0,
         "cur_out_src_line": 0,
         "first": true,
+        "last_was_comment": false,
     };
 
     let prev_tok = null;
@@ -380,6 +385,7 @@ public fn fmt_format_source(src, path) {
                 st["frags"].push("  ");
                 st["col"] += 2;
                 fmt_put_comment_text(st, text);
+                st["pending_break"] = true;
             } else {
                 if st["line_open"] or st["pending_break"] {
                     fmt_nl(st);
@@ -397,6 +403,7 @@ public fn fmt_format_source(src, path) {
                 st["last_src_line"] = cline;
             }
             st["first"] = false;
+            st["last_was_comment"] = true;
         } else {
             let tok = item[1];
             let tok_i = item[2];
@@ -424,10 +431,10 @@ public fn fmt_format_source(src, path) {
                 }
             }
 
-            if not must_break and not transparent_level and not st["first"] and tline > st["last_src_line"] {
+            if not must_break and (not transparent_level or st["last_was_comment"]) and not st["first"] and tline > st["last_src_line"] {
                 must_break = true;
             }
-            if transparent_level and (tkind == K_RPAREN or tkind == K_COMMA) {
+            if transparent_level and not st["last_was_comment"] and (tkind == K_RPAREN or tkind == K_COMMA) {
                 must_break = false;
                 st["pending_break"] = false;
             }
@@ -456,7 +463,7 @@ public fn fmt_format_source(src, path) {
             if prev_tok != null {
                 spaced = fmt_needs_space(prev_tok, tok);
             }
-            if st["line_open"] and spaced and st["cur_out_src_line"] == tline and not st["after_unary"] {
+            if st["line_open"] and spaced and not st["after_unary"] {
                 st["frags"].push(" ");
                 st["col"] += 1;
             }
@@ -557,6 +564,7 @@ public fn fmt_format_source(src, path) {
             st["cur_out_src_line"] = tline;
             st["last_src_line"] = tline;
             st["first"] = false;
+            st["last_was_comment"] = false;
             prev_tok = tok;
         }
         idx += 1;

@@ -859,7 +859,7 @@ fn parse_statement(st) {
         let _semi = eat_c(st, K_SEMI);
         return n_expr_stmt(e);
     }
-    if k == K_LBRACE {
+    if k == K_LBRACE and not is_map_literal_at_lbrace(st) {
         return n_block_stmt(parse_block(st));
     }
     let e = parse_expr(st);
@@ -932,17 +932,77 @@ fn parse_const(st) {
     return n_const("private", name, ty, value, sp);
 }
 
-// `if` in value position; `else if` nests as a one-statement block.
+fn is_map_literal_at_lbrace(st) {
+    if not at_c(st, K_LBRACE) {
+        return false;
+    }
+    if st[5] > 0 and pkd(st, 1) == K_RBRACE and pkd(st, 2) == K_RBRACE {
+        return true;
+    }
+    let k1 = pkd(st, 1);
+    let v1 = pkv(st, 1);
+    if k1 == K_RBRACE or k1 == K_SEMI {
+        return false;
+    }
+    if k1 == K_KW and (v1 == "let" or v1 == "const" or v1 == "fn" or v1 == "return"
+        or v1 == "while" or v1 == "for" or v1 == "try" or v1 == "throw"
+        or v1 == "break" or v1 == "continue" or v1 == "spawn" or v1 == "class"
+        or v1 == "interface" or v1 == "enum" or v1 == "import" or v1 == "if"
+        or v1 == "yield" or v1 == "async" or v1 == "public" or v1 == "private"
+        or v1 == "abstract") {
+        return false;
+    }
+    let idx = st[1] + 1;
+    let depth = 0;
+    let n = st[0].len();
+    while idx < n {
+        let k = st[0][idx][0];
+        if depth == 0 and k == K_COLON {
+            return true;
+        }
+        if depth == 0 and (k == K_RBRACE or k == K_SEMI or k == K_EOF) {
+            return false;
+        }
+        if k == K_LPAREN or k == K_LBRACKET or k == K_LBRACE {
+            depth += 1;
+        } else if k == K_RPAREN or k == K_RBRACKET or k == K_RBRACE {
+            depth -= 1;
+            if depth < 0 {
+                return false;
+            }
+        }
+        idx += 1;
+    }
+    return false;
+}
+
+// `if` in value position; `elif` / `else if` nests as a one-statement block.
 fn parse_if_expr(st) {
     let sp = expect_kw_n(st, "if");
+    return parse_if_expr_after_kw(st, sp);
+}
+
+fn parse_if_expr_after_kw(st, sp) {
     let cond = parse_expr(st);
     let then = parse_value_block(st);
     let els = null;
-    if eat_kw(st, "else") {
+    if eat_kw(st, "elif") {
+        let elif_sp = prev_span(st);
+        if st[4] >= MAX_PARSE_DEPTH {
+            perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+        }
+        st[4] += 1;
+        let nested = parse_if_expr_after_kw(st, elif_sp);
+        st[4] -= 1;
+        els = n_block([n_expr_stmt(nested)], nsp(nested));
+    } else if eat_kw(st, "else") {
         if at_kw(st, "if") {
+            if st[4] >= MAX_PARSE_DEPTH {
+                perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+            }
             st[4] += 1;
-            st[4] -= 1;
             let nested = parse_if_expr(st);
+            st[4] -= 1;
             els = n_block([n_expr_stmt(nested)], nsp(nested));
         } else {
             els = parse_value_block(st);
@@ -979,7 +1039,7 @@ fn parse_match_expr(st) {
         }
         expect_c(st, K_FATARROW, "'=>' after the pattern");
         let body = null;
-        if at_c(st, K_LBRACE) {
+        if at_c(st, K_LBRACE) and not is_map_literal_at_lbrace(st) {
             body = parse_value_block(st);
         } else {
             let e = parse_expr(st);

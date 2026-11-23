@@ -356,3 +356,51 @@ fn labeled_variable_is_not_a_thing() {
     // `while` used as if it were a keyword in a bad spot
     assert!(parse_err("let while = 1;").contains("parser"));
 }
+
+#[test]
+fn gh6_if_expr_supports_elif_and_single_rbrace_recovery() {
+    let p = parse(
+        r#"
+        fn main() -> int {
+            let n = 2;
+            let s = if n == 1 { "one" } elif n == 2 { "two" } elif n == 3 { "three" } else { "other" };
+            return 0;
+        }
+        "#,
+    );
+    assert_eq!(p.stmts.len(), 1);
+
+    let (_prog, diags) = spid3r_lang::parser::parse_file_recovering(
+        "fn main() { let x = 1; }\n}\nfn ok() { return 0; }\n",
+        Arc::from("rec.matrix"),
+    );
+    let rbrace_errs = diags
+        .iter()
+        .filter(|d| d.message.contains("unexpected '}'"))
+        .count();
+    assert_eq!(
+        rbrace_errs, 1,
+        "top-level stray '}}' must emit 1 error, got {:?}",
+        diags
+    );
+}
+
+#[test]
+fn gh7_map_literal_inside_if_expr_and_match_arm_disambiguates_from_blocks() {
+    let p = parse(
+        r#"
+        fn f(k: int) { return k; }
+        fn main() -> int {
+            let x = if true { { "a": 1 } } else { { "a": 2 } };
+            let empty = if false { {} } else { { "b": { "nested": 3 } } };
+            let m = match (1) {
+                1 => { { "k": 1 } },
+                _ => { {} },
+            };
+            { let scoped = 1; f(k: scoped); }
+            return 0;
+        }
+        "#,
+    );
+    assert_eq!(p.stmts.len(), 2);
+}

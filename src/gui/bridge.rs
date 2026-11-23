@@ -8,12 +8,30 @@
 //! loop — no `unsafe`, no `Rc`.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use crate::diagnostics::Span;
 use crate::value::Value;
 
+/// Whether a registered `gui_on` callback expects 1 arg `(payload)` or 2 args
+/// `(event, payload)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlerArity {
+    OneArg,
+    TwoArgs,
+}
+
+/// Registered `gui_on` callback together with its expected arity and declaration
+/// span (used for accurate runtime error attribution).
+#[derive(Clone)]
+pub struct HandlerEntry {
+    pub handler: Value,
+    pub arity: HandlerArity,
+    pub span: Option<Span>,
+}
+
 /// The process-global bridge. Guarded by a mutex because the webview IPC
-/// callback, the interpreter thread, and the window's event loop all touch
+/// callback, background `spawn` threads, and the window's event loop all touch
 /// it (potentially from different OS threads).
 struct Bridge {
     /// JavaScript commands queued by `gui_eval` / `gui_set_html`, in order.
@@ -21,11 +39,16 @@ struct Bridge {
     /// Events pushed by the page (`window.spid3r.emit`) or by `gui_emit`,
     /// in order. Unmatched events (no handler) are dropped on dispatch.
     inbound: VecDeque<(String, String)>,
-    /// Handlers registered by `gui_on`: (event, callable). Re-registering an
+    /// Handlers registered by `gui_on`: (event, entry). Re-registering an
     /// event replaces its handler.
-    handlers: Vec<(String, Value)>,
+    handlers: Vec<(String, HandlerEntry)>,
     /// Window title requested by `gui_title`.
     title: Option<String>,
+    /// Callback that nudges the active window event loop when worker threads
+    /// queue JS, events, or title updates.
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Set once the window closes so post-close worker pushes are discarded.
+    closed: bool,
 }
 
 impl Bridge {
@@ -35,6 +58,8 @@ impl Bridge {
             inbound: VecDeque::new(),
             handlers: Vec::new(),
             title: None,
+            waker: None,
+            closed: false,
         }
     }
 }
@@ -57,11 +82,37 @@ pub fn reset() {
     b.inbound.clear();
     b.handlers.clear();
     b.title = None;
+    b.waker = None;
+    b.closed = false;
+}
+
+/// Install or clear the event-loop wake callback invoked whenever `push_js`,
+/// `push_event`, or `set_title` updates the bridge while the window is open.
+pub fn set_waker(waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    let mut b = lock();
+    b.waker = waker;
+}
+
+/// Mark the bridge closed and drop the event-loop waker.
+pub fn mark_closed() {
+    let mut b = lock();
+    b.closed = true;
+    b.waker = None;
 }
 
 /// Queue a JavaScript command for the page (evaluated in order).
 pub fn push_js(js: &str) {
-    lock().out.push_back(js.to_string());
+    let waker = {
+        let mut b = lock();
+        if b.closed {
+            return;
+        }
+        b.out.push_back(js.to_string());
+        b.waker.clone()
+    };
+    if let Some(w) = waker {
+        w();
+    }
 }
 
 /// Take every queued JavaScript command, leaving the queue empty.
@@ -71,14 +122,23 @@ pub fn take_out() -> Vec<String> {
 
 /// Queue an event (payload is always a string; the page side JSON-encodes).
 pub fn push_event(event: &str, payload: &str) {
-    lock()
-        .inbound
-        .push_back((event.to_string(), payload.to_string()));
+    let waker = {
+        let mut b = lock();
+        if b.closed {
+            return;
+        }
+        b.inbound
+            .push_back((event.to_string(), payload.to_string()));
+        b.waker.clone()
+    };
+    if let Some(w) = waker {
+        w();
+    }
 }
 
-/// Take every queued event paired with its handler. Events without a
+/// Take every queued event paired with its handler entry. Events without a
 /// registered handler are dropped.
-pub fn take_events() -> Vec<(String, String, Value)> {
+pub fn take_event_entries() -> Vec<(String, String, HandlerEntry)> {
     let mut b = lock();
     let events = std::mem::take(&mut b.inbound);
     let handlers = &b.handlers;
@@ -88,21 +148,51 @@ pub fn take_events() -> Vec<(String, String, Value)> {
             handlers
                 .iter()
                 .find(|(name, _)| *name == event)
-                .map(|(_, handler)| (event.clone(), payload, handler.clone()))
+                .map(|(_, entry)| (event.clone(), payload, entry.clone()))
         })
         .collect()
 }
 
-/// Register (or replace) the handler for `event`.
-pub fn set_handler(event: &str, handler: Value) {
-    let mut b = lock();
-    b.handlers.retain(|(name, _)| name != event);
-    b.handlers.push((event.to_string(), handler));
+/// Take every queued event paired with its handler value.
+pub fn take_events() -> Vec<(String, String, Value)> {
+    take_event_entries()
+        .into_iter()
+        .map(|(event, payload, entry)| (event, payload, entry.handler))
+        .collect()
 }
 
-/// Request a window title (read once, when the window is created).
+/// Register (or replace) the handler entry for `event`.
+pub fn set_handler_entry(event: &str, entry: HandlerEntry) {
+    let mut b = lock();
+    b.handlers.retain(|(name, _)| name != event);
+    b.handlers.push((event.to_string(), entry));
+}
+
+/// Register (or replace) a 2-arg handler for `event`.
+pub fn set_handler(event: &str, handler: Value) {
+    set_handler_entry(
+        event,
+        HandlerEntry {
+            handler,
+            arity: HandlerArity::TwoArgs,
+            span: None,
+        },
+    );
+}
+
+/// Request a window title (read on open and whenever an event wakes the loop).
 pub fn set_title(title: &str) {
-    lock().title = Some(title.to_string());
+    let waker = {
+        let mut b = lock();
+        if b.closed {
+            return;
+        }
+        b.title = Some(title.to_string());
+        b.waker.clone()
+    };
+    if let Some(w) = waker {
+        w();
+    }
 }
 
 /// Take the requested window title, if any.
@@ -177,12 +267,18 @@ fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
 
 /// Read a JSON string literal starting just after its opening quote.
 fn read_json_string(json: &str, start: usize) -> Option<String> {
+    read_json_string_with_end(json, start).map(|(s, _)| s)
+}
+
+/// Read a JSON string literal starting just after its opening quote, returning
+/// the decoded string and the byte offset immediately after the closing quote.
+fn read_json_string_with_end(json: &str, start: usize) -> Option<(String, usize)> {
     let bytes = json.as_bytes();
     let mut out = String::new();
     let mut i = start;
     while i < bytes.len() {
         match bytes[i] {
-            b'"' => return Some(out),
+            b'"' => return Some((out, i + 1)),
             b'\\' => {
                 i += 1;
                 match bytes.get(i)? {
@@ -216,6 +312,201 @@ fn read_json_string(json: &str, start: usize) -> Option<String> {
         }
     }
     None // unterminated
+}
+
+fn scan_json_number_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    if bytes.get(i) == Some(&b'-') {
+        i += 1;
+    }
+    match bytes.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            i += 1;
+            while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+                i += 1;
+            }
+        }
+        _ => return None,
+    }
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        if !matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            return None;
+        }
+        while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+    }
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            return None;
+        }
+        while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+    }
+    Some(i)
+}
+
+fn scan_json_value_end(json: &str, start: usize) -> Option<usize> {
+    let bytes = json.as_bytes();
+    match *bytes.get(start)? {
+        b'"' => read_json_string_with_end(json, start + 1).map(|(_, end)| end),
+        b'{' | b'[' => {
+            let mut stack = vec![if bytes[start] == b'{' { b'}' } else { b']' }];
+            let mut i = start + 1;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'"' => {
+                        let (_, end) = read_json_string_with_end(json, i + 1)?;
+                        i = end;
+                    }
+                    b'{' => {
+                        stack.push(b'}');
+                        i += 1;
+                    }
+                    b'[' => {
+                        stack.push(b']');
+                        i += 1;
+                    }
+                    b'}' | b']' => {
+                        let expected = stack.pop()?;
+                        if bytes[i] != expected {
+                            return None;
+                        }
+                        i += 1;
+                        if stack.is_empty() {
+                            return Some(i);
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+            None
+        }
+        b't' => json
+            .get(start..start + 4)
+            .filter(|s| *s == "true")
+            .map(|_| start + 4),
+        b'f' => json
+            .get(start..start + 5)
+            .filter(|s| *s == "false")
+            .map(|_| start + 5),
+        b'n' => json
+            .get(start..start + 4)
+            .filter(|s| *s == "null")
+            .map(|_| start + 4),
+        b'-' | b'0'..=b'9' => scan_json_number_end(bytes, start),
+        _ => None,
+    }
+}
+
+enum TopJsonValue {
+    Str(String),
+    Raw(String),
+}
+
+fn parse_top_level_object(json: &str) -> Result<Vec<(String, TopJsonValue)>, String> {
+    let trimmed = json.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return Err("expected a JSON object".to_string());
+    }
+    let mut i = skip_ws(bytes, 1);
+    let mut members = Vec::new();
+    if bytes.get(i) == Some(&b'}') {
+        let rest = skip_ws(bytes, i + 1);
+        if rest != bytes.len() {
+            return Err("unexpected trailing data after JSON object".to_string());
+        }
+        return Ok(members);
+    }
+    loop {
+        if bytes.get(i) != Some(&b'"') {
+            return Err("expected string key in JSON object".to_string());
+        }
+        let (key, key_end) = read_json_string_with_end(trimmed, i + 1)
+            .ok_or_else(|| "malformed JSON key string".to_string())?;
+        i = skip_ws(bytes, key_end);
+        if bytes.get(i) != Some(&b':') {
+            return Err("expected ':' after JSON key".to_string());
+        }
+        i = skip_ws(bytes, i + 1);
+        let val_start = i;
+        let val_end = scan_json_value_end(trimmed, val_start)
+            .ok_or_else(|| format!("malformed JSON value for '{}'", key))?;
+        let val = if bytes.get(val_start) == Some(&b'"') {
+            let (s, _) = read_json_string_with_end(trimmed, val_start + 1)
+                .ok_or_else(|| format!("malformed JSON string for '{}'", key))?;
+            TopJsonValue::Str(s)
+        } else {
+            TopJsonValue::Raw(trimmed[val_start..val_end].to_string())
+        };
+        members.push((key, val));
+        i = skip_ws(bytes, val_end);
+        match bytes.get(i) {
+            Some(b',') => i = skip_ws(bytes, i + 1),
+            Some(b'}') => {
+                let rest = skip_ws(bytes, i + 1);
+                if rest != bytes.len() {
+                    return Err("unexpected trailing data after JSON object".to_string());
+                }
+                return Ok(members);
+            }
+            _ => return Err("expected ',' or '}' in JSON object".to_string()),
+        }
+    }
+}
+
+/// Read the top-level member stored under `key` in a JSON object: decoded text
+/// when the value is a string, or its JSON text representation when the value
+/// is an object, array, number, boolean, or null.
+pub fn json_payload(json: &str, key: &str) -> Option<String> {
+    let members = parse_top_level_object(json).ok()?;
+    let mut found = None;
+    for (k, v) in members {
+        if k == key {
+            found = Some(match v {
+                TopJsonValue::Str(s) => s,
+                TopJsonValue::Raw(raw) => raw,
+            });
+        }
+    }
+    found
+}
+
+/// Decode a `window.spid3r.emit(event, payload)` JSON envelope.
+///
+/// String payloads are unquoted cleanly; structured payloads (objects, arrays,
+/// numbers, booleans, null) are preserved as their JSON text; an omitted
+/// `"payload"` key decodes as `""`. Malformed JSON or a missing/non-string
+/// `"event"` returns an explicit error instead of silently dispatching an empty event.
+pub fn decode_ipc_message(body: &str) -> Result<(String, String), String> {
+    let members = parse_top_level_object(body)?;
+    let mut event: Option<String> = None;
+    let mut payload = String::new();
+    for (k, v) in members {
+        if k == "event" {
+            match v {
+                TopJsonValue::Str(s) => event = Some(s),
+                TopJsonValue::Raw(_) => {
+                    return Err("GUI IPC message 'event' must be a string".to_string());
+                }
+            }
+        } else if k == "payload" {
+            payload = match v {
+                TopJsonValue::Str(s) => s,
+                TopJsonValue::Raw(raw) => raw,
+            };
+        }
+    }
+    let event = event.ok_or_else(|| "GUI IPC message missing 'event' field".to_string())?;
+    Ok((event, payload))
 }
 
 #[cfg(test)]
@@ -381,5 +672,88 @@ mod tests {
         assert_eq!(events[0].0, "click");
         assert_eq!(events[0].1, payload);
         assert!(matches!(events[0].2, Value::Int(7)));
+    }
+
+    #[test]
+    fn ipc_message_preserves_structured_and_scalar_payloads() {
+        let obj = r#"{"event":"save","data":{"payload":"nested"},"payload":{"id":42,"ok":true}}"#;
+        let (ev, pl) = decode_ipc_message(obj).expect("object payload");
+        assert_eq!(ev, "save");
+        assert_eq!(pl, r#"{"id":42,"ok":true}"#);
+        assert_eq!(
+            json_payload(obj, "payload").as_deref(),
+            Some(r#"{"id":42,"ok":true}"#)
+        );
+
+        let arr = r#"{"event":"items","payload":[1,"two",false,null]}"#;
+        assert_eq!(
+            decode_ipc_message(arr).unwrap(),
+            ("items".to_string(), r#"[1,"two",false,null]"#.to_string())
+        );
+
+        let num = r#"{"event":"count","payload":42}"#;
+        assert_eq!(
+            decode_ipc_message(num).unwrap(),
+            ("count".to_string(), "42".to_string())
+        );
+
+        let boolean = r#"{"event":"flag","payload":false}"#;
+        assert_eq!(
+            decode_ipc_message(boolean).unwrap(),
+            ("flag".to_string(), "false".to_string())
+        );
+
+        let null_pl = r#"{"event":"empty","payload":null}"#;
+        assert_eq!(
+            decode_ipc_message(null_pl).unwrap(),
+            ("empty".to_string(), "null".to_string())
+        );
+
+        let omitted = r#"{"event":"ping"}"#;
+        assert_eq!(
+            decode_ipc_message(omitted).unwrap(),
+            ("ping".to_string(), String::new())
+        );
+
+        assert!(decode_ipc_message(r#"{"event":"bad","payload":"#).is_err());
+        assert!(decode_ipc_message(r#"{"payload":1}"#).is_err());
+        assert!(decode_ipc_message("not json").is_err());
+    }
+
+    #[test]
+    fn concurrent_worker_pushes_wake_loop_in_fifo_order() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wakes2 = wakes.clone();
+        set_waker(Some(std::sync::Arc::new(move || {
+            wakes2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+
+        let mut handles = Vec::new();
+        for tid in 0..4 {
+            handles.push(std::thread::spawn(move || {
+                for seq in 0..100 {
+                    push_js(&format!("t{}:{}", tid, seq));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let out = take_out();
+        assert_eq!(out.len(), 400);
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 400);
+
+        let mut next_seq = [0usize; 4];
+        for item in out {
+            let (tid_s, seq_s) = item.strip_prefix('t').unwrap().split_once(':').unwrap();
+            let tid: usize = tid_s.parse().unwrap();
+            let seq: usize = seq_s.parse().unwrap();
+            assert_eq!(seq, next_seq[tid], "FIFO broken for thread {}", tid);
+            next_seq[tid] += 1;
+        }
+        assert_eq!(next_seq, [100, 100, 100, 100]);
+        reset();
     }
 }

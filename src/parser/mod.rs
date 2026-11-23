@@ -278,9 +278,14 @@ impl Parser {
     /// Synchronize to the next statement or declaration boundary after a syntax
     /// error in `recovering` mode (R6.1). Consumes a trailing `;` if reached;
     /// stops *before* statement-start keywords, `@`, `}`, or `EOF` (never
-    /// consumes braces so enclosing `parse_block` loops stay balanced).
+    /// consumes braces inside blocks so enclosing `parse_block` loops stay
+    /// balanced; at top level `depth == 0`, an unmatched `}` is consumed so
+    /// recovery advances instead of emitting repeated errors on the same token).
     fn synchronize(&mut self, start_pos: usize) {
-        if self.pos == start_pos && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::RBrace) {
+        if self.pos == start_pos
+            && !self.at(&TokenKind::Eof)
+            && (self.depth == 0 || !self.at(&TokenKind::RBrace))
+        {
             self.pos += 1;
         }
         while !self.at(&TokenKind::Eof) {
@@ -288,7 +293,7 @@ impl Parser {
                 self.pos += 1;
                 return;
             }
-            if self.at(&TokenKind::RBrace) || self.at(&TokenKind::At) {
+            if (self.depth > 0 && self.at(&TokenKind::RBrace)) || self.at(&TokenKind::At) {
                 return;
             }
             if matches!(
@@ -329,6 +334,9 @@ impl Parser {
             return false;
         }
         self.synchronize(start_pos);
+        if self.depth == 0 && self.pos == start_pos && !self.at(&TokenKind::Eof) {
+            self.pos += 1;
+        }
         true
     }
 
@@ -1283,7 +1291,9 @@ impl Parser {
                 let _ = self.eat(&TokenKind::Semi);
                 Ok(Stmt::Expr(e))
             }
-            TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
+            TokenKind::LBrace if !self.is_map_literal_at_lbrace() => {
+                Ok(Stmt::Block(self.parse_block()?))
+            }
             _ => {
                 let e = self.parse_expr()?;
                 // The last expression of an `if`-expression branch is its
@@ -1378,20 +1388,114 @@ impl Parser {
         })
     }
 
-    /// `if` in value position: `let x = if (c) { a } else { b };`.
+    /// Look ahead from `{` (`self.pos`) to distinguish a map literal
+    /// (`{ "a": 1 }`, `{ k: v }`, or `{}` as the sole value of a value block)
+    /// from a statement block (`{ let x = 1; }`).
+    fn is_map_literal_at_lbrace(&self) -> bool {
+        if !self.at(&TokenKind::LBrace) {
+            return false;
+        }
+        if self.value_block_depth > 0
+            && self.peek_kind(1) == &TokenKind::RBrace
+            && self.peek_kind(2) == &TokenKind::RBrace
+        {
+            return true;
+        }
+        let first = self.peek_kind(1);
+        if matches!(
+            first,
+            TokenKind::RBrace
+                | TokenKind::Semi
+                | TokenKind::Kw(
+                    Keyword::Let
+                        | Keyword::Const
+                        | Keyword::Fn
+                        | Keyword::Return
+                        | Keyword::While
+                        | Keyword::For
+                        | Keyword::Try
+                        | Keyword::Throw
+                        | Keyword::Break
+                        | Keyword::Continue
+                        | Keyword::Spawn
+                        | Keyword::Class
+                        | Keyword::Interface
+                        | Keyword::Enum
+                        | Keyword::Import
+                        | Keyword::If
+                        | Keyword::Yield
+                        | Keyword::Async
+                        | Keyword::Public
+                        | Keyword::Private
+                        | Keyword::Abstract
+                )
+        ) {
+            return false;
+        }
+        let mut idx = self.pos + 1;
+        let mut depth = 0i32;
+        while idx < self.toks.len() {
+            match &self.toks[idx].kind {
+                TokenKind::Colon if depth == 0 => return true,
+                TokenKind::RBrace | TokenKind::Semi | TokenKind::Eof if depth == 0 => return false,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+        false
+    }
+
+    /// `if` in value position: `let x = if (c) { a } elif (d) { b } else { c };`.
     ///
-    /// `else if` chains are represented by nesting the second `if` inside a
-    /// one-statement block, so `lower` only ever sees a single `els` block.
+    /// `elif` / `else if` chains are represented by nesting the next `if`
+    /// inside a one-statement block, so `lower` only ever sees a single `els`
+    /// block.
     fn parse_if_expr(&mut self) -> SpidResult<Expr> {
         let sp = self.expect_kw(Keyword::If)?;
+        self.parse_if_expr_after_kw(sp)
+    }
+
+    fn parse_if_expr_after_kw(&mut self, sp: Span) -> SpidResult<Expr> {
         let cond = self.parse_expr()?;
         let then = self.parse_value_block()?;
         let mut els = None;
-        if self.eat_kw(Keyword::Else) {
+        if self.eat_kw(Keyword::Elif) {
+            let elif_sp = self.prev_span();
+            if self.depth >= MAX_PARSE_DEPTH {
+                return Err(err_at(
+                    Phase::Parser,
+                    elif_sp,
+                    format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+                ));
+            }
+            self.depth += 1;
+            let nested = self.parse_if_expr_after_kw(elif_sp);
+            self.depth -= 1;
+            let nested = nested?;
+            let span = nested.span().clone();
+            els = Some(Block {
+                stmts: vec![Stmt::Expr(nested)],
+                span,
+            });
+        } else if self.eat_kw(Keyword::Else) {
             if self.at_kw(Keyword::If) {
                 // Each `else if` nests another value-position `if`; count the
                 // nesting against the depth budget (the statement form is an
                 // iterative loop and needs no budget).
+                if self.depth >= MAX_PARSE_DEPTH {
+                    return Err(err_at(
+                        Phase::Parser,
+                        self.span(),
+                        format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+                    ));
+                }
                 self.depth += 1;
                 let nested = self.parse_if_expr();
                 self.depth -= 1;
@@ -1445,7 +1549,7 @@ impl Parser {
             self.expect(&TokenKind::FatArrow, "'=>' after the pattern")?;
             // `=> expr` and `=> { statements; value }` are both accepted; the
             // bare form is wrapped in a one-statement block.
-            let body = if self.at(&TokenKind::LBrace) {
+            let body = if self.at(&TokenKind::LBrace) && !self.is_map_literal_at_lbrace() {
                 self.parse_value_block()?
             } else {
                 let e = self.parse_expr()?;

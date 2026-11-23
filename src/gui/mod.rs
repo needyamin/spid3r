@@ -185,6 +185,7 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
             ))
         })?;
         let mut vm = crate::vm::Vm::new(loaded.file_id.clone(), dirs);
+        vm.set_defer_task_drain(true);
         install_vm(&mut vm);
         // Phase 1: the program builds the UI. Handlers are registered and the
         // initial JavaScript is queued; nothing touches the window yet.
@@ -203,12 +204,15 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
         }
         if engine_vm {
             let mut vm = crate::vm::Vm::new(loaded.file_id.clone(), dirs);
+            vm.set_defer_task_drain(true);
             install_vm(&mut vm);
             let code = vm.run_program(&program)?;
             (Runtime::Vm(Rc::new(RefCell::new(vm))), code)
         } else {
-            let interp = Arc::new(Interp::new(loaded.file_id.clone(), dirs));
-            install(&interp.globals);
+            let mut interp = Interp::new(loaded.file_id.clone(), dirs);
+            interp.set_defer_task_drain(true);
+            let interp = Arc::new(interp);
+            interp.install_extra_natives(GUI_NATIVES);
             let code = interp.run_program(&program)?;
             (Runtime::Tree(interp), code)
         }
@@ -218,6 +222,7 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
     // opening a window (what the test suite uses).
     if dry_run {
         window::dry_run(&runtime);
+        crate::sched::join_tasks_at_exit();
     } else {
         // A packaged app keeps its assets in memory; letting the webview cache
         // them to disk would put the UI source back on the filesystem.
@@ -536,8 +541,9 @@ fn n_set_html(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-/// `gui_on(event, handler)` — call `handler(event, payload)` for every
-/// `event` the page emits. Registering an event twice replaces the handler.
+/// `gui_on(event, handler)` — call `handler(event, payload)` (or `handler(payload)`
+/// for a 1-arg callback) for every `event` the page emits. Re-registering
+/// replaces the handler.
 fn n_on(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arg_count("gui_on", &args, 2)?;
     let event = want_str("gui_on", &args[0])?;
@@ -547,8 +553,50 @@ fn n_on(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             crate::value::type_name(&args[1])
         ));
     }
-    bridge::set_handler(&event, args[1].clone());
+    let (arity, span) = match &args[1] {
+        Value::Function(fd) => {
+            let min = fd.proto.min_arity();
+            let max = if fd.proto.is_variadic {
+                usize::MAX
+            } else {
+                fd.proto.params.len()
+            };
+            let arity = classify_handler_arity(min, max)?;
+            (arity, Some(fd.proto.span.clone()))
+        }
+        Value::VFunc(vf) => {
+            let arity = classify_handler_arity(vf.min_arity, vf.arity)?;
+            (arity, vf.chunk.inst_spans.first().cloned())
+        }
+        _ => (bridge::HandlerArity::TwoArgs, None),
+    };
+    bridge::set_handler_entry(
+        &event,
+        bridge::HandlerEntry {
+            handler: args[1].clone(),
+            arity,
+            span,
+        },
+    );
     Ok(Value::Null)
+}
+
+fn classify_handler_arity(min: usize, max: usize) -> Result<bridge::HandlerArity, String> {
+    if min <= 2 && max >= 2 {
+        Ok(bridge::HandlerArity::TwoArgs)
+    } else if min <= 1 && max >= 1 {
+        Ok(bridge::HandlerArity::OneArg)
+    } else {
+        let range = if min == max {
+            format!("{}", min)
+        } else {
+            format!("{}..={}", min, max)
+        };
+        Err(format!(
+            "gui_on handler must accept 1 argument (payload) or 2 arguments (event, payload), but requires {} argument(s)",
+            range
+        ))
+    }
 }
 
 /// `gui_emit(event, payload)` — queue an event as if the page emitted it.

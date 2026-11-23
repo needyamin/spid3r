@@ -140,8 +140,10 @@ parenExpr      = "(" expr ")" ;
 tupleLit       = "(" [ [ expr ] "," [ args ] ] ")" ;
 
 (* `if` in value position; a branch's last expression may omit its `;`.
-   The condition is a plain `expr` — parentheses are optional. *)
-ifExpr         = "if" expr valueBlock [ "else" valueBlock ] ;
+   The condition is a plain `expr` — parentheses are optional. `elif` and
+   `else if` chains are both accepted, and map literals (`{ "k": v }` or
+   sole-value `{}`) inside branches are disambiguated from blocks. *)
+ifExpr         = "if" expr valueBlock { ( "elif" | "else" "if" ) expr valueBlock } [ "else" valueBlock ] ;
 
 (* `match` is an expression; in statement position its trailing `;` is optional *)
 matchExpr      = "match" "(" expr ")" "{" arm { [ "," ] arm } "}" ;
