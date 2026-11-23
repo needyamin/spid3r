@@ -201,6 +201,22 @@ verify_formatter_vsix() {
   return 0
 }
 
+run_smoke_cmd() {
+  local tmp_dir="$1"
+  local label="$2"
+  local desc="$3"
+  shift 3
+  local log="$tmp_dir/smoke.log"
+  local rc=0
+  "$@" </dev/null >"$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: $label $desc failed (rc=$rc):" >&2
+    head -n 40 "$log" | sed 's/^/  /' >&2
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
+}
+
 smoke_test_compiler_binary() {
   local bin="$1"
   local rt_dir="$2"
@@ -210,23 +226,29 @@ smoke_test_compiler_binary() {
   local tmp
   tmp="$(mktemp -d)"
 
-  "$bin" --version | grep -q "spid3r-self" || {
+  run_smoke_cmd "$tmp" "$label" "--version" "$bin" --version
+  if ! grep -q "spid3r-self" "$tmp/smoke.log"; then
     echo "FAIL: $label --version missing 'spid3r-self'" >&2
+    head -n 20 "$tmp/smoke.log" | sed 's/^/  /' >&2
     rm -rf "$tmp"
     exit 1
-  }
-  "$bin" --help >/dev/null
-  SPID3R_RUNTIME_REQUIRE_PIN=1 "$bin" verify-runtime "$rt_dir" >/dev/null
-  "$bin" check "$ROOT/examples/hello.matrix" >/dev/null
-  "$bin" fmt --check "$ROOT/selfhost/main.matrix" >/dev/null
+  fi
+  run_smoke_cmd "$tmp" "$label" "--help" "$bin" --help
+  run_smoke_cmd "$tmp" "$label" "verify-runtime" \
+    env SPID3R_RUNTIME_REQUIRE_PIN=1 "$bin" verify-runtime "$rt_dir"
+  run_smoke_cmd "$tmp" "$label" "check hello.matrix" \
+    "$bin" check "$ROOT/examples/hello.matrix"
+  run_smoke_cmd "$tmp" "$label" "fmt --check selfhost/main.matrix" \
+    "$bin" fmt --check "$ROOT/selfhost/main.matrix"
 
   local exe_out="$tmp/hello_smoke"
   case "$TARGET" in
     *windows*) exe_out="$tmp/hello_smoke.exe" ;;
   esac
 
-  SPID3R_RUNTIME_MANIFEST="$rt_dir/runtime-manifest.json" SPID3R_RUNTIME_REQUIRE_PIN=1 \
-    "$bin" build --release "$ROOT/examples/hello.matrix" -o "$exe_out" >/dev/null
+  run_smoke_cmd "$tmp" "$label" "build --release hello.matrix" \
+    env SPID3R_RUNTIME_MANIFEST="$rt_dir/runtime-manifest.json" SPID3R_RUNTIME_REQUIRE_PIN=1 \
+    "$bin" build --release "$ROOT/examples/hello.matrix" -o "$exe_out"
   [ -x "$exe_out" ] || [ -f "$exe_out" ] || {
     echo "FAIL: $label did not emit $exe_out" >&2
     rm -rf "$tmp"

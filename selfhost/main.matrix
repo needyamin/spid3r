@@ -174,557 +174,559 @@ fn main() {
         }
     } else if mode == "check" {
         let chk_paths = [];
-        if true {
-            let ai = 1;
-            while ai < a.len() {
-                let arg = a[ai];
-                if arg == "--dump-lowered" {
-                    chk_dump = true;
-                } else if arg == "--dump-registry-json" {
-                    chk_dump_registry = true;
-                } else if arg == "--deny-warnings" {
-                    chk_deny_warnings = true;
-                } else if arg == "--json" {
-                    chk_json = true;
-                } else if arg == "--allow" {
-                    ai += 1;
-                    if ai >= a.len() {
-                        let msg = "--allow needs a lint name (e.g. unused-variable)";
-                        if chk_json {
-                            print(
-                                diag_to_json("error", "usage", null, msg, "", null, null) + "\n"
-                            );
-                        } else {
-                            eprint("error[usage]: " + msg + "\n");
-                        }
-                        return 2;
-                    }
-                    chk_allow.push(a[ai]);
-                } else if arg.len() >= 2 and arg.slice(0, 2) == "--" {
-                    let msg = "check: unknown flag '" + arg + "' (supported: --json, --dump-lowered, --dump-registry-json, --deny-warnings, --allow LINT)";
+        let ai = 1;
+        while ai < a.len() {
+            let arg = a[ai];
+            if arg == "--dump-lowered" {
+                chk_dump = true;
+            } else if arg == "--dump-registry-json" {
+                chk_dump_registry = true;
+            } else if arg == "--deny-warnings" {
+                chk_deny_warnings = true;
+            } else if arg == "--json" {
+                chk_json = true;
+            } else if arg == "--allow" {
+                ai += 1;
+                if ai >= a.len() {
+                    let msg = "--allow needs a lint name (e.g. unused-variable)";
                     if chk_json {
-                        print(diag_to_json("error", "usage", null, msg, "", null, null) + "\n");
+                        print(
+                            diag_to_json("error", "usage", null, msg, "", null, null) + "\n"
+                        );
                     } else {
                         eprint("error[usage]: " + msg + "\n");
                     }
                     return 2;
-                } else {
-                    chk_paths.push(arg);
                 }
-                ai += 1;
-            }
-            if chk_paths.len() == 0 {
-                let msg = "check needs at least one file or directory";
+                chk_allow.push(a[ai]);
+            } else if arg.len() >= 2 and arg.slice(0, 2) == "--" {
+                let msg = "check: unknown flag '" + arg + "' (supported: --json, --dump-lowered, --dump-registry-json, --deny-warnings, --allow LINT)";
                 if chk_json {
                     print(diag_to_json("error", "usage", null, msg, "", null, null) + "\n");
                 } else {
                     eprint("error[usage]: " + msg + "\n");
                 }
                 return 2;
+            } else {
+                chk_paths.push(arg);
             }
-            let expanded_chk = [];
-            for cp in chk_paths {
-                if is_dir(cp) {
-                    let found = sh_collect_matrix_files(cp);
-                    if found.len() == 0 {
-                        eprint("error[usage]: usage error: no .matrix files found in directory '" + cp + "'\n");
-                        return 2;
-                    }
-                    for fp in found {
-                        expanded_chk.push(fp);
-                    }
-                } else {
-                    expanded_chk.push(cp);
-                }
-            }
-            chk_paths = expanded_chk;
-            if chk_paths.len() > 1 and (chk_dump or chk_dump_registry) {
-                eprint("error[usage]: usage error: check --dump-lowered and --dump-registry-json accept a single file\n");
-                return 2;
-            }
-            if chk_paths.len() > 1 {
-                let any_fail = false;
-                for fp in chk_paths {
-                    let rc = sh_check_one_file(fp, chk_json, chk_deny_warnings, chk_allow);
-                    if rc != 0 {
-                        any_fail = true;
-                    }
-                }
-                if any_fail {
-                    return 1;
-                }
-                return 0;
-            }
-            path = chk_paths[0];
+            ai += 1;
         }
+        if chk_paths.len() == 0 {
+            let msg = "check needs at least one file or directory";
+            if chk_json {
+                print(diag_to_json("error", "usage", null, msg, "", null, null) + "\n");
+            } else {
+                eprint("error[usage]: " + msg + "\n");
+            }
+            return 2;
+        }
+        let expanded_chk = [];
+        for cp in chk_paths {
+            if is_dir(cp) {
+                let found = sh_collect_matrix_files(cp);
+                if found.len() == 0 {
+                    eprint(
+                        "error[usage]: usage error: no .matrix files found in directory '" + cp + "'\n"
+                    );
+                    return 2;
+                }
+                for fp in found {
+                    expanded_chk.push(fp);
+                }
+            } else {
+                expanded_chk.push(cp);
+            }
+        }
+        chk_paths = expanded_chk;
+        if chk_paths.len() > 1 and (chk_dump or chk_dump_registry) {
+            eprint(
+                "error[usage]: usage error: check --dump-lowered and --dump-registry-json accept a single file\n"
+            );
+            return 2;
+        }
+        if chk_paths.len() > 1 {
+            let any_fail = false;
+            for fp in chk_paths {
+                let rc = sh_check_one_file(fp, chk_json, chk_deny_warnings, chk_allow);
+                if rc != 0 {
+                    any_fail = true;
+                }
+            }
+            if any_fail {
+                return 1;
+            }
+            return 0;
+        }
+        path = chk_paths[0];
     } else {
         if a.len() > 3 {
-                eprint(
-                    "usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n"
-                );
-                return 2;
-            }
-            path = a[1];
-            if a.len() >= 3 {
-                build_out = a[2];
-            }
-        }
-        if not file_exists(path) {
-            eprint("error[usage]: usage error: '" + path + "' is not a file\n");
+            eprint(
+                "usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n"
+            );
             return 2;
         }
-        let r = read_file(path);
-        if r.is_err() {
-            eprint("error[usage]: usage error: cannot read '" + path + "'\n");
-            return 2;
+        path = a[1];
+        if a.len() >= 3 {
+            build_out = a[2];
         }
-        let src = r.unwrap();
+    }
+    if not file_exists(path) {
+        eprint("error[usage]: usage error: '" + path + "' is not a file\n");
+        return 2;
+    }
+    let r = read_file(path);
+    if r.is_err() {
+        eprint("error[usage]: usage error: cannot read '" + path + "'\n");
+        return 2;
+    }
+    let src = r.unwrap();
 
-        let toks = null;
+    let toks = null;
+    try {
+        toks = lex_all(src);
+    } catch (e) {
+        let pth = path;
+        if e.len() >= 6 {
+            pth = e[5];
+        }
+        if chk_json {
+            print(
+                diag_to_json(
+                    "error",
+                    "lexer",
+                    null,
+                    e[0],
+                    pth,
+                    [e[1],
+                    e[2],
+                    e[3]],
+                    null
+                ) + "\n"
+            );
+        } else {
+            eprint("error[lexer]: " + e[0] + "\n");
+            eprint("  --> " + pth + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
+        }
+        return 1;
+    }
+
+    if mode == "tokens" {
+        print(tokens_json(path, toks));
+        return 0;
+    }
+
+    let prog = null;
+    try {
+        let st = new_state(toks);
+        prog = parse_program(st);
+    } catch (e2) {
+        // Compiler errors are [msg, line, col, len(, phase(, path))] lists —
+        // an int line at [1] distinguishes them from bare-string runtime
+        // errors (a char + int add throws).
+        let is_list = false;
         try {
-            toks = lex_all(src);
-        } catch (e) {
-            let pth = path;
-            if e.len() >= 6 {
-                pth = e[5];
-            }
+            let probe = e2[1] + 0;
+            is_list = true;
+        } catch (ignored) {
+            is_list = false;
+        }
+        if not is_list {
             if chk_json {
-                print(
-                    diag_to_json(
-                        "error",
-                        "lexer",
-                        null,
-                        e[0],
-                        pth,
-                        [e[1],
-                            e[2],
-                            e[3]],
-                        null
-                    ) + "\n"
-                );
+                print(diag_to_json("error", "internal", null, e2, path, null, null) + "\n");
             } else {
-                eprint("error[lexer]: " + e[0] + "\n");
-                eprint("  --> " + pth + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
+                eprint("error[internal]: " + e2 + "\n");
             }
             return 1;
         }
-
-        if mode == "tokens" {
-            print(tokens_json(path, toks));
-            return 0;
+        let phase = "parser";
+        if e2.len() >= 5 {
+            phase = e2[4];
         }
+        let pth = path;
+        if e2.len() >= 6 {
+            pth = e2[5];
+        }
+        if chk_json {
+            print(
+                diag_to_json(
+                    "error",
+                    phase,
+                    null,
+                    e2[0],
+                    pth,
+                    [e2[1],
+                    e2[2],
+                    e2[3]],
+                    null
+                ) + "\n"
+            );
+        } else {
+            eprint("error[" + phase + "]: " + e2[0] + "\n");
+            eprint("  --> " + pth + ":" + string(e2[1]) + ":" + string(e2[2]) + "\n");
+        }
+        return 1;
+    }
 
-        let prog = null;
+    if mode == "parse" {
+        print(program_to_json(path, prog));
+        return 0;
+    }
+
+    if mode == "lowered" {
+        // The oracle's --dump-lowered-json parses and lowers WITHOUT the
+        // semantic check — the port matches that pipeline exactly.
+        let lst = new_lower();
+        let lowered = lower_program(lst, prog);
+        print(program_to_json(path, lowered));
+        return 0;
+    }
+
+    if mode == "compile" or mode == "dist" {
+        // Phase 4.2/4.3: the bytecode compiler + the v3 checksummed container
+        // writer. Oracle pipeline: parse -> check -> lower -> compile ->
+        // serialize -> write. Byte-equality target: `spid3r compile <file>
+        // -o <out> --no-opt` (the optimizer is Phase 11 P-3's scope).
+        let has_main_c = false;
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                has_main_c = true;
+            }
+        }
+        let cst2 = new_checker(has_main_c, path);
         try {
-            let st = new_state(toks);
-            prog = parse_program(st);
-        } catch (e2) {
-            // Compiler errors are [msg, line, col, len(, phase(, path))] lists —
-            // an int line at [1] distinguishes them from bare-string runtime
-            // errors (a char + int add throws).
+            check_program(cst2, prog);
+        } catch (e4) {
+            let phase = "semantic";
+            if e4.len() >= 5 {
+                phase = e4[4];
+            }
+            eprint("error[" + phase + "]: " + msg_of(e4) + "\n");
+            if e4[1] >= 0 {
+                eprint(
+                    "  --> " + path + ":" + string(e4[1]) + ":" + string(e4[2]) + "\n"
+                );
+            }
+            return 1;
+        }
+        let lst2 = new_lower();
+        let lowered2 = lower_program(lst2, prog);
+        let embedded = [];
+        let keys = map();
+        let in_progress = [path];
+        let fr = null;
+        try {
+            fr = compile_one(cst2, lowered2, path, embedded, keys, in_progress, true);
+        } catch (e5) {
+            let phase = "semantic";
+            if e5.len() >= 5 {
+                phase = e5[4];
+            }
+            let pth = path;
+            if e5.len() >= 6 {
+                pth = e5[5];
+            }
+            eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
+            if e5[1] >= 0 {
+                eprint("  --> " + pth + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n");
+            }
+            return 1;
+        }
+        let func = make_vmfunc(fr);
+        let bytes_out = serialize_vmfunc(func);
+        let out_path = build_out;
+        if out_path == null {
+            out_path = path.slice(0, path.len() - 7) + ".matrixc";
+            let argv = args();
+            if mode == "compile" and argv.len() >= 3 {
+                out_path = argv[2];
+            }
+        }
+        let wb = write_bytes(out_path, bytes_from_ints(bytes_out));
+        if wb.is_err() {
+            eprint("error[vm]: cannot write '" + out_path + "'\n");
+            return 1;
+        }
+        if mode == "dist" {
+            print("wrote " + out_path + "\n");
+        } else {
+            print("wrote " + out_path);
+        }
+        return 0;
+    }
+
+    if mode == "native" or mode == "build" {
+        // Phase 5.2: the LLVM-C codegen. Oracle pipeline: parse -> check ->
+        // lower -> build_module -> LLVMTargetMachineEmitToFile -> link (the
+        // Phase-6.1 link.matrix argument set).
+        let has_main_n = false;
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                has_main_n = true;
+            }
+        }
+        let cst3 = new_checker(has_main_n, path);
+        try {
+            check_program(cst3, prog);
+        } catch (e5) {
+            let phase = "semantic";
+            if e5.len() >= 5 {
+                phase = e5[4];
+            }
+            eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
+            if e5[1] >= 0 {
+                eprint(
+                    "  --> " + path + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n"
+                );
+            }
+            let h5 = help_of(e5);
+            if h5 != null {
+                eprint("  = help: " + h5 + "\n");
+            }
+            return 1;
+        }
+        // Phase 6.2: flatten `import` into one self-contained program before
+        // lowering + codegen (the oracle's build flow: parse -> check ->
+        // flatten -> lower -> build_module).
+        let flat_prog = null;
+        try {
+            flat_prog = flatten_imports(prog, path);
+        } catch (e7) {
             let is_list = false;
             try {
-                let probe = e2[1] + 0;
+                let probe = e7[1] + 0;
                 is_list = true;
             } catch (ignored) {
                 is_list = false;
             }
-            if not is_list {
-                if chk_json {
-                    print(diag_to_json("error", "internal", null, e2, path, null, null) + "\n");
-                } else {
-                    eprint("error[internal]: " + e2 + "\n");
+            if is_list {
+                let phase = "semantic";
+                if e7.len() >= 5 {
+                    phase = e7[4];
                 }
-                return 1;
-            }
-            let phase = "parser";
-            if e2.len() >= 5 {
-                phase = e2[4];
-            }
-            let pth = path;
-            if e2.len() >= 6 {
-                pth = e2[5];
-            }
-            if chk_json {
-                print(
-                    diag_to_json(
-                        "error",
-                        phase,
-                        null,
-                        e2[0],
-                        pth,
-                        [e2[1],
-                            e2[2],
-                            e2[3]],
-                        null
-                    ) + "\n"
+                let pth = path;
+                if e7.len() >= 6 {
+                    pth = e7[5];
+                }
+                eprint(
+                    "error[" + phase + "]: " + e7[0] + "
+                        "
+                );
+                eprint(
+                    "  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
+                        "
                 );
             } else {
-                eprint("error[" + phase + "]: " + e2[0] + "\n");
-                eprint("  --> " + pth + ":" + string(e2[1]) + ":" + string(e2[2]) + "\n");
+                eprint(
+                    "error[internal]: " + e7 + "
+                        "
+                );
             }
             return 1;
         }
+        let lst3 = new_lower();
+        let lowered3 = lower_program(lst3, flat_prog);
+        let cgst = new_codegen();
+        try {
+            cg_build_module(cgst, lowered3, path);
+        } catch (e6) {
+            // Compiler errors are [msg, line, col, len, phase] lists; runtime
+            // errors are bare strings (an int line at [1] distinguishes them —
+            // a char + int add throws).
+            let is_list = false;
+            try {
+                let probe = e6[1] + 0;
+                is_list = true;
+            } catch (ignored) {
+                is_list = false;
+            }
+            if is_list {
+                eprint("error[" + e6[4] + "]: " + e6[0] + "\n");
+            } else {
+                eprint("error[internal]: " + e6 + "\n");
+            }
+            return 1;
+        }
+        let pdir = "";
+        let pstem = path;
+        let ci2 = path.len() - 1;
+        while ci2 >= 0 {
+            let c2 = path[ci2];
+            if c2 == "/" or c2 == "\\" {
+                pdir = path.slice(0, ci2 + 1);
+                pstem = path.slice(ci2 + 1, path.len());
+                break;
+            }
+            ci2 -= 1;
+        }
+        if pstem.len() > 7 and pstem.slice(pstem.len() - 7, pstem.len()) == ".matrix" {
+            pstem = pstem.slice(0, pstem.len() - 7);
+        }
+        let is_win_target = link_is_windows_host();
+        if build_target != null and build_target != "" {
+            is_win_target = build_target.contains("windows");
+        }
+        let out_path = build_out;
+        if out_path == null {
+            if mode == "build" {
+                if is_win_target {
+                    out_path = pstem + ".exe";
+                } else {
+                    out_path = pstem;
+                }
+            } else {
+                out_path = "a.out";
+            }
+        } else if mode == "build" and is_win_target {
+            // Match link.rs normalize_exe_path: extensionless -o gets .exe on Windows.
+            let base = out_path;
+            let bi = out_path.len() - 1;
+            while bi >= 0 {
+                let bc = out_path[bi];
+                if bc == "/" or bc == "\\" {
+                    base = out_path.slice(bi + 1, out_path.len());
+                    break;
+                }
+                bi -= 1;
+            }
+            let has_dot = false;
+            let di = 0;
+            while di < base.len() {
+                if base[di] == "." {
+                    has_dot = true;
+                    break;
+                }
+                di += 1;
+            }
+            if not has_dot {
+                out_path = out_path + ".exe";
+            }
+        }
+        let odir = "";
+        let ci3 = out_path.len() - 1;
+        while ci3 >= 0 {
+            let c3 = out_path[ci3];
+            if c3 == "/" or c3 == "\\" {
+                odir = out_path.slice(0, ci3 + 1);
+                break;
+            }
+            ci3 -= 1;
+        }
+        let obj_path = odir + "spid3r_" + pstem + ".o";
+        let rc = cg_emit_object_opts(cgst, obj_path, build_target, build_opt);
+        cg_dispose(cgst);
+        if rc != 0 {
+            eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
+            return 1;
+        }
+        let rt_res = resolve_and_verify_runtime_staticlib();
+        if rt_res[0] != 0 {
+            return rt_res[0];
+        }
+        let sl = rt_res[1];
+        let lc = link_executable_for_target(obj_path, out_path, sl, build_target, build_opt);
+        if lc != 0 {
+            // Propagate the driver's own exit code (2 = usage, the oracle's
+            // class for every build-driver failure).
+            return lc;
+        }
+        println("built " + out_path);
+        return 0;
+    }
 
-        if mode == "parse" {
-            print(program_to_json(path, prog));
+    // `check` and `registry`: the Phase-3 semantic surfaces. The oracle's
+    // error shape is `error[semantic]: msg` + the span line; the type-
+    // mismatch diagnostics carry an `= help:` line the oracle renders after
+    // the caret (decoration — carried here inside the message on a marker).
+    let has_main = false;
+    for s in prog[0] {
+        if s[0] == "Fn" and s[1][4] == "main" {
+            has_main = true;
+        }
+    }
+    let cst = new_checker(has_main, path);
+    try {
+        check_program(cst, prog);
+    } catch (e3) {
+        let phase = "semantic";
+        if e3.len() >= 5 {
+            phase = e3[4];
+        }
+        let pth = path;
+        if e3.len() >= 6 {
+            pth = e3[5];
+        }
+        let sp = null;
+        if e3[1] >= 0 {
+            sp = [e3[1], e3[2], e3[3]];
+        }
+        if chk_json {
+            print(
+                diag_to_json("error", phase, null, msg_of(e3), pth, sp, help_of(e3)) + "\n"
+            );
+        } else {
+            eprint("error[" + phase + "]: " + msg_of(e3) + "\n");
+            if e3[1] >= 0 {
+                eprint("  --> " + pth + ":" + string(e3[1]) + ":" + string(e3[2]) + "\n");
+            }
+            let h = help_of(e3);
+            if h != null {
+                eprint("  = help: " + h + "\n");
+            }
+        }
+        return 1;
+    }
+    if mode == "check" {
+        if chk_dump_registry {
+            print(registry_json(cst, prog, path));
             return 0;
         }
-
-        if mode == "lowered" {
-            // The oracle's --dump-lowered-json parses and lowers WITHOUT the
-            // semantic check — the port matches that pipeline exactly.
+        let reported = 0;
+        for w in warnings_of(cst) {
+            let skip = false;
+            for al in chk_allow {
+                if al == w[0] {
+                    skip = true;
+                    break;
+                }
+            }
+            if skip {
+                continue;
+            }
+            reported += 1;
+            if chk_json {
+                print(
+                    diag_to_json("warning", "semantic", w[0], w[2], path, w[1], null) + "\n"
+                );
+            } else {
+                eprint("warning[semantic]: " + w[2] + "\n");
+                eprint(
+                    "  --> " + path + ":" + string(w[1][0]) + ":" + string(w[1][1]) + "\n"
+                );
+            }
+        }
+        if chk_dump {
             let lst = new_lower();
             let lowered = lower_program(lst, prog);
             print(program_to_json(path, lowered));
-            return 0;
         }
-
-        if mode == "compile" or mode == "dist" {
-            // Phase 4.2/4.3: the bytecode compiler + the v3 checksummed container
-            // writer. Oracle pipeline: parse -> check -> lower -> compile ->
-            // serialize -> write. Byte-equality target: `spid3r compile <file>
-            // -o <out> --no-opt` (the optimizer is Phase 11 P-3's scope).
-            let has_main_c = false;
-            for s in prog[0] {
-                if s[0] == "Fn" and s[1][4] == "main" {
-                    has_main_c = true;
-                }
-            }
-            let cst2 = new_checker(has_main_c, path);
-            try {
-                check_program(cst2, prog);
-            } catch (e4) {
-                let phase = "semantic";
-                if e4.len() >= 5 {
-                    phase = e4[4];
-                }
-                eprint("error[" + phase + "]: " + msg_of(e4) + "\n");
-                if e4[1] >= 0 {
-                    eprint(
-                        "  --> " + path + ":" + string(e4[1]) + ":" + string(e4[2]) + "\n"
-                    );
-                }
-                return 1;
-            }
-            let lst2 = new_lower();
-            let lowered2 = lower_program(lst2, prog);
-            let embedded = [];
-            let keys = map();
-            let in_progress = [path];
-            let fr = null;
-            try {
-                fr = compile_one(cst2, lowered2, path, embedded, keys, in_progress, true);
-            } catch (e5) {
-                let phase = "semantic";
-                if e5.len() >= 5 {
-                    phase = e5[4];
-                }
-                let pth = path;
-                if e5.len() >= 6 {
-                    pth = e5[5];
-                }
-                eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
-                if e5[1] >= 0 {
-                    eprint("  --> " + pth + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n");
-                }
-                return 1;
-            }
-            let func = make_vmfunc(fr);
-            let bytes_out = serialize_vmfunc(func);
-            let out_path = build_out;
-            if out_path == null {
-                out_path = path.slice(0, path.len() - 7) + ".matrixc";
-                let argv = args();
-                if mode == "compile" and argv.len() >= 3 {
-                    out_path = argv[2];
-                }
-            }
-            let wb = write_bytes(out_path, bytes_from_ints(bytes_out));
-            if wb.is_err() {
-                eprint("error[vm]: cannot write '" + out_path + "'\n");
-                return 1;
-            }
-            if mode == "dist" {
-                print("wrote " + out_path + "\n");
-            } else {
-                print("wrote " + out_path);
-            }
-            return 0;
-        }
-
-        if mode == "native" or mode == "build" {
-            // Phase 5.2: the LLVM-C codegen. Oracle pipeline: parse -> check ->
-            // lower -> build_module -> LLVMTargetMachineEmitToFile -> link (the
-            // Phase-6.1 link.matrix argument set).
-            let has_main_n = false;
-            for s in prog[0] {
-                if s[0] == "Fn" and s[1][4] == "main" {
-                    has_main_n = true;
-                }
-            }
-            let cst3 = new_checker(has_main_n, path);
-            try {
-                check_program(cst3, prog);
-            } catch (e5) {
-                let phase = "semantic";
-                if e5.len() >= 5 {
-                    phase = e5[4];
-                }
-                eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
-                if e5[1] >= 0 {
-                    eprint(
-                        "  --> " + path + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n"
-                    );
-                }
-                let h5 = help_of(e5);
-                if h5 != null {
-                    eprint("  = help: " + h5 + "\n");
-                }
-                return 1;
-            }
-            // Phase 6.2: flatten `import` into one self-contained program before
-            // lowering + codegen (the oracle's build flow: parse -> check ->
-            // flatten -> lower -> build_module).
-            let flat_prog = null;
-            try {
-                flat_prog = flatten_imports(prog, path);
-            } catch (e7) {
-                let is_list = false;
-                try {
-                    let probe = e7[1] + 0;
-                    is_list = true;
-                } catch (ignored) {
-                    is_list = false;
-                }
-                if is_list {
-                    let phase = "semantic";
-                    if e7.len() >= 5 {
-                        phase = e7[4];
-                    }
-                    let pth = path;
-                    if e7.len() >= 6 {
-                        pth = e7[5];
-                    }
-                    eprint(
-                        "error[" + phase + "]: " + e7[0] + "
-                        "
-                    );
-                    eprint(
-                        "  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
-                        "
-                    );
-                } else {
-                    eprint(
-                        "error[internal]: " + e7 + "
-                        "
-                    );
-                }
-                return 1;
-            }
-            let lst3 = new_lower();
-            let lowered3 = lower_program(lst3, flat_prog);
-            let cgst = new_codegen();
-            try {
-                cg_build_module(cgst, lowered3, path);
-            } catch (e6) {
-                // Compiler errors are [msg, line, col, len, phase] lists; runtime
-                // errors are bare strings (an int line at [1] distinguishes them —
-                // a char + int add throws).
-                let is_list = false;
-                try {
-                    let probe = e6[1] + 0;
-                    is_list = true;
-                } catch (ignored) {
-                    is_list = false;
-                }
-                if is_list {
-                    eprint("error[" + e6[4] + "]: " + e6[0] + "\n");
-                } else {
-                    eprint("error[internal]: " + e6 + "\n");
-                }
-                return 1;
-            }
-            let pdir = "";
-            let pstem = path;
-            let ci2 = path.len() - 1;
-            while ci2 >= 0 {
-                let c2 = path[ci2];
-                if c2 == "/" or c2 == "\\" {
-                    pdir = path.slice(0, ci2 + 1);
-                    pstem = path.slice(ci2 + 1, path.len());
-                    break;
-                }
-                ci2 -= 1;
-            }
-            if pstem.len() > 7 and pstem.slice(pstem.len() - 7, pstem.len()) == ".matrix" {
-                pstem = pstem.slice(0, pstem.len() - 7);
-            }
-            let is_win_target = link_is_windows_host();
-            if build_target != null and build_target != "" {
-                is_win_target = build_target.contains("windows");
-            }
-            let out_path = build_out;
-            if out_path == null {
-                if mode == "build" {
-                    if is_win_target {
-                        out_path = pstem + ".exe";
-                    } else {
-                        out_path = pstem;
-                    }
-                } else {
-                    out_path = "a.out";
-                }
-            } else if mode == "build" and is_win_target {
-                // Match link.rs normalize_exe_path: extensionless -o gets .exe on Windows.
-                let base = out_path;
-                let bi = out_path.len() - 1;
-                while bi >= 0 {
-                    let bc = out_path[bi];
-                    if bc == "/" or bc == "\\" {
-                        base = out_path.slice(bi + 1, out_path.len());
-                        break;
-                    }
-                    bi -= 1;
-                }
-                let has_dot = false;
-                let di = 0;
-                while di < base.len() {
-                    if base[di] == "." {
-                        has_dot = true;
-                        break;
-                    }
-                    di += 1;
-                }
-                if not has_dot {
-                    out_path = out_path + ".exe";
-                }
-            }
-            let odir = "";
-            let ci3 = out_path.len() - 1;
-            while ci3 >= 0 {
-                let c3 = out_path[ci3];
-                if c3 == "/" or c3 == "\\" {
-                    odir = out_path.slice(0, ci3 + 1);
-                    break;
-                }
-                ci3 -= 1;
-            }
-            let obj_path = odir + "spid3r_" + pstem + ".o";
-            let rc = cg_emit_object_opts(cgst, obj_path, build_target, build_opt);
-            cg_dispose(cgst);
-            if rc != 0 {
-                eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
-                return 1;
-            }
-            let rt_res = resolve_and_verify_runtime_staticlib();
-            if rt_res[0] != 0 {
-                return rt_res[0];
-            }
-            let sl = rt_res[1];
-            let lc = link_executable_for_target(obj_path, out_path, sl, build_target, build_opt);
-            if lc != 0 {
-                // Propagate the driver's own exit code (2 = usage, the oracle's
-                // class for every build-driver failure).
-                return lc;
-            }
-            println("built " + out_path);
-            return 0;
-        }
-
-        // `check` and `registry`: the Phase-3 semantic surfaces. The oracle's
-        // error shape is `error[semantic]: msg` + the span line; the type-
-        // mismatch diagnostics carry an `= help:` line the oracle renders after
-        // the caret (decoration — carried here inside the message on a marker).
-        let has_main = false;
-        for s in prog[0] {
-            if s[0] == "Fn" and s[1][4] == "main" {
-                has_main = true;
-            }
-        }
-        let cst = new_checker(has_main, path);
-        try {
-            check_program(cst, prog);
-        } catch (e3) {
-            let phase = "semantic";
-            if e3.len() >= 5 {
-                phase = e3[4];
-            }
-            let pth = path;
-            if e3.len() >= 6 {
-                pth = e3[5];
-            }
-            let sp = null;
-            if e3[1] >= 0 {
-                sp = [e3[1], e3[2], e3[3]];
-            }
+        if chk_deny_warnings and reported > 0 {
+            let msg = string(reported) + " warning(s) treated as errors because --deny-warnings was given";
             if chk_json {
-                print(
-                    diag_to_json("error", phase, null, msg_of(e3), pth, sp, help_of(e3)) + "\n"
-                );
+                print(diag_to_json("error", "semantic", null, msg, path, null, null) + "\n");
             } else {
-                eprint("error[" + phase + "]: " + msg_of(e3) + "\n");
-                if e3[1] >= 0 {
-                    eprint("  --> " + pth + ":" + string(e3[1]) + ":" + string(e3[2]) + "\n");
-                }
-                let h = help_of(e3);
-                if h != null {
-                    eprint("  = help: " + h + "\n");
-                }
+                eprint("error[semantic]: " + msg + "\n");
             }
             return 1;
         }
-        if mode == "check" {
-            if chk_dump_registry {
-                print(registry_json(cst, prog, path));
-                return 0;
-            }
-            let reported = 0;
-            for w in warnings_of(cst) {
-                let skip = false;
-                for al in chk_allow {
-                    if al == w[0] {
-                        skip = true;
-                        break;
-                    }
-                }
-                if skip {
-                    continue;
-                }
-                reported += 1;
-                if chk_json {
-                    print(
-                        diag_to_json("warning", "semantic", w[0], w[2], path, w[1], null) + "\n"
-                    );
-                } else {
-                    eprint("warning[semantic]: " + w[2] + "\n");
-                    eprint(
-                        "  --> " + path + ":" + string(w[1][0]) + ":" + string(w[1][1]) + "\n"
-                    );
-                }
-            }
-            if chk_dump {
-                let lst = new_lower();
-                let lowered = lower_program(lst, prog);
-                print(program_to_json(path, lowered));
-            }
-            if chk_deny_warnings and reported > 0 {
-                let msg = string(reported) + " warning(s) treated as errors because --deny-warnings was given";
-                if chk_json {
-                    print(diag_to_json("error", "semantic", null, msg, path, null, null) + "\n");
-                } else {
-                    eprint("error[semantic]: " + msg + "\n");
-                }
-                return 1;
-            }
-            if not chk_json {
-                println(path + ": ok");
-            }
-            return 0;
+        if not chk_json {
+            println(path + ": ok");
         }
-        print(registry_json(cst, prog, path));
         return 0;
     }
+    print(registry_json(cst, prog, path));
+    return 0;
+}
 
 fn sh_collect_matrix_files(dir) {
     let r = list_dir(dir);
