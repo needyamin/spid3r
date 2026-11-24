@@ -123,6 +123,7 @@ COMMANDS:
                                            go-to-definition, symbols,
                                            completion, formatting)
     info [--json|--html] [--no-redact]     Runtime information (spid3rinfo)
+    neofetch [--no-color]                  System and toolchain banner
     config [get KEY | set KEY VALUE | list | path | validate | reload | init]
                                            Read and write spid3r.ini
     control [status|safety|ini|config|logs]
@@ -400,6 +401,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
 
     let outcome = match cmd.as_str() {
         "info" => cmd_info(&rest),
+        "neofetch" => cmd_neofetch(&rest),
         "config" => cmd_config(&rest),
         #[cfg(not(target_arch = "wasm32"))]
         "control" => Ok(crate::control::cmd_control(&rest)),
@@ -860,6 +862,16 @@ OPTIONS:
     --json                 Emit JSON instead of HTML
     --private              Include private declarations
     -o, --out <path>       Write output to file or directory (default: stdout)
+    -h, --help             Print help information
+"),
+        "neofetch" => Some("\
+spid3r neofetch - Display system and toolchain banner
+
+USAGE:
+    spid3r neofetch [options]
+
+OPTIONS:
+    --no-color             Disable ANSI colors
     -h, --help             Print help information
 "),
         _ => None,
@@ -2961,6 +2973,27 @@ fn cmd_info(args: &[String]) -> Result<i32, Diagnostic> {
             println!("wrote {}", path.display());
         }
     }
+    Ok(EXIT_OK)
+}
+
+/// `spid3r neofetch [--no-color]`
+fn cmd_neofetch(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut no_color = false;
+    for arg in args {
+        match arg.as_str() {
+            "--no-color" => no_color = true,
+            "--help" | "-h" => {
+                if let Some(help_text) = subcommand_help("neofetch") {
+                    print!("{}", help_text);
+                }
+                return Ok(EXIT_OK);
+            }
+            other => {
+                return Err(usage(&format!("neofetch: unknown flag '{}'", other)));
+            }
+        }
+    }
+    crate::runtime_info::neofetch::print_for_cli(no_color);
     Ok(EXIT_OK)
 }
 

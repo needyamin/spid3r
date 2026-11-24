@@ -30,7 +30,7 @@ use super::ops::{field, jstr};
 /// without a panel decision.
 const ALLOWED: &[&str] = &[
     "run", "check", "compile", "build", "test", "fmt", "doc", "disasm", "exec", "modules", "init",
-    "install", "pack", "unpack", "dist", "bench", "info", "version", "magic", "bundle",
+    "install", "pack", "unpack", "dist", "bench", "info", "neofetch", "version", "magic", "bundle",
     // Package / registry one-shots and module tooling (parity with the CLI).
     "add", "publish", "remove", "search", "verify", "tree", "help",
     // Stage-0 oracle dumps (SH-5): deterministic captured-output one-shots,
