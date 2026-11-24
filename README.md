@@ -47,7 +47,7 @@ Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`**
 
 ## Ecosystem
 
-![Seven routes by which third-party code reaches a Spid3r program](docs/diagrams/ecosystem.svg)
+![Four routes by which third-party code reaches a Spid3r program](docs/diagrams/ecosystem.svg)
 
 | Route | Trust | Status |
 |---|---|---|
@@ -94,11 +94,11 @@ See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirem
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | `102,312` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,304` lines) |
+| **Implementation** | `127,005` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `22,301` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · `.matrixc` container with SHA-256 integrity |
-| **Standard library** | `26` `.matrix` modules + `254` built-in native entries (linked via `87` AOT C-ABI trampolines) |
-| **Tests** | `1,394` Rust/integration tests (`1,367` core · `13` GUI · `14` native AOT) · 3-engine differential + `134`-program frozen selfhost corpus |
+| **Standard library** | `26` `.matrix` modules + `254` built-in native entries (linked via `117` AOT C-ABI trampolines) |
+| **Tests** | `1,426` Rust/integration tests (`1,381` core · `18` GUI · `27` native AOT) · 3-engine differential + `136`-program frozen selfhost corpus |
 | **Self-hosting** | Stage 1 → Stage 2 → Stage 3 `spid3r_main.o` bit-identical fixed point & SHA-256 runtime pin ([docs/selfhost/](docs/selfhost/README.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
 | **Binary** | `spid3r` (`~12.4 MB`) + self-hosted `spid3r-self` (`~5.1 MB`) · static CRT on Windows · no installed runtime needed |
@@ -160,7 +160,7 @@ cargo install --path . --no-default-features
 | `spid3r compile` · `gui` · `exec` · `bench` | `.matrixc` bytecode, windowed app, executor, benchmarks |
 | `spid3r disasm app.matrixc` | bytecode disassembly (`exit 4` if corrupt) |
 | `spid3r pack` · `unpack` · `verify-runtime` | `tar+sha256` packages, runtime pin verify |
-| `spid3r info` · `config` · `control` | build metadata, `spid3r.ini` settings, local control surface |
+| `spid3r info` · `neofetch` · `config` · `control` | build metadata, system banner, `spid3r.ini` settings, local control surface |
 
 ### Exit codes
 
@@ -173,7 +173,7 @@ cargo install --path . --no-default-features
 
 - **Limits:** `--budget` / `--max-steps` caps work on tree/VM; `--max-call-depth` caps recursion (AOT enforces the 1,000-depth limit without step budgets).
 - **Integrity:** `.matrixc` bytecode and `spid3r_lang` staticlibs verify SHA-256 digests on load (`exit 4` on mismatch).
-- **Config pin (`SPID3R_INI`):** authoritative when non-empty; if missing or unreadable, execution commands exit `1` while `--version`, `help`, `info`, `config path`, and `config validate` stay usable for diagnosis.
+- **Config pin (`SPID3R_INI`):** authoritative when non-empty; if missing or unreadable, execution commands exit `1` while `--version`, `help`, `info`, `neofetch`, `config path`, and `config validate` stay usable for diagnosis.
 
 ## Documentation
 

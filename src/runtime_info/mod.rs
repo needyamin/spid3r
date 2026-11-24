@@ -3127,7 +3127,7 @@ pub(crate) mod host_probes {
         use super::HostSnapshot;
         #[cfg(target_os = "linux")]
         use std::collections::HashSet;
-        use std::ffi::{c_char, c_ulong, CStr};
+        use std::ffi::{c_char, c_ulong};
         #[cfg(target_os = "linux")]
         use std::thread;
         #[cfg(target_os = "linux")]
@@ -3224,18 +3224,21 @@ pub(crate) mod host_probes {
         }
 
         fn root_disk() -> (Option<u64>, Option<u64>) {
-            let cpath = CStr::from_bytes_with_nul(b"/\0").unwrap();
+            let cpath = c"/";
             // SAFETY: `StatVfs` is a plain C POD struct where zero initialization is valid.
             let mut st: StatVfs = unsafe { std::mem::zeroed() };
             // SAFETY: `cpath` is valid NUL-terminated `"/"` and `st` is properly sized.
             if unsafe { statvfs(cpath.as_ptr(), &mut st) } == 0 && st.f_blocks > 0 {
+                #[allow(clippy::unnecessary_cast)]
                 let unit = if st.f_frsize > 0 {
-                    u64::from(st.f_frsize)
+                    st.f_frsize as u64
                 } else {
-                    u64::from(st.f_bsize)
+                    st.f_bsize as u64
                 };
-                let total = u64::from(st.f_blocks).saturating_mul(unit);
-                let avail = u64::from(st.f_bfree).saturating_mul(unit);
+                #[allow(clippy::unnecessary_cast)]
+                let total = (st.f_blocks as u64).saturating_mul(unit);
+                #[allow(clippy::unnecessary_cast)]
+                let avail = (st.f_bfree as u64).saturating_mul(unit);
                 (Some(total.saturating_sub(avail)), Some(total))
             } else {
                 (None, None)

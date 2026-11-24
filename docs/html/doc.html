@@ -1989,6 +1989,12 @@
                   <code>--html</code>, <code>--no-redact</code> (local operator only). Same collector as
                   <code>spid3rinfo()</code>.</td>
               </tr>
+              <tr id="cli-neofetch">
+                <td><code>spid3r neofetch</code></td>
+                <td><code>spid3r neofetch --no-color</code></td>
+                <td>Compact two-column system, hardware, power/battery, network, and toolchain banner using native OS
+                  probes with zero external dependencies. Respects <code>--no-color</code> and <code>NO_COLOR</code>.</td>
+              </tr>
               <tr id="cli-config">
                 <td><code>spid3r config</code></td>
                 <td><code>spid3r config get spid3r.engine</code></td>
@@ -5864,11 +5870,10 @@ errors.level = warn
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
-            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned spid3r_lang runtime staticlib ABI (254 natives; original 87-trampoline baseline shown, expanded to 117 C-ABI trampolines in src/native/rt.rs), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned spid3r_lang runtime staticlib ABI (117 C-ABI trampolines and 254 stdlib natives in src/native/rt.rs), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
           <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
-            coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI (the diagram
-            shows the original 87-trampoline baseline; <code>src/native/rt.rs</code> now exports 117 C-ABI
-            trampolines alongside 254 stdlib natives).</figcaption>
+            coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI (<code>117</code>
+            C-ABI trampolines alongside <code>254</code> stdlib natives).</figcaption>
         </figure>
 
         <figure class="diagram">

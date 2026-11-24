@@ -71,6 +71,13 @@ step "Rustfmt check" cargo fmt --all -- --check
 step "Clippy (core, zero-deps)" cargo clippy --no-default-features --all-targets -- -D warnings
 step "Clippy (gui feature)" cargo clippy --no-default-features --features gui --all-targets -- -D warnings
 step "Clippy (native feature)" cargo clippy --all-targets --features native -- -D warnings
+INSTALLED_TARGETS="$(rustup target list --installed 2>/dev/null || true)"
+for cross_t in x86_64-unknown-linux-gnu x86_64-apple-darwin; do
+  if [ "$cross_t" != "$HOST_TRIPLE" ] && printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$cross_t"; then
+    step "Clippy (cross-target $cross_t, zero-deps)" \
+      cargo clippy --target "$cross_t" --lib --no-default-features -- -D warnings
+  fi
+done
 
 # 5-7: Core, GUI, and Native test suites.
 step "Tests (core, zero-deps)" cargo test --no-default-features
