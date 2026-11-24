@@ -584,6 +584,22 @@ pub fn read_i16(code: &[u8], ip: usize) -> (i16, usize) {
     (v, ip + 2)
 }
 
+fn safe_read_u8(code: &[u8], ip: usize) -> Option<(u8, usize)> {
+    code.get(ip).copied().map(|v| (v, ip + 1))
+}
+
+fn safe_read_u16(code: &[u8], ip: usize) -> Option<(u16, usize)> {
+    let lo = *code.get(ip)?;
+    let hi = *code.get(ip + 1)?;
+    Some((u16::from_le_bytes([lo, hi]), ip + 2))
+}
+
+fn safe_read_i16(code: &[u8], ip: usize) -> Option<(i16, usize)> {
+    let lo = *code.get(ip)?;
+    let hi = *code.get(ip + 1)?;
+    Some((i16::from_le_bytes([lo, hi]), ip + 2))
+}
+
 // ----------------------------------------------------------------- disasm
 
 /// Human-readable disassembly, used by `compile --dump` and debugging.
@@ -607,36 +623,55 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
         let start = ip;
         let (op, mut o) = read_op(&chunk.code, ip);
         out.push_str(&format!("{}  {:04}: ", indent, start));
+        let mut trunc = false;
         match op {
             OpCode::Constant => {
-                let (c, no) = read_u16(&chunk.code, o);
-                o = no;
-                out.push_str(&format!(
-                    "CONSTANT {} ({})",
-                    c,
-                    display_const(&chunk.constants[c as usize])
-                ));
+                if let Some((c, no)) = safe_read_u16(&chunk.code, o) {
+                    o = no;
+                    let rendered = match chunk.constants.get(c as usize) {
+                        Some(v) => display_const(v),
+                        None => format!("<oob #{}>", c),
+                    };
+                    out.push_str(&format!("CONSTANT {} ({})", c, rendered));
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::GetLocal | OpCode::SetLocal | OpCode::GetUpvalue | OpCode::SetUpvalue => {
-                let (s, no) = read_u8(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} slot {}", op, s));
+                if let Some((s, no)) = safe_read_u8(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} slot {}", op, s));
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::CaptureSync => {
-                let (s, no) = read_u8(&chunk.code, o);
-                let (u, no2) = read_u8(&chunk.code, no);
-                o = no2;
-                out.push_str(&format!("{:?} slot {} cell {}", op, s, u));
+                if let Some((s, no)) = safe_read_u8(&chunk.code, o) {
+                    if let Some((u, no2)) = safe_read_u8(&chunk.code, no) {
+                        o = no2;
+                        out.push_str(&format!("{:?} slot {} cell {}", op, s, u));
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::Uncapture => {
-                let (s, no) = read_u8(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} slot {}", op, s));
+                if let Some((s, no)) = safe_read_u8(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} slot {}", op, s));
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::Rotate => {
-                let (n, no) = read_u8(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} depth {}", op, n));
+                if let Some((n, no)) = safe_read_u8(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} depth {}", op, n));
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::GetGlobal
             | OpCode::SetGlobal
@@ -648,44 +683,110 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
             | OpCode::Import
             | OpCode::DefineConst
             | OpCode::Class => {
-                let (c, no) = read_u16(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} {}", op, c));
+                if let Some((c, no)) = safe_read_u16(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} {}", op, c));
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::ImportAs => {
-                let (c1, no) = read_u16(&chunk.code, o);
-                let (c2, no2) = read_u16(&chunk.code, no);
-                o = no2;
-                out.push_str(&format!("{:?} {} alias {}", op, c1, c2));
+                if let Some((c1, no)) = safe_read_u16(&chunk.code, o) {
+                    if let Some((c2, no2)) = safe_read_u16(&chunk.code, no) {
+                        o = no2;
+                        out.push_str(&format!("{:?} {} alias {}", op, c1, c2));
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::SuperCtor => {
-                let (c, no) = read_u16(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} {}", op, c));
+                if let Some((c, no)) = safe_read_u16(&chunk.code, o) {
+                    if let Some((a, no2)) = safe_read_u8(&chunk.code, no) {
+                        o = no2;
+                        out.push_str(&format!("{:?} {} argc {}", op, c, a));
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::SuperMethod => {
-                let (c1, no) = read_u16(&chunk.code, o);
-                let (c2, no2) = read_u16(&chunk.code, no);
-                o = no2;
-                out.push_str(&format!("{:?} {} method {}", op, c1, c2));
+                if let Some((c1, no)) = safe_read_u16(&chunk.code, o) {
+                    if let Some((c2, no2)) = safe_read_u16(&chunk.code, no) {
+                        if let Some((a, no3)) = safe_read_u8(&chunk.code, no2) {
+                            o = no3;
+                            out.push_str(&format!("{:?} {} method {} argc {}", op, c1, c2, a));
+                        } else {
+                            trunc = true;
+                        }
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::Construct | OpCode::Invoke => {
-                let (c, no) = read_u16(&chunk.code, o);
-                let (a, no2) = read_u8(&chunk.code, no);
-                o = no2;
-                out.push_str(&format!("{:?} {} argc {}", op, c, a));
+                if let Some((c, no)) = safe_read_u16(&chunk.code, o) {
+                    if let Some((a, no2)) = safe_read_u8(&chunk.code, no) {
+                        o = no2;
+                        out.push_str(&format!("{:?} {} argc {}", op, c, a));
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Loop => {
-                let (j, no) = read_i16(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} {}", op, j));
+                if let Some((j, no)) = safe_read_i16(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} {}", op, j));
+                } else {
+                    trunc = true;
+                }
+            }
+            OpCode::Try => {
+                if let Some((has_catch, no)) = safe_read_u8(&chunk.code, o) {
+                    if let Some((catch_slot, no2)) = safe_read_u8(&chunk.code, no) {
+                        if let Some((catch_off, no3)) = safe_read_i16(&chunk.code, no2) {
+                            if let Some((finally_off, no4)) = safe_read_i16(&chunk.code, no3) {
+                                o = no4;
+                                out.push_str(&format!(
+                                    "{:?} catch={} slot {} catch_off {} finally_off {}",
+                                    op, has_catch, catch_slot, catch_off, finally_off
+                                ));
+                            } else {
+                                trunc = true;
+                            }
+                        } else {
+                            trunc = true;
+                        }
+                    } else {
+                        trunc = true;
+                    }
+                } else {
+                    trunc = true;
+                }
             }
             OpCode::Call => {
-                let (a, no) = read_u8(&chunk.code, o);
-                o = no;
-                out.push_str(&format!("{:?} argc {}", op, a));
+                if let Some((a, no)) = safe_read_u8(&chunk.code, o) {
+                    o = no;
+                    out.push_str(&format!("{:?} argc {}", op, a));
+                } else {
+                    trunc = true;
+                }
             }
             _ => out.push_str(&format!("{:?}", op)),
+        }
+        if trunc {
+            out.push_str(&format!("{:?} <truncated>", op));
+            out.push('\n');
+            break;
         }
         out.push('\n');
         ip = o;
@@ -698,7 +799,9 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
         for (mname, _vis, fidx, is_ctor) in &c.methods {
             let tag = if *is_ctor { " (ctor)" } else { "" };
             let sub = format!("{} class#{}.{}{}", name, i, mname, tag);
-            disassemble_into(&chunk.functions[*fidx as usize].chunk, &sub, out, depth + 1);
+            if let Some(proto) = chunk.functions.get(*fidx as usize) {
+                disassemble_into(&proto.chunk, &sub, out, depth + 1);
+            }
         }
     }
 }
@@ -1930,5 +2033,35 @@ mod tests {
         assert!(matches!(back.defaults[1], Value::Bool(true)));
         assert!(matches!(back.defaults[2], Value::Null));
         assert!(matches!(back.defaults[3], Value::Bool(false)));
+    }
+
+    #[test]
+    fn disassemble_consumes_exact_operand_len_for_every_opcode() {
+        for b in 0u8..=59 {
+            let op = OpCode::from_u8(b).expect("valid opcode");
+            let mut c = Chunk::new();
+            if op == OpCode::Constant {
+                c.constants.push(Value::Int(42));
+            }
+            c.code.push(b);
+            c.code.extend(std::iter::repeat_n(0u8, operand_len(op)));
+            c.code.push(OpCode::Return as u8);
+            let out = disassemble(&c, "op_walk");
+            let insn_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("  0")).collect();
+            assert_eq!(
+                insn_lines.len(),
+                2,
+                "opcode {:?} (operand_len={}) desynchronized disassembly:\n{}",
+                op,
+                operand_len(op),
+                out
+            );
+            assert!(
+                insn_lines[1].contains("Return"),
+                "opcode {:?} trailing op not Return:\n{}",
+                op,
+                out
+            );
+        }
     }
 }

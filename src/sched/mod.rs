@@ -221,6 +221,11 @@ pub fn current_task_cancelled() -> bool {
     })
 }
 
+/// True when executing inside a worker job launched by `spawn`.
+pub fn in_spawned_task() -> bool {
+    CURRENT_TASK.with(|c| c.borrow().is_some())
+}
+
 /// Stash the thrown value behind the String error the current operation is
 /// about to return (no-op when the error is not a user throw).
 pub fn stash_error_thrown(v: Option<Value>) {

@@ -269,6 +269,108 @@ fn default_memory_limit_is_unlimited() {
     }
 }
 
+#[test]
+fn memory_limit_and_allocation_cap_stop_doubling_without_abort() {
+    let dir = scratch_dir("mem_doubling");
+    let str_catch = write_in(
+        &dir,
+        "str_catch.matrix",
+        r#"fn main() {
+    let s = "ab";
+    let i = 0;
+    try {
+        while i < 40 {
+            s += s;
+            i += 1;
+        }
+        return 2;
+    } catch e {
+        s = "";
+        println("caught:" + string(e));
+        return 0;
+    }
+}
+"#,
+    );
+    let list_catch = write_in(
+        &dir,
+        "list_catch.matrix",
+        r#"fn main() {
+    let l = [0];
+    let i = 0;
+    try {
+        while i < 40 {
+            l.append(l);
+            i += 1;
+        }
+        return 2;
+    } catch e {
+        l = null;
+        println("caught:" + string(e));
+        return 0;
+    }
+}
+"#,
+    );
+    let cap_ini = write_in(&dir, "cap8.ini", "[memory]\nallocation_cap_mb = 8\n");
+
+    for engine in ["tree", "vm"] {
+        for (p, kind) in [(&str_catch, "str"), (&list_catch, "list")] {
+            let start = std::time::Instant::now();
+            let (code, out, err) = run_with_engine(
+                engine,
+                &[("SPID3R_RUNTIME_MEMORY_LIMIT_MB", "64")],
+                &["run", p],
+            );
+            assert_eq!(code, 0, "[{engine} {kind} mem64] err: {err}\nout: {out}");
+            assert!(
+                out.contains("caught:out of memory: script exceeded memory_limit_mb (64)"),
+                "[{engine} {kind} mem64] out: {out}"
+            );
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+
+            let start_cap = std::time::Instant::now();
+            let (code2, out2, err2) =
+                run_with_engine(engine, &[("SPID3R_INI", cap_ini.as_str())], &["run", p]);
+            assert_eq!(code2, 0, "[{engine} {kind} cap8] err: {err2}\nout: {out2}");
+            assert!(
+                out2.contains("allocation limit exceeded"),
+                "[{engine} {kind} cap8] out: {out2}"
+            );
+            assert!(start_cap.elapsed() < std::time::Duration::from_secs(2));
+        }
+    }
+}
+
+#[test]
+fn wall_clock_stops_waiting_event_loop_run() {
+    let dir = scratch_dir("ev_wall");
+    let src = r#"fn main() {
+    let t = after_ms(5000);
+    on_timer(t, fn(id) { return null; });
+    event_loop_run();
+    return 0;
+}
+"#;
+    let p = write_in(&dir, "ev_wait.matrix", src);
+    let ini = write_in(&dir, "wc.ini", "[runtime]\nwall_clock_limit_ms = 350\n");
+    for engine in ["tree", "vm"] {
+        let start = std::time::Instant::now();
+        let (code, _out, err) =
+            run_with_engine(engine, &[("SPID3R_INI", ini.as_str())], &["run", &p]);
+        assert_eq!(code, 1, "[{engine}] expected wall-clock failure: {err}");
+        assert!(
+            err.contains("wall-clock limit exceeded (350 ms)"),
+            "[{engine}] {err}"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "[{engine}] blocked for {:?}",
+            start.elapsed()
+        );
+    }
+}
+
 // ------------------------------------------- errors.display / debug.log_stdout
 
 /// The log line `spid3r gui <missing>` writes (record_error -> "cli: …").

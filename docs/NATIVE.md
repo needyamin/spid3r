@@ -251,8 +251,10 @@ zero", or from a nested compiled call) skips the rest of the region exactly
 like the tree/VM engines. Operation errors (e.g. `unwrap` on `none`) become
 catchable string exceptions. A `throw` with no active `try` propagates out via
 the function call chain and is reported as an uncaught throw at the top level
-(exit code 1); the interpreter's per-instruction call-stack trace is the one
-diagnostic AOT cannot reproduce.
+(exit code 1). AOT binaries do not embed a source line table, so uncaught
+runtime errors (`rt_throw_v2` / `spid3r_abort`) match VM/tree on stdout,
+diagnostic phase, error message, and exit code, while omitting the source
+snippet caret and call-stack trace that the VM and tree interpreter print.
 
 ### Modules
 

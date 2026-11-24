@@ -549,3 +549,131 @@ fn exit_code_contract() {
     let (code, _, _) = run(&["disasm", p.to_str().unwrap()]);
     assert_eq!(code, 4);
 }
+
+#[test]
+fn disasm_and_compile_dump_handle_try_catch_super_and_shipped_examples() {
+    let dir = scratch_dir("disasm_try_super");
+    let src = r#"class Base {
+    public fn greet(self, name) {
+        return "hi " + name;
+    }
+}
+
+class Child extends Base {
+    public fn greet(self, name) {
+        try {
+            if name == "" { throw "empty"; }
+            return super.greet(name);
+        } catch (e) {
+            return "err:" + string(e);
+        }
+    }
+}
+
+fn main() {
+    let c = Child();
+    println(c.greet("spid3r"));
+    return 0;
+}
+"#;
+    let p = write_in(&dir, "super_try.matrix", src);
+    let outc = dir.join("super_try.matrixc");
+    let (code, dump, err) = run(&[
+        "compile",
+        "--dump",
+        p.to_str().unwrap(),
+        "-o",
+        outc.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "compile --dump failed: {err}");
+    assert!(dump.contains("Try"), "expected Try in dump:\n{dump}");
+    assert!(
+        dump.contains("SuperMethod") && dump.contains("argc"),
+        "expected SuperMethod with argc in dump:\n{dump}"
+    );
+    let (code, dis, err) = run(&["disasm", outc.to_str().unwrap()]);
+    assert_eq!(code, 0, "disasm failed: {err}");
+    assert!(dis.contains("Try") && dis.contains("SuperMethod"), "{dis}");
+
+    for ex in [
+        "examples/error_handling.matrix",
+        "examples/graph.matrix",
+        "examples/map.matrix",
+        "examples/stack.matrix",
+    ] {
+        let ex_out = dir.join(format!(
+            "{}.matrixc",
+            std::path::Path::new(ex)
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+        ));
+        let (code, _, err) = run(&["compile", "--dump", ex, "-o", ex_out.to_str().unwrap()]);
+        assert_eq!(code, 0, "compile --dump {ex} failed: {err}");
+        let (code, _, err) = run(&["disasm", ex_out.to_str().unwrap()]);
+        assert_eq!(code, 0, "disasm {ex} failed: {err}");
+    }
+}
+
+#[test]
+fn exponential_string_and_list_doubling_never_aborts_under_budget() {
+    let dir = scratch_dir("oom_budget");
+    let str_file = write_in(
+        &dir,
+        "oom_str.matrix",
+        r#"fn main() {
+    let s = "ab";
+    let i = 0;
+    while i < 40 {
+        s += s;
+        i += 1;
+    }
+    return 0;
+}
+"#,
+    );
+    let list_file = write_in(
+        &dir,
+        "oom_list.matrix",
+        r#"fn main() {
+    let l = [0];
+    let i = 0;
+    while i < 40 {
+        l.append(l);
+        i += 1;
+    }
+    return 0;
+}
+"#,
+    );
+
+    for engine in ["tree", "vm"] {
+        for target in [&str_file, &list_file] {
+            let start = std::time::Instant::now();
+            let mut args = vec!["run", "--budget", "500"];
+            if engine == "vm" {
+                args.push("--engine");
+                args.push("vm");
+            }
+            args.push(target.to_str().unwrap());
+            let (code, _out, err) = run(&args);
+            assert_eq!(
+                code,
+                1,
+                "[{engine} {}] expected clean exit 1 (not abort), stderr: {err}",
+                target.display()
+            );
+            assert!(
+                err.contains("out of memory") || err.contains("execution budget exhausted"),
+                "[{engine} {}] expected catchable OOM or budget error, got: {err}",
+                target.display()
+            );
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "[{engine} {}] took {:?}",
+                target.display(),
+                start.elapsed()
+            );
+        }
+    }
+}

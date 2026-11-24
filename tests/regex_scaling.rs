@@ -128,9 +128,10 @@ fn anchors_keep_their_meaning() {
 }
 "#;
     let (out, _) = run_within(src, "anchors", Duration::from_secs(10));
+    // `$` matches empty string at end-of-input, so `regex_replace("$", "abc", "<>")` -> "abc<>".
     assert_eq!(
         out.trim(),
-        "true\n0\ntrue\n0\ntrue\nfalse\ntrue\nfalse\nabc\n<>abc",
+        "true\n0\ntrue\n0\ntrue\nfalse\ntrue\nfalse\nabc<>\n<>abc",
         "anchor semantics drifted"
     );
 }

@@ -136,8 +136,201 @@ pub struct SymbolDoc {
     pub vis: &'static str,
     pub signature: String,
     pub doc: Option<String>,
+    pub failure_mode: Option<&'static str>,
     pub line: u32,
     pub children: Vec<SymbolDoc>,
+}
+
+fn scan_return_expr(
+    e: &ast::Expr,
+    has_throw: &mut bool,
+    has_result: &mut bool,
+    has_option: &mut bool,
+) {
+    match e {
+        ast::Expr::Call { callee, .. } => {
+            if let ast::Expr::Ident(name, _) = &**callee {
+                match name.as_str() {
+                    "ok" | "err" => *has_result = true,
+                    "some" => *has_option = true,
+                    _ => {}
+                }
+            }
+        }
+        ast::Expr::Ident(name, _) if name == "none" => *has_option = true,
+        ast::Expr::If { then, els, .. } => {
+            scan_stmts_failure(&then.stmts, has_throw, has_result, has_option);
+            if let Some(Stmt::Expr(tail)) = then.stmts.last() {
+                scan_return_expr(tail, has_throw, has_result, has_option);
+            }
+            if let Some(b) = els {
+                scan_stmts_failure(&b.stmts, has_throw, has_result, has_option);
+                if let Some(Stmt::Expr(tail)) = b.stmts.last() {
+                    scan_return_expr(tail, has_throw, has_result, has_option);
+                }
+            }
+        }
+        ast::Expr::Match { arms, .. } => {
+            for arm in arms {
+                scan_stmts_failure(&arm.body.stmts, has_throw, has_result, has_option);
+                if let Some(Stmt::Expr(tail)) = arm.body.stmts.last() {
+                    scan_return_expr(tail, has_throw, has_result, has_option);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_expr_blocks(
+    e: &ast::Expr,
+    has_throw: &mut bool,
+    has_result: &mut bool,
+    has_option: &mut bool,
+) {
+    match e {
+        ast::Expr::If {
+            cond, then, els, ..
+        } => {
+            scan_expr_blocks(cond, has_throw, has_result, has_option);
+            scan_stmts_failure(&then.stmts, has_throw, has_result, has_option);
+            if let Some(b) = els {
+                scan_stmts_failure(&b.stmts, has_throw, has_result, has_option);
+            }
+        }
+        ast::Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            scan_expr_blocks(scrutinee, has_throw, has_result, has_option);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_blocks(g, has_throw, has_result, has_option);
+                }
+                scan_stmts_failure(&arm.body.stmts, has_throw, has_result, has_option);
+            }
+        }
+        ast::Expr::Call { callee, args, .. } => {
+            scan_expr_blocks(callee, has_throw, has_result, has_option);
+            for a in args {
+                scan_expr_blocks(a, has_throw, has_result, has_option);
+            }
+        }
+        ast::Expr::Binary { l, r, .. }
+        | ast::Expr::Logical { l, r, .. }
+        | ast::Expr::Coalesce { l, r, .. } => {
+            scan_expr_blocks(l, has_throw, has_result, has_option);
+            scan_expr_blocks(r, has_throw, has_result, has_option);
+        }
+        ast::Expr::Unary { expr, .. } | ast::Expr::Propagate(expr, _) => {
+            scan_expr_blocks(expr, has_throw, has_result, has_option);
+        }
+        ast::Expr::Assign { target, value, .. } => {
+            scan_expr_blocks(target, has_throw, has_result, has_option);
+            scan_expr_blocks(value, has_throw, has_result, has_option);
+        }
+        _ => {}
+    }
+}
+
+fn scan_stmts_failure(
+    stmts: &[Stmt],
+    has_throw: &mut bool,
+    has_result: &mut bool,
+    has_option: &mut bool,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Throw { .. } => *has_throw = true,
+            Stmt::Return { value: Some(e), .. } => {
+                scan_expr_blocks(e, has_throw, has_result, has_option);
+                scan_return_expr(e, has_throw, has_result, has_option);
+            }
+            Stmt::Let { value: Some(e), .. } | Stmt::Const { value: e, .. } | Stmt::Expr(e) => {
+                scan_expr_blocks(e, has_throw, has_result, has_option);
+            }
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                ..
+            } => {
+                scan_expr_blocks(cond, has_throw, has_result, has_option);
+                scan_stmts_failure(&then.stmts, has_throw, has_result, has_option);
+                for (c, b) in elifs {
+                    scan_expr_blocks(c, has_throw, has_result, has_option);
+                    scan_stmts_failure(&b.stmts, has_throw, has_result, has_option);
+                }
+                if let Some(b) = els {
+                    scan_stmts_failure(&b.stmts, has_throw, has_result, has_option);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::ForC { body, .. } | Stmt::ForIn { body, .. } => {
+                scan_stmts_failure(&body.stmts, has_throw, has_result, has_option);
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                // Only unguarded throws outside a catching try block escape;
+                // still scan catch and finally blocks for rethrows / returns.
+                if catch.is_none() {
+                    scan_stmts_failure(&body.stmts, has_throw, has_result, has_option);
+                } else {
+                    let mut ignored_throw = false;
+                    scan_stmts_failure(&body.stmts, &mut ignored_throw, has_result, has_option);
+                }
+                if let Some(c) = catch {
+                    scan_stmts_failure(&c.body.stmts, has_throw, has_result, has_option);
+                }
+                if let Some(b) = finally {
+                    scan_stmts_failure(&b.stmts, has_throw, has_result, has_option);
+                }
+            }
+            Stmt::Block(b) => scan_stmts_failure(&b.stmts, has_throw, has_result, has_option),
+            _ => {}
+        }
+    }
+}
+
+fn infer_fn_failure_mode(f: &ast::FnProto) -> &'static str {
+    let mut has_throw = false;
+    let mut has_result = false;
+    let mut has_option = false;
+    if let Some(ret) = &f.ret {
+        match ret.name.as_str() {
+            "result" | "Result" => has_result = true,
+            "option" | "Option" => has_option = true,
+            _ => {}
+        }
+    }
+    scan_stmts_failure(
+        &f.body.stmts,
+        &mut has_throw,
+        &mut has_result,
+        &mut has_option,
+    );
+    match (has_result, has_option, has_throw) {
+        (true, _, true) => "result|throws",
+        (true, _, false) => "result",
+        (false, true, true) => "option|throws",
+        (false, true, false) => "option",
+        (false, false, true) => "throws",
+        (false, false, false) => "infallible",
+    }
+}
+
+fn infer_ret_failure_mode(ret: &Option<ast::TypeExpr>) -> &'static str {
+    if let Some(r) = ret {
+        match r.name.as_str() {
+            "result" | "Result" => return "result",
+            "option" | "Option" => return "option",
+            _ => {}
+        }
+    }
+    "unspecified"
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,6 +442,7 @@ pub fn extract_module_docs(
                     vis: vis_str(f.vis),
                     signature: sig,
                     doc: doc_above(&f.span, &lexed.comments),
+                    failure_mode: Some(infer_fn_failure_mode(f)),
                     line: f.span.line,
                     children: Vec::new(),
                 });
@@ -297,6 +491,7 @@ pub fn extract_module_docs(
                             opt_colon_type(&field.ty)
                         ),
                         doc: doc_above(&field.span, &lexed.comments),
+                        failure_mode: None,
                         line: field.span.line,
                         children: Vec::new(),
                     });
@@ -317,6 +512,7 @@ pub fn extract_module_docs(
                             fn_signature(m)
                         ),
                         doc: doc_above(&m.span, &lexed.comments),
+                        failure_mode: Some(infer_fn_failure_mode(m)),
                         line: m.span.line,
                         children: Vec::new(),
                     });
@@ -327,6 +523,7 @@ pub fn extract_module_docs(
                     vis: vis_str(c.vis),
                     signature: sig,
                     doc: doc_above(&c.span, &lexed.comments),
+                    failure_mode: None,
                     line: c.span.line,
                     children,
                 });
@@ -358,6 +555,7 @@ pub fn extract_module_docs(
                         vis: "public",
                         signature: format!("fn {}({}){}", m_name, param_str.join(", "), ret_str),
                         doc: doc_above(m_span, &lexed.comments),
+                        failure_mode: Some(infer_ret_failure_mode(ret)),
                         line: m_span.line,
                         children: Vec::new(),
                     });
@@ -370,6 +568,7 @@ pub fn extract_module_docs(
                         vis: vis_str(m.vis),
                         signature: format!("fn {}", fn_signature(m)),
                         doc: doc_above(&m.span, &lexed.comments),
+                        failure_mode: Some(infer_fn_failure_mode(m)),
                         line: m.span.line,
                         children: Vec::new(),
                     });
@@ -380,6 +579,7 @@ pub fn extract_module_docs(
                     vis: vis_str(i.vis),
                     signature: format!("{}interface {}", vis_prefix(i.vis), i.name),
                     doc: doc_above(&i.span, &lexed.comments),
+                    failure_mode: None,
                     line: i.span.line,
                     children,
                 });
@@ -401,6 +601,7 @@ pub fn extract_module_docs(
                             format!("{}({})", v.name, v.fields.join(", "))
                         },
                         doc: doc_above(&v.span, &lexed.comments),
+                        failure_mode: None,
                         line: v.span.line,
                         children: Vec::new(),
                     })
@@ -411,6 +612,7 @@ pub fn extract_module_docs(
                     vis: vis_str(e.vis),
                     signature: format!("{}enum {}", vis_prefix(e.vis), e.name),
                     doc: doc_above(&e.span, &lexed.comments),
+                    failure_mode: None,
                     line: e.span.line,
                     children,
                 });
@@ -431,6 +633,7 @@ pub fn extract_module_docs(
                     vis: vis_str(*vis),
                     signature: format!("{}const {}{}", vis_prefix(*vis), name, opt_colon_type(ty)),
                     doc: doc_above(span, &lexed.comments),
+                    failure_mode: None,
                     line: span.line,
                     children: Vec::new(),
                 });
@@ -451,6 +654,7 @@ pub fn extract_module_docs(
                     vis: vis_str(*vis),
                     signature: format!("{}let {}{}", vis_prefix(*vis), name, opt_colon_type(ty)),
                     doc: doc_above(span, &lexed.comments),
+                    failure_mode: None,
                     line: span.line,
                     children: Vec::new(),
                 });
@@ -582,6 +786,9 @@ fn write_symbol_json(sym: &SymbolDoc, out: &mut String, indent: usize) {
     out.push_str(",\n");
     let _ = write!(out, "{}\"doc\": ", inner);
     write_opt_json_str(sym.doc.as_deref(), out);
+    out.push_str(",\n");
+    let _ = write!(out, "{}\"failure_mode\": ", inner);
+    write_opt_json_str(sym.failure_mode, out);
     out.push_str(",\n");
     let _ = writeln!(out, "{}\"line\": {},", inner, sym.line);
     let _ = write!(out, "{}\"children\": [", inner);

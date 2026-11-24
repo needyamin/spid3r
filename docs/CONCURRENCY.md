@@ -52,7 +52,7 @@ The scheduler distinguishes two classes of waiting:
 2. **Fatal Deadlock Detection:** After `3` consecutive ticks with `queued == 0`, `busy == 0`, `live == 0`, and `untimed > 0` (meaning non-worker threads such as `main` are blocked forever with zero tasks able to wake them), exits with status `1` and diagnostic `"spid3r: fatal: deadlock - ..."`. Setting `SPID3R_DEADLOCK_ABORT=0` (or `spid3r.deadlock_abort = false`) downgrades this abort to a one-time warning for custom embedding hosts.
 
 ### 4.2 Program Exit Task Drain
-When `main` returns while background tasks are still running, `join_tasks_at_exit()` waits on `sched.idle` condvar up to `DEFAULT_DRAIN_MS = 2000 ms` (overridable via `SPID3R_TASK_DRAIN_MS` or `spid3r.task_drain_ms`). Remaining unfinished tasks after the deadline emit a warning, and `Scheduler::shutdown()` cleanly joins finished worker threads without deadlocking teardown on permanently blocked threads.
+When `main` returns while background tasks are still running, `join_tasks_at_exit()` waits on `sched.idle` condvar up to `DEFAULT_DRAIN_MS = 2000 ms` (overridable via `SPID3R_TASK_DRAIN_MS` or `spid3r.task_drain_ms`). Remaining unfinished tasks after the deadline emit a warning, and `Scheduler::shutdown()` cleanly joins finished worker threads without deadlocking teardown on permanently blocked threads. Note for `stdlib/gen.matrix`: each generator runs in a spawned task; `take()` and `collect()` close their generator (and composed `map`/`filter` pipelines propagate `close()` upstream), whereas a manually iterated generator abandoned early without calling `close(g)` stays parked until process exit and triggers this drain warning.
 
 ---
 

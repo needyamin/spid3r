@@ -460,6 +460,11 @@ impl Interp {
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        let _limit_guard = crate::budget::ActiveLimitGuard::enter(
+            self.budget.clone(),
+            self.wall_clock.as_ref(),
+            self.mem_limit.as_ref(),
+        );
         let _inv_guard = crate::stdlib::eventloop::push_invoker(self.make_invoker());
         // `extern fn` resolves at link time, and the tree interpreter links
         // nothing. Refuse before running a single statement rather than
@@ -621,6 +626,21 @@ impl Interp {
             }
         }
         None
+    }
+
+    #[inline]
+    fn native_err(&self, span: &Span, msg: String) -> Flow {
+        if let Some(wc) = &self.wall_clock {
+            if wc.exceeded() {
+                return self.fatal(span, wc.message());
+            }
+        }
+        if msg == "execution budget exhausted"
+            && self.budget.as_ref().is_some_and(|b| b.exhausted())
+        {
+            return self.fatal(span, msg);
+        }
+        self.rt(span, msg)
     }
 
     /// Tighten the call-depth limit (`spid3r run --max-call-depth`). Must be
@@ -1638,12 +1658,9 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
                 (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a + b)),
-                (Str(a), Str(b)) => {
-                    let mut s = String::with_capacity(a.len() + b.len());
-                    s.push_str(a);
-                    s.push_str(b);
-                    Ok(Str(s.into()))
-                }
+                (Str(a), Str(b)) => Ok(Str(crate::budget::concat_strings_checked(a, b)
+                    .map_err(|e| self.rt(span, e))?
+                    .into())),
                 _ => match self
                     .operator_call(&l, &r, "__add__", span)
                     .or_else(|| self.operator_call(&r, &l, "__radd__", span))
@@ -1931,7 +1948,7 @@ impl Interp {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
                 };
-                let v = (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))?;
+                let v = (n.func)(&ctx, args).map_err(|msg| self.native_err(span, msg))?;
                 // A native may block (sleep, sockets, files) for a long time:
                 // enforce the wall-clock deadline and the heap cap as soon as
                 // it returns, mirroring the VM's post-call guard.
@@ -1944,7 +1961,7 @@ impl Interp {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
                 };
-                let v = (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))?;
+                let v = (n.func)(&ctx, args).map_err(|msg| self.native_err(span, msg))?;
                 if let Some(flow) = self.check_limits(span) {
                     return Err(flow);
                 }

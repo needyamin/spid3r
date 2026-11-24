@@ -3,6 +3,19 @@
 Global functions available in every program. These are ordinary global values
 (not keywords), so a user declaration of the same name shadows the builtin.
 
+## Error & Failure-Mode Convention
+
+Standard library natives signal failure in one of three documented ways:
+
+| Failure mode | Meaning | Examples |
+|---|---|---|
+| `result` (`ok(v)` / `err(msg)`) | Expected operational / I/O / decoding failure that callers handle explicitly. | `read_file`, `write_file`, `read_csv`, `parse_csv`, `gunzip`, `inflate`, `gzip`, `deflate`, `msgpack_decode`, `cbor_decode`, `pb_decode`, `tz_info`, `tcp_*`, `db_*`, `spawn_process`, `exec_capture`, `bytes.to_string`, `jwt_verify` |
+| `option` (`some(v)` / `none`) | Lookup or search with a normal "absent" outcome. | `env`, `regex_find`, `channel.try_recv`, `map.get` |
+| `throws` (catchable via `try`/`catch`) | Programmer error, invalid syntax/pattern/encoding, arity/type mismatch, or security policy denial. | `json_parse`, `regex_match`, `regex_find` (bad pattern), `regex_replace` (bad pattern), `base64_decode`, `clamp`, `jwt_sign` (empty secret), `assert`, `assert_eq`, wrong argument count/type |
+| `infallible` | Always returns a value for valid argument types (e.g., `bytes.to_hex`, `is_dir`, `is_file`, `file_exists`, `sha256`, `now_ms`). | `bytes.to_hex`, `is_dir`, `is_file`, `file_exists`, `sha256`, `now_ms`, `unix_time` |
+
+Note that `spid3r doc --json` also emits a `"failure_mode"` field on extracted `.matrix` functions and methods (`"result"`, `"option"`, `"throws"`, `"result|throws"`, `"option|throws"`, or `"infallible"`).
+
 ## Console & output
 
 | Function | Description |
@@ -300,14 +313,16 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 
 Zero-dependency linear-time regex matching. Supports `.`, `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`, `^`, `$`, character classes `[...]`/`[^...]`, `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, alternation `|`, and grouping `()`.
 
+**Matching semantics (POSIX leftmost-longest):** Because the engine is a linear-time Thompson NFA rather than a backtracking PCRE engine, alternation chooses the **leftmost-longest** match rather than PCRE's leftmost-first branch. For example, `regex_find("a|ab", "ab")` returns `some("ab")` (whereas PCRE, JavaScript, Python, and Go return `"a"`). Zero-width matches at end-of-input are replaced by `regex_replace` (e.g., `regex_replace("$", "ab", "X")` yields `"abX"`).
+
 Compile-time limits: a single quantifier may not exceed `{1000}`, and the parsed pattern may not exceed 500 000 nodes. Both abort the call with a catchable error (`try { … } catch e { … }`), never a silent blowup. Bounded repeats are unrolled at parse time, so nesting multiplies them — `((a{1000}){1000}){1000}` is 23 characters but would expand to ~1e9 nodes, and is rejected before it allocates. Treat a pattern as untrusted input.
 
-| Function | Description |
-|---|---|
-| `regex_match(pattern, text)` | Test if `pattern` matches `text`; returns `bool`. An invalid or oversized pattern aborts with a catchable error. |
-| `regex_find(pattern, text)` | Find first match; returns `some(matched_str)` or `none`. |
-| `regex_find_all(pattern, text)` | Find all non-overlapping matches; returns `list` of matching strings. |
-| `regex_replace(pattern, text, repl)` | Replace all occurrences of `pattern` with `repl`. |
+| Function | Failure mode | Description |
+|---|---|---|
+| `regex_match(pattern, text)` | `throws` (invalid/oversized pattern) | Test if `pattern` matches `text`; returns `bool`. An invalid or oversized pattern aborts with a catchable error. |
+| `regex_find(pattern, text)` | `option` / `throws` (bad pattern) | Find first match (leftmost-longest); returns `some(matched_str)` or `none`. |
+| `regex_find_all(pattern, text)` | `throws` (bad pattern) | Find all non-overlapping matches; returns `list` of matching strings. |
+| `regex_replace(pattern, text, repl)` | `throws` (bad pattern) | Replace all occurrences of `pattern` with `repl` (including trailing zero-width matches). |
 
 ## Date & Time (Howard Hinnant Civil Calendar)
 Monotonic and epoch time conversion with high-precision civil calendar math.

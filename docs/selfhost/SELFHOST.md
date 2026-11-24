@@ -251,3 +251,8 @@ release by tag before the pipeline switches.
 - [RUNTIME_ABI.md](RUNTIME_ABI.md) (pinned staticlib ABI, provenance & native table)
 - [SELFHOST_RETIREMENT.md](SELFHOST_RETIREMENT.md) (Phase 10.2 retirement boundary, rollback tags & maintenance rules)
 - [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline).
+
+## Maintenance ledger (append-only)
+
+- **2026-11-24 (SH-3, AUD-TYPE-01):** Mirrored Stage-0 nullable/null/union operator & index checks (`Unary`, `Binary`, compound `Assign`, read/write `Index`) and flow-sensitive null-guard / assignment narrowing (`st[21]` narrowing stack, `chk_extract_null_guards`, early-return narrowing, `chk_invalidate_incompatible_narrowed`, `Coalesce` non-null stripping) in `selfhost/semantic.matrix`. Verified 18/18 exact diagnostic & exit-code parity on `AUD-TYPE-01` cases against Stage 0 and 136/136 on `tools/selfhost_semantic_parity.sh` (frozen corpus unchanged, `tools/corpus_manifest.py verify` 137/137).
+- **2026-11-24 (SH-3, GH-8 JSON diagnostic parity):** Mirrored Stage-0 `Diagnostic::to_json()` canonical `"code"` (`E1xxx` via `diag_code`) and `"end_line"`/`"end_col"` fields in `selfhost/main.matrix` (`diag_to_json`). Verified `tools/selfhost_fmt_check_parity.sh` 17/17 ALL MATCH (corpus 136/136), `spid3r fmt --check selfhost/main.matrix` unchanged, and Stage 1->2->3 release fixed point.

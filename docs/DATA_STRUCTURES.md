@@ -59,7 +59,10 @@ for i in order { by_order.push(xs[i]); }   // [10, 20, 30]
 ```
 
 `argsort` uses the same natural order as `sort` — all numbers (ints and floats
-may mix) or all strings, and it throws a catchable error otherwise.
+may mix) or all strings, and it throws a catchable error otherwise. For floating-point
+lists containing `NaN`, natural `sort` / `sorted` / `argsort` place `NaN` values
+deterministically **last** (after all finite numbers and `+Inf`) without panicking,
+e.g. `[nan(), 1.0, 2.0].sorted()` yields `[1.0, 2.0, NaN]`.
 
 ### Writing a comparator
 
@@ -101,7 +104,7 @@ value, and the list is left as it was.
 |---|---|
 | `stack()` | LIFO. `push`, `pop`, `peek`, `len`, `is_empty`. `pop` on an empty stack throws. |
 | `queue()` | FIFO. `push` (enqueue), `pop` (dequeue), `peek`, `len`, `is_empty`. |
-| `priority_queue("min"\|"max")` | Heap-backed; `push`, `pop`, `peek`, `len`. |
+| `priority_queue("min"\|"max")` | Heap-backed; `push(value, priority)`, `pop()`, `peek()`, `len()`, `is_empty()`, `clear()`, `clone()`. |
 
 ## Strings
 
@@ -147,7 +150,7 @@ ignored format.
 | Type | Notes |
 |---|---|
 | `map(k, v, …)` | Insertion-order map. `get`, `set`/index-assign `m[k] = v`, `remove`/`delete`, `has`/`contains`, `keys`, `values`, `items` (list of `(k, v)` tuples), `len`, `is_empty`, `clear`. |
-| `set(a, b, …)` | Unique members. `add`, `remove`, `contains`, `union`, `intersection`/`intersect`, `difference`, `is_subset`, `is_superset`, `len`, `is_empty`, `clear`. |
+| `set(a, b, …)` | Unique members (pass elements as separate arguments, e.g. `set(1, 2, 3)`; passing a single list/collection raises a diagnostic). `add`, `remove`, `contains`, `union`, `intersection`/`intersect`, `difference`, `is_subset`, `is_superset`, `len`, `is_empty`, `clear`. |
 | `bag()` | Multiset (counts duplicates). `add`, `count_of`, `remove`, `len`, `is_empty`, `clear`. |
 | `hash_table()` | Separate chaining (8 buckets, grows); no constructor arguments. `get`, `set`, `remove`, `contains`, `bucket_count`, `load_factor`, `keys`, `len`, `is_empty`, `clear`. |
 

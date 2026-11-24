@@ -966,6 +966,11 @@ impl Vm {
     /// Run a script function that has already been compiled (e.g. loaded from a
     /// `.matrixc` file by `exec`). Mirrors the tail of `run_program`.
     pub fn run_compiled(&mut self, script: Arc<VmFunc>) -> Result<i32, Diagnostic> {
+        let _limit_guard = crate::budget::ActiveLimitGuard::enter(
+            self.budget.clone(),
+            self.wall_clock.as_ref(),
+            self.mem_limit.as_ref(),
+        );
         let _inv_guard = crate::stdlib::eventloop::push_invoker(self.make_invoker());
         if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
             return Err(Diagnostic::new(Phase::Runtime, message));
@@ -1771,24 +1776,46 @@ impl Vm {
                                                 if self.pending_str.as_ref().is_some_and(
                                                     |&(pf, ps, _)| pf == nf && ps == slot,
                                                 ) {
-                                                    if let Some((_, _, ref mut buf)) =
-                                                        self.pending_str
-                                                    {
-                                                        buf.push_str(&rhs);
+                                                    let append_res =
+                                                        if let Some((_, _, ref mut buf)) =
+                                                            self.pending_str
+                                                        {
+                                                            crate::budget::append_string_checked(
+                                                                buf, &rhs,
+                                                            )
+                                                        } else {
+                                                            Ok(())
+                                                        };
+                                                    match append_res {
+                                                        Ok(()) => {
+                                                            self.frames[nf].ip =
+                                                                folded.unwrap_or(ip + 8);
+                                                            continue;
+                                                        }
+                                                        Err(m) => {
+                                                            self.pending_str = None;
+                                                            self.frames[nf].ip = ip + 5;
+                                                            self.fail(m);
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                                self.flush_pending_str();
+                                                match crate::budget::concat_strings_checked(
+                                                    &lhs, &rhs,
+                                                ) {
+                                                    Ok(buf) => {
+                                                        self.pending_str = Some((nf, slot, buf));
                                                         self.frames[nf].ip =
                                                             folded.unwrap_or(ip + 8);
                                                         continue;
                                                     }
+                                                    Err(m) => {
+                                                        self.frames[nf].ip = ip + 5;
+                                                        self.fail(m);
+                                                        continue;
+                                                    }
                                                 }
-                                                self.flush_pending_str();
-                                                let mut buf = String::with_capacity(
-                                                    (lhs.len() + rhs.len() + 64).max(128),
-                                                );
-                                                buf.push_str(&lhs);
-                                                buf.push_str(&rhs);
-                                                self.pending_str = Some((nf, slot, buf));
-                                                self.frames[nf].ip = folded.unwrap_or(ip + 8);
-                                                continue;
                                             }
                                         }
                                     } else if op2 == OpCode::IndexGet as u8
@@ -1889,23 +1916,35 @@ impl Vm {
                                                         if non_scalar {
                                                             crate::value::collections::seq::track_if_untracked(&v);
                                                         }
-                                                        let track_self = {
+                                                        let push_res = {
                                                             let mut g = crate::value::lock_ref(&d);
                                                             let nt =
                                                                 non_scalar && g.needs_track_for(&v);
-                                                            g.push_item(v);
-                                                            nt
+                                                            g.try_push_item(v).map(|()| nt)
                                                         };
-                                                        if track_self {
-                                                            crate::value::gc::track(d);
+                                                        match push_res {
+                                                            Ok(track_self) => {
+                                                                if track_self {
+                                                                    crate::value::gc::track(d);
+                                                                }
+                                                                Ok(true)
+                                                            }
+                                                            Err(msg) => Err(msg),
                                                         }
-                                                        true
                                                     }
-                                                    _ => false,
+                                                    _ => Ok(false),
                                                 };
-                                                if pushed {
-                                                    self.frames[nf].ip = ip + 9;
-                                                    continue;
+                                                match pushed {
+                                                    Ok(true) => {
+                                                        self.frames[nf].ip = ip + 9;
+                                                        continue;
+                                                    }
+                                                    Ok(false) => {}
+                                                    Err(msg) => {
+                                                        self.frames[nf].ip = ip + 4;
+                                                        self.fail(msg);
+                                                        continue;
+                                                    }
                                                 }
                                             }
                                         } else if argc == 0
@@ -2339,25 +2378,49 @@ impl Vm {
                                         if let Some(Value::Str(rhs)) =
                                             self.frames[nf].func.chunk.constants.get(cidx).cloned()
                                         {
-                                            if let Some((pf, ps, ref mut buf)) = self.pending_str {
-                                                if pf == nf && ps == slot {
-                                                    buf.push_str(&rhs);
-                                                    self.frames[nf].ip = ip + 9;
-                                                    continue;
+                                            if self
+                                                .pending_str
+                                                .as_ref()
+                                                .is_some_and(|&(pf, ps, _)| pf == nf && ps == slot)
+                                            {
+                                                let append_res = if let Some((_, _, ref mut buf)) =
+                                                    self.pending_str
+                                                {
+                                                    crate::budget::append_string_checked(buf, &rhs)
+                                                } else {
+                                                    Ok(())
+                                                };
+                                                match append_res {
+                                                    Ok(()) => {
+                                                        self.frames[nf].ip = ip + 9;
+                                                        continue;
+                                                    }
+                                                    Err(m) => {
+                                                        self.pending_str = None;
+                                                        self.frames[nf].ip = ip + 6;
+                                                        self.fail(m);
+                                                        continue;
+                                                    }
                                                 }
                                             }
                                             self.flush_pending_str();
                                             if let Some(Value::Str(lhs)) =
-                                                self.frames[nf].slots.get(slot)
+                                                self.frames[nf].slots.get(slot).cloned()
                                             {
-                                                let mut buf = String::with_capacity(
-                                                    (lhs.len() + rhs.len() + 64).max(128),
-                                                );
-                                                buf.push_str(lhs);
-                                                buf.push_str(&rhs);
-                                                self.pending_str = Some((nf, slot, buf));
-                                                self.frames[nf].ip = ip + 9;
-                                                continue;
+                                                match crate::budget::concat_strings_checked(
+                                                    &lhs, &rhs,
+                                                ) {
+                                                    Ok(buf) => {
+                                                        self.pending_str = Some((nf, slot, buf));
+                                                        self.frames[nf].ip = ip + 9;
+                                                        continue;
+                                                    }
+                                                    Err(m) => {
+                                                        self.frames[nf].ip = ip + 6;
+                                                        self.fail(m);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2970,10 +3033,8 @@ impl Vm {
                             crate::value::checked_int("+", *a, *b).map(Value::Int)
                         }
                         (Value::Str(a), Value::Str(b)) => {
-                            let mut s = String::with_capacity(a.len() + b.len());
-                            s.push_str(a);
-                            s.push_str(b);
-                            Ok(Value::Str(s.into()))
+                            crate::budget::concat_strings_checked(a, b)
+                                .map(|s| Value::Str(s.into()))
                         }
                         _ => match self
                             .try_operator(&l, &r, "__add__")
@@ -3348,7 +3409,7 @@ impl Vm {
                             };
                             match (n.func)(&ctx, args) {
                                 Ok(v) => self.frames[nf].slots.push(v),
-                                Err(msg) => self.fail(msg),
+                                Err(msg) => self.fail_native(msg),
                             }
                         }
                         Value::NativeClosure(n) => {
@@ -3357,7 +3418,7 @@ impl Vm {
                             };
                             match (n.func)(&ctx, args) {
                                 Ok(v) => self.frames[nf].slots.push(v),
-                                Err(msg) => self.fail(msg),
+                                Err(msg) => self.fail_native(msg),
                             }
                         }
                         Value::VClass(c) => {
@@ -3516,16 +3577,22 @@ impl Vm {
                                     if non_scalar {
                                         crate::value::collections::seq::track_if_untracked(&val);
                                     }
-                                    let track_self = {
+                                    let push_res = {
                                         let mut g = crate::value::lock_ref(&d);
                                         let nt = non_scalar && g.needs_track_for(&val);
-                                        g.push_item(val);
-                                        nt
+                                        g.try_push_item(val).map(|()| nt)
                                     };
-                                    if track_self {
-                                        crate::value::gc::track(d);
+                                    match push_res {
+                                        Ok(track_self) => {
+                                            if track_self {
+                                                crate::value::gc::track(d);
+                                            }
+                                            self.frames[nf].slots.push(Value::Null);
+                                        }
+                                        Err(msg) => {
+                                            self.fail(msg);
+                                        }
                                     }
-                                    self.frames[nf].slots.push(Value::Null);
                                     continue;
                                 } else if mname == "pop" && argc == 0 {
                                     let popped = crate::value::lock_ref(d).pop_item();
@@ -3595,12 +3662,23 @@ impl Vm {
                                             );
                                         }
                                         let mut track_m = None;
+                                        let mut set_err = None;
                                         if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
                                             let mut g = crate::value::lock_ref(m);
-                                            if non_scalar && g.needs_track_for(&val) {
-                                                track_m = Some(m.clone());
+                                            let nt = non_scalar && g.needs_track_for(&val);
+                                            match g.try_set_key(mk, val) {
+                                                Ok(()) => {
+                                                    if nt {
+                                                        track_m = Some(m.clone());
+                                                    }
+                                                }
+                                                Err(msg) => set_err = Some(msg),
                                             }
-                                            g.set_key(mk, val);
+                                        }
+                                        if let Some(msg) = set_err {
+                                            self.frames[nf].slots.pop();
+                                            self.fail(msg);
+                                            continue;
                                         }
                                         if let Some(m) = track_m {
                                             crate::value::gc::track(m);
@@ -3703,7 +3781,7 @@ impl Vm {
                                                     };
                                                     match (n.func)(&ctx, call_args) {
                                                         Ok(v) => self.frames[nf].slots.push(v),
-                                                        Err(msg) => self.fail(msg),
+                                                        Err(msg) => self.fail_native(msg),
                                                     }
                                                 }
                                                 Value::NativeClosure(n) => {
@@ -3712,7 +3790,7 @@ impl Vm {
                                                     };
                                                     match (n.func)(&ctx, call_args) {
                                                         Ok(v) => self.frames[nf].slots.push(v),
-                                                        Err(msg) => self.fail(msg),
+                                                        Err(msg) => self.fail_native(msg),
                                                     }
                                                 }
                                                 Value::VClass(c) => {
@@ -4874,16 +4952,23 @@ impl Vm {
                             Some(Value::Map(m)) => {
                                 let mut guard = crate::value::lock_ref(m);
                                 if !guard.namespace {
-                                    if non_scalar && guard.needs_track_for(&val) {
-                                        track_m = Some(m.clone());
+                                    let nt = non_scalar && guard.needs_track_for(&val);
+                                    if guard
+                                        .try_set_key(
+                                            crate::value::MapKey::Str(
+                                                crate::value::collections::intern_key(s),
+                                            ),
+                                            val,
+                                        )
+                                        .is_ok()
+                                    {
+                                        if nt {
+                                            track_m = Some(m.clone());
+                                        }
+                                        true
+                                    } else {
+                                        false
                                     }
-                                    guard.set_key(
-                                        crate::value::MapKey::Str(
-                                            crate::value::collections::intern_key(s),
-                                        ),
-                                        val,
-                                    );
-                                    true
                                 } else {
                                     false
                                 }
@@ -5862,6 +5947,26 @@ impl Vm {
             span: self.cur_span(),
             trace: Vec::new(),
         });
+    }
+
+    /// Record an error from a native call, escalating to fatal when the
+    /// engine's wall-clock deadline expired or its step budget was exhausted
+    /// inside a blocking native (e.g. `event_loop_run`).
+    fn fail_native(&mut self, msg: String) {
+        if let Some(wc) = &self.wall_clock {
+            if wc.exceeded() {
+                let wmsg = wc.message();
+                self.fail_fatal(wmsg);
+                return;
+            }
+        }
+        if msg == "execution budget exhausted"
+            && self.budget.as_ref().is_some_and(|b| b.exhausted())
+        {
+            self.fail_fatal(msg);
+            return;
+        }
+        self.fail(msg);
     }
 
     /// Cancellation point after a blocking operation returns (audit S-23,
@@ -8347,12 +8452,7 @@ pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, Str
             (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
             (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
             (Float(a), Float(b)) => Ok(Float(a + b)),
-            (Str(a), Str(b)) => {
-                let mut s = String::with_capacity(a.len() + b.len());
-                s.push_str(a);
-                s.push_str(b);
-                Ok(Str(s.into()))
-            }
+            (Str(a), Str(b)) => Ok(Str(crate::budget::concat_strings_checked(a, b)?.into())),
             _ => Err(format!(
                 "cannot add {} and {}",
                 type_name(&l),

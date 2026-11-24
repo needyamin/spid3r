@@ -673,12 +673,14 @@ fn pb_decode_into(
 // ------------------------------------------------------------------- natives
 
 fn n_msgpack_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    let v = args
-        .into_iter()
-        .next()
-        .ok_or_else(|| "msgpack_encode expects 1 argument".to_string())?;
+    if args.len() != 1 {
+        return Err(format!(
+            "msgpack_encode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
     let mut out = Vec::new();
-    msgpack_encode_into(&v, &mut out, 0)?;
+    msgpack_encode_into(&args[0], &mut out, 0)?;
     Ok(Value::Bytes(new_ref(out)))
 }
 
@@ -698,12 +700,14 @@ fn n_msgpack_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
 }
 
 fn n_cbor_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    let v = args
-        .into_iter()
-        .next()
-        .ok_or_else(|| "cbor_encode expects 1 argument".to_string())?;
+    if args.len() != 1 {
+        return Err(format!(
+            "cbor_encode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
     let mut out = Vec::new();
-    cbor_encode_into(&v, &mut out, 0)?;
+    cbor_encode_into(&args[0], &mut out, 0)?;
     Ok(Value::Bytes(new_ref(out)))
 }
 

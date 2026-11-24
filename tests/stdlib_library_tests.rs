@@ -378,3 +378,41 @@ fn csrf_middleware_requires_a_matching_token() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn generator_close_is_idempotent_after_take_and_eof() {
+    let src = r#"
+import { range_gen, take, next, close } from "gen";
+
+fn main() {
+    let j = 0;
+    while j < 20 {
+        let g = range_gen(0, 100);
+        let xs = take(g, 1);
+        assert_eq(xs.len(), 1);
+        close(g);
+        close(g);
+        j += 1;
+    }
+    let g2 = range_gen(0, 2);
+    assert_eq(next(g2), 0);
+    assert_eq(next(g2), 1);
+    assert_eq(next(g2), null);
+    close(g2);
+    close(g2);
+    println("ok");
+    return 0;
+}
+"#;
+    let dir = std::env::temp_dir().join(format!("spid3r_gen_close_idem_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path_buf = dir.join("gen_close_idem.matrix");
+    std::fs::write(&path_buf, src).expect("write");
+    let path = path_buf.to_string_lossy().to_string();
+    for engine in ["tree", "vm"] {
+        let out = run_engine(engine, &path).unwrap_or_else(|e| panic!("[{}] {}", engine, e));
+        assert_eq!(out, "ok\n", "[{}] gen close", engine);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

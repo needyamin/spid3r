@@ -347,6 +347,26 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             ))))
         }
         "set" => {
+            if args.len() == 1
+                && matches!(
+                    &args[0],
+                    Value::List(_)
+                        | Value::VecDyn(_)
+                        | Value::Set(_)
+                        | Value::Tuple(_)
+                        | Value::Stack(_)
+                        | Value::Queue(_)
+                        | Value::Deque(_)
+                        | Value::LinkedList(_)
+                        | Value::SinglyList(_)
+                        | Value::DoublyList(_)
+                )
+            {
+                return Err(format!(
+                    "set() takes element arguments like set(1, 2, 3), not a single {}; pass individual elements or insert items with s.add(x)",
+                    crate::value::type_name(&args[0])
+                ));
+            }
             let mut s = seq::SetData::default();
             for a in args {
                 if s.find(&a).is_none() {
@@ -539,6 +559,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                         fill
                     ));
                 }
+                crate::budget::check_single_allocation(nu)?;
                 Ok(Value::Bytes(new_ref(vec![fill as u8; nu])))
             } else {
                 Err(format!(
@@ -773,9 +794,12 @@ pub fn call_method_host(
             if name == "append" && args.len() == 1 {
                 if let Value::List(o) | Value::VecDyn(o) = &args[0] {
                     if std::sync::Arc::ptr_eq(d, o) {
+                        let cur_len = d.lock().unwrap().len();
+                        crate::budget::check_vec_grow::<Value>(cur_len, cur_len)?;
                         let extra = d.lock().unwrap().clone_items();
                         let need_track = {
                             let mut g = d.lock().unwrap();
+                            g.try_reserve_items(extra.len())?;
                             let nt = !g.gc_tracked;
                             if nt {
                                 g.gc_tracked = true;
@@ -1344,6 +1368,15 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             want(name, args, 2)?;
             let from = want_str(&args[0], "string.replace")?;
             let to = want_str(&args[1], "string.replace")?;
+            if to.len() > from.len() {
+                let delta = to.len() - from.len();
+                let count = s.matches(&from).count();
+                let out_bytes = count
+                    .checked_mul(delta)
+                    .and_then(|d| s.len().checked_add(d))
+                    .ok_or_else(|| "out of memory: replace result size overflow".to_string())?;
+                crate::budget::check_alloc_fast(out_bytes)?;
+            }
             Ok(Value::Str(s.replace(&from, &to).into()))
         }
         "repeat" => {
@@ -1407,7 +1440,12 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             if len >= width {
                 return Ok(Value::Str(s.into()));
             }
-            let fill: String = pad.chars().cycle().take(width - len).collect();
+            let pad_chars = width - len;
+            let est_bytes = s
+                .len()
+                .saturating_add(pad_chars.saturating_mul(pad.len().max(1)));
+            crate::budget::check_alloc_fast(est_bytes)?;
+            let fill: String = pad.chars().cycle().take(pad_chars).collect();
             Ok(Value::Str(
                 if name == "pad_left" {
                     format!("{}{}", fill, s)
@@ -2133,6 +2171,7 @@ pub fn len_of(v: &Value) -> Result<usize, String> {
         }
         Value::Vector(d) => Ok(d.lock().unwrap().data.len()),
         Value::Bytes(d) => Ok(d.lock().unwrap().len()),
+        Value::Channel(c) => Ok(c.len()),
         Value::Bag(d) => Ok(d.lock().unwrap().counts.iter().map(|(_, n)| *n).sum()),
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
             Ok(d.lock().unwrap().len)

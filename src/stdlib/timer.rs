@@ -133,6 +133,9 @@ fn n_timer_cancel(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     collections::want("timer_cancel", &args, 1)?;
     let id = want_int(&args[0], "timer_cancel")?;
     let removed = state().lock().unwrap().entries.remove(&id).is_some();
+    if removed {
+        super::eventloop::unwatch_timer(id);
+    }
     Ok(Value::Bool(removed))
 }
 

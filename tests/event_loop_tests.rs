@@ -128,3 +128,44 @@ fn event_loop_gc_quiescence_and_cancel_on_both_engines() {
     assert_eq!(run_tree(EVENT_LOOP_GC_AND_CANCEL).unwrap(), 0);
     assert_eq!(run_vm(EVENT_LOOP_GC_AND_CANCEL).unwrap(), 0);
 }
+
+#[test]
+fn empty_event_loop_run_returns_promptly_on_both_engines() {
+    let src = r#"
+fn main() {
+    println("before");
+    event_loop_run();
+    println("after");
+    return 0;
+}
+"#;
+    let start = std::time::Instant::now();
+    assert_eq!(run_tree(src).unwrap(), 0);
+    assert_eq!(run_vm(src).unwrap(), 0);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "empty event_loop_run blocked for {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn cancelled_timer_does_not_keep_event_loop_running() {
+    let src = r#"
+fn main() {
+    let t = after_ms(5000);
+    on_timer(t, fn(id) { return null; });
+    assert_eq(timer_cancel(t), true);
+    event_loop_run();
+    return 0;
+}
+"#;
+    let start = std::time::Instant::now();
+    assert_eq!(run_tree(src).unwrap(), 0);
+    assert_eq!(run_vm(src).unwrap(), 0);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "event_loop_run blocked after timer_cancel for {:?}",
+        start.elapsed()
+    );
+}

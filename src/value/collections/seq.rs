@@ -199,6 +199,27 @@ impl VecData {
         self.items.extend(extra);
     }
 
+    /// Reserve capacity for `extra` additional elements under configured
+    /// memory/allocation caps so container growth cannot abort the host process.
+    #[inline]
+    pub fn try_reserve_items(&mut self, extra: usize) -> Result<(), String> {
+        crate::budget::check_vec_grow::<Value>(self.items.len(), extra)?;
+        self.items
+            .try_reserve(extra)
+            .map_err(|_| "out of memory: list allocation failed".to_string())
+    }
+
+    /// Push one item, checking memory/allocation caps whenever the backing
+    /// buffer is about to grow.
+    #[inline]
+    pub fn try_push_item(&mut self, v: Value) -> Result<(), String> {
+        if self.items.len() == self.items.capacity() {
+            self.try_reserve_items(1)?;
+        }
+        self.push_item(v);
+        Ok(())
+    }
+
     #[inline]
     pub fn set_items(&mut self, items: Vec<Value>) {
         self.invalidate();
@@ -291,6 +312,9 @@ impl VecData {
             }
             "push" => {
                 want(name, args, 1)?;
+                if self.items.len() == self.items.capacity() {
+                    self.try_reserve_items(1)?;
+                }
                 self.push_item(args[0].clone());
                 Ok(Value::Null)
             }
@@ -343,6 +367,9 @@ impl VecData {
                         i,
                         self.items.len()
                     ));
+                }
+                if self.items.len() == self.items.capacity() {
+                    self.try_reserve_items(1)?;
                 }
                 self.insert_item(i, args[1].clone());
                 Ok(Value::Null)
@@ -428,21 +455,23 @@ impl VecData {
                 // canonical representation as `print`/`string()`/interpolation
                 // (display_value), so `[1, 2].join("-")` is "1-2". All-string
                 // lists are byte-for-byte what they always were.
-                Ok(Value::Str(join_parts(&self.items, &sep).into()))
+                Ok(Value::Str(join_parts(&self.items, &sep)?.into()))
             }
             "append" => {
                 want(name, args, 1)?;
-                let other = match &args[0] {
-                    Value::List(d) | Value::VecDyn(d) => {
-                        let d = d.lock().unwrap();
-                        d.clone_items()
-                    }
+                let other_len = match &args[0] {
+                    Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().items.len(),
                     other => {
                         return Err(format!(
                             "append expects a list, found {}",
                             super::type_name(other)
                         ))
                     }
+                };
+                self.try_reserve_items(other_len)?;
+                let other = match &args[0] {
+                    Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().clone_items(),
+                    _ => unreachable!(),
                 };
                 self.extend_items(other);
                 Ok(Value::Null)
@@ -566,7 +595,7 @@ pub fn vec_detached(
             // detached from the list's lock because an element may be (or
             // reach) the receiver and `display_value` takes container locks of
             // its own (audit A-7 rationale).
-            Ok(Value::Str(join_parts(items, &sep).into()))
+            Ok(Value::Str(join_parts(items, &sep)?.into()))
         }
         _ => unreachable!(),
     }
@@ -576,15 +605,38 @@ pub fn vec_detached(
 /// every other value contributes its canonical display form (the same text
 /// `print`, `string()` and interpolation produce), so `[1, 2].join("-")` is
 /// `"1-2"` and `[true, null].join(",")` is `"true,null"`.
-fn join_parts(items: &[Value], sep: &str) -> String {
-    items
+fn join_parts(items: &[Value], sep: &str) -> Result<String, String> {
+    if items.is_empty() {
+        return Ok(String::new());
+    }
+    let parts: Vec<String> = items
         .iter()
         .map(|v| match v {
             Value::Str(s) => s.to_string(),
             other => crate::value::display_value(other),
         })
-        .collect::<Vec<_>>()
-        .join(sep)
+        .collect();
+    let sep_total = sep
+        .len()
+        .checked_mul(parts.len().saturating_sub(1))
+        .ok_or_else(|| "out of memory: joined string size overflow".to_string())?;
+    let mut total = sep_total;
+    for p in &parts {
+        total = total
+            .checked_add(p.len())
+            .ok_or_else(|| "out of memory: joined string size overflow".to_string())?;
+    }
+    crate::budget::check_alloc_fast(total)?;
+    let mut out = String::new();
+    out.try_reserve_exact(total)
+        .map_err(|_| format!("out of memory: cannot allocate string of {} bytes", total))?;
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(p);
+    }
+    Ok(out)
 }
 
 /// Detached `contains`/`to_list` shared by stack, queue, deque, and ring
@@ -699,6 +751,12 @@ impl StackData {
             }
             "push" => {
                 want(name, args, 1)?;
+                if self.items.len() == self.items.capacity() {
+                    crate::budget::check_vec_grow::<Value>(self.items.len(), 1)?;
+                    self.items
+                        .try_reserve(1)
+                        .map_err(|_| "out of memory: stack allocation failed".to_string())?;
+                }
                 self.items.push(args[0].clone());
                 Ok(Value::Null)
             }
@@ -782,6 +840,12 @@ impl QueueData {
             }
             "push" => {
                 want(name, args, 1)?;
+                if self.items.len() == self.items.capacity() {
+                    crate::budget::check_vec_grow::<Value>(self.items.len(), 1)?;
+                    self.items
+                        .try_reserve(1)
+                        .map_err(|_| "out of memory: queue allocation failed".to_string())?;
+                }
                 self.items.push_back(args[0].clone());
                 Ok(Value::Null)
             }
@@ -840,11 +904,23 @@ impl DequeData {
             }
             "push_back" | "push" => {
                 want(name, args, 1)?;
+                if self.items.len() == self.items.capacity() {
+                    crate::budget::check_vec_grow::<Value>(self.items.len(), 1)?;
+                    self.items
+                        .try_reserve(1)
+                        .map_err(|_| "out of memory: deque allocation failed".to_string())?;
+                }
                 self.items.push_back(args[0].clone());
                 Ok(Value::Null)
             }
             "push_front" => {
                 want(name, args, 1)?;
+                if self.items.len() == self.items.capacity() {
+                    crate::budget::check_vec_grow::<Value>(self.items.len(), 1)?;
+                    self.items
+                        .try_reserve(1)
+                        .map_err(|_| "out of memory: deque allocation failed".to_string())?;
+                }
                 self.items.push_front(args[0].clone());
                 Ok(Value::Null)
             }
@@ -1451,6 +1527,125 @@ impl MapData {
         true
     }
 
+    /// Checked version of `rebuild_slots` that enforces memory/allocation caps
+    /// and uses fallible reservation so runaway map growth cannot abort the host.
+    fn try_rebuild_slots(&mut self) -> Result<(), String> {
+        let cap = (self.entries.len().saturating_mul(2))
+            .next_power_of_two()
+            .max(32);
+        let entry_bytes = self
+            .entries
+            .len()
+            .saturating_mul(std::mem::size_of::<(super::MapKey, Value)>());
+        let slot_bytes = cap.saturating_mul(std::mem::size_of::<(u32, u32)>());
+        crate::budget::check_alloc_fast(entry_bytes.saturating_add(slot_bytes))?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(cap)
+            .map_err(|_| "out of memory: map index allocation failed".to_string())?;
+        slots.resize(cap, (0u32, 0u32));
+        let mask = cap - 1;
+        for (i, (k, _)) in self.entries.iter().enumerate() {
+            let h = super::fx_hash_map_key(k);
+            let h32 = (h >> 32) as u32;
+            let mut pos = (h as usize) & mask;
+            loop {
+                let (sh, idx1) = slots[pos];
+                if idx1 == 0 {
+                    slots[pos] = (h32, (i + 1) as u32);
+                    break;
+                }
+                if sh == h32 && self.entries[(idx1 - 1) as usize].0 == *k {
+                    slots[pos].1 = (i + 1) as u32;
+                    break;
+                }
+                pos = (pos + 1) & mask;
+            }
+        }
+        self.slots = slots;
+        Ok(())
+    }
+
+    /// Reserve capacity for `extra` additional map entries under configured
+    /// memory/allocation caps.
+    #[inline]
+    pub fn try_reserve_entries(&mut self, extra: usize) -> Result<(), String> {
+        let new_len = self
+            .entries
+            .len()
+            .checked_add(extra)
+            .ok_or_else(|| "out of memory: map size overflow".to_string())?;
+        let entry_bytes = new_len
+            .checked_mul(std::mem::size_of::<(super::MapKey, Value)>())
+            .ok_or_else(|| "out of memory: map allocation overflow".to_string())?;
+        let slot_bytes = self
+            .slots
+            .len()
+            .saturating_mul(std::mem::size_of::<(u32, u32)>());
+        crate::budget::check_alloc_fast(entry_bytes.saturating_add(slot_bytes))?;
+        self.entries
+            .try_reserve(extra)
+            .map_err(|_| "out of memory: map allocation failed".to_string())
+    }
+
+    /// Insert or update `(k, val)` while enforcing memory/allocation caps on growth.
+    #[inline]
+    pub fn try_set_key(&mut self, k: super::MapKey, val: Value) -> Result<(), String> {
+        let h = super::fx_hash_map_key(&k);
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            for i in (0..self.entries.len()).rev() {
+                if self.small_tags[i] == tag && self.entries[i].0 == k {
+                    self.bump_generation();
+                    self.entries[i].1 = val;
+                    return Ok(());
+                }
+            }
+            if self.entries.len() == self.entries.capacity() {
+                self.try_reserve_entries(1)?;
+            }
+            let idx = self.entries.len();
+            self.entries.push((k, val));
+            if idx < SMALL_MAP_MAX {
+                self.small_tags[idx] = tag;
+            } else if let Err(e) = self.try_rebuild_slots() {
+                self.entries.pop();
+                return Err(e);
+            }
+            self.bump_generation();
+            return Ok(());
+        }
+        let h32 = (h >> 32) as u32;
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                if self.entries.len() == self.entries.capacity() {
+                    self.try_reserve_entries(1)?;
+                }
+                let idx = self.entries.len();
+                self.entries.push((k, val));
+                if self.entries.len() * 10 >= self.slots.len() * 7 {
+                    if let Err(e) = self.try_rebuild_slots() {
+                        self.entries.pop();
+                        return Err(e);
+                    }
+                } else {
+                    self.slots[pos] = (h32, (idx + 1) as u32);
+                }
+                self.bump_generation();
+                return Ok(());
+            }
+            if sh == h32 && self.entries[(idx1 - 1) as usize].0 == k {
+                self.bump_generation();
+                self.entries[(idx1 - 1) as usize].1 = val;
+                return Ok(());
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+
     #[inline]
     pub fn set_key(&mut self, k: super::MapKey, val: Value) {
         self.bump_generation();
@@ -1540,7 +1735,7 @@ impl MapData {
                 if let Some(e) = self.mutation_error(Some(&k), "assign") {
                     return Err(e);
                 }
-                self.set_key(k, args[1].clone());
+                self.try_set_key(k, args[1].clone())?;
                 Ok(Value::Null)
             }
             "get" => {
@@ -2184,6 +2379,19 @@ impl SetData {
             "push" | "add" => {
                 want(name, args, 1)?;
                 if self.find(&args[0]).is_none() {
+                    if self.items.len() == self.items.capacity() {
+                        let per_item = std::mem::size_of::<Value>() + 32;
+                        let bytes = self
+                            .items
+                            .len()
+                            .checked_add(1)
+                            .and_then(|n| n.checked_mul(per_item))
+                            .ok_or_else(|| "out of memory: set allocation overflow".to_string())?;
+                        crate::budget::check_alloc_fast(bytes)?;
+                        self.items
+                            .try_reserve(1)
+                            .map_err(|_| "out of memory: set allocation failed".to_string())?;
+                    }
                     self.push_unchecked(args[0].clone());
                 }
                 Ok(Value::Null)

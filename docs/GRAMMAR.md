@@ -254,3 +254,13 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   or passing the wrong number of arguments. The AOT backend does not support
   `super` yet (`--engine vm` runs it).
 - `self` may appear only as a parameter name and inside method bodies.
+
+## Numeric edge cases
+
+All three engines (tree interpreter, bytecode VM, and LLVM AOT) enforce the same
+deterministic arithmetic rules:
+
+- **Integer overflow:** Signed 64-bit integer arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`, `abs`) is checked and throws a catchable runtime error on overflow (no silent two's-complement wraparound).
+- **Division and modulo by zero:** Both integer (`1 / 0`, `1 % 0`) and floating-point (`1.0 / 0.0`, `1.0 % 0.0`) division/modulo by zero throw a catchable `"division by zero"` runtime error instead of producing IEEE infinity/NaN. Use the `inf()` and `nan()` builtins when IEEE infinity or NaN values are desired explicitly.
+- **NaN comparisons and sorting:** Following IEEE-754 equality, `nan() == nan()` is `false` and `nan() != nan()` is `true`. Ordered comparisons (`<`, `<=`, `>`, `>=`) with `nan()` throw a catchable runtime error (`"cannot compare float and float"`). Natural `list.sort()` / `sorted()` / `argsort()` place `NaN` deterministically last without panicking.
+- **Bitwise shift range:** `<<` and `>>` require integer operands and a shift amount in `0..=63`; negative shifts or shifts `>= 64` throw a catchable runtime error.

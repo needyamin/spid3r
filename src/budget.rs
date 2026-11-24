@@ -152,6 +152,7 @@ impl MemLimit {
     pub fn new(cap_mb: u64) -> Self {
         let cap = Arc::new(AtomicI64::new(cap_mb.min(i64::MAX as u64) as i64));
         *active_mem().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&cap));
+        ACTIVE_MEM_CAP_MB.store(cap_mb.min(i64::MAX as u64) as i64, Ordering::Relaxed);
         MemLimit { cap_mb: cap }
     }
 
@@ -172,8 +173,9 @@ impl MemLimit {
 
     /// Swap the cap in place (Live reload).
     pub fn set_cap(&self, cap_mb: u64) {
-        self.cap_mb
-            .store(cap_mb.min(i64::MAX as u64) as i64, Ordering::Relaxed);
+        let clamped = cap_mb.min(i64::MAX as u64) as i64;
+        self.cap_mb.store(clamped, Ordering::Relaxed);
+        ACTIVE_MEM_CAP_MB.store(clamped, Ordering::Relaxed);
     }
 }
 
@@ -189,6 +191,111 @@ fn active_wall() -> &'static Mutex<Option<Arc<WallClockInner>>> {
 fn active_mem() -> &'static Mutex<Option<Arc<AtomicI64>>> {
     static ACTIVE: Mutex<Option<Arc<AtomicI64>>> = Mutex::new(None);
     &ACTIVE
+}
+
+fn active_budget_slot() -> &'static Mutex<Option<Budget>> {
+    static ACTIVE: Mutex<Option<Budget>> = Mutex::new(None);
+    &ACTIVE
+}
+
+static ACTIVE_MEM_CAP_MB: AtomicI64 = AtomicI64::new(0);
+
+/// Default safety ceiling on a single string/bytes/container allocation (256 MiB)
+/// when neither `memory.allocation_cap_mb` nor `runtime.memory_limit_mb` is set,
+/// preventing Rust's global allocator from aborting the host process on runaway doubling.
+pub const DEFAULT_SINGLE_ALLOC_CAP: usize = 256 * 1024 * 1024;
+
+/// RAII guard that installs the active run's budget, wall-clock, and memory
+/// limits for blocking natives / single-allocation checks, restoring the
+/// previous state on exit so nested or sequential runs never leak or clobber
+/// limits across runs.
+pub struct ActiveLimitGuard {
+    prev_budget: Option<Budget>,
+    prev_wall: Option<Arc<WallClockInner>>,
+    prev_mem: Option<Arc<AtomicI64>>,
+    prev_mem_mb: i64,
+}
+
+impl ActiveLimitGuard {
+    pub fn enter(budget: Option<Budget>, wall: Option<&WallClock>, mem: Option<&MemLimit>) -> Self {
+        let prev_budget = std::mem::replace(
+            &mut *active_budget_slot()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            budget,
+        );
+        let prev_wall = std::mem::replace(
+            &mut *active_wall().lock().unwrap_or_else(|e| e.into_inner()),
+            wall.map(|w| Arc::clone(&w.inner)),
+        );
+        let prev_mem = std::mem::replace(
+            &mut *active_mem().lock().unwrap_or_else(|e| e.into_inner()),
+            mem.map(|m| Arc::clone(&m.cap_mb)),
+        );
+        let new_mb = mem.map(|m| m.cap_mb().max(0)).unwrap_or(0);
+        let prev_mem_mb = ACTIVE_MEM_CAP_MB.swap(new_mb, Ordering::Relaxed);
+        ActiveLimitGuard {
+            prev_budget,
+            prev_wall,
+            prev_mem,
+            prev_mem_mb,
+        }
+    }
+}
+
+impl Drop for ActiveLimitGuard {
+    fn drop(&mut self) {
+        *active_budget_slot()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = self.prev_budget.take();
+        *active_wall().lock().unwrap_or_else(|e| e.into_inner()) = self.prev_wall.take();
+        *active_mem().lock().unwrap_or_else(|e| e.into_inner()) = self.prev_mem.take();
+        ACTIVE_MEM_CAP_MB.store(self.prev_mem_mb, Ordering::Relaxed);
+    }
+}
+
+/// Register the currently executing engine's step budget (for blocking natives).
+pub fn set_active_budget(budget: Option<Budget>) {
+    *active_budget_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = budget;
+}
+
+/// Register the currently executing engine's heap limit handle.
+pub fn set_active_mem_limit(limit: Option<&MemLimit>) {
+    let mb = limit.map(|l| l.cap_mb().max(0)).unwrap_or(0);
+    ACTIVE_MEM_CAP_MB.store(mb, Ordering::Relaxed);
+}
+
+/// Returns `false` if an active step budget exists and is exhausted.
+pub fn charge_active_budget(steps: i64) -> bool {
+    let guard = active_budget_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(b) => b.charge(steps),
+        None => true,
+    }
+}
+
+/// Returns `true` if an active wall-clock deadline has expired.
+pub fn active_wall_exceeded() -> bool {
+    active_wall_message().is_some()
+}
+
+/// Returns the formatted wall-clock timeout message if the active deadline has expired.
+pub fn active_wall_message() -> Option<String> {
+    let guard = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().and_then(|inner| {
+        if crate::sched::now_ms() >= inner.deadline_ms.load(Ordering::Relaxed) {
+            Some(format!(
+                "wall-clock limit exceeded ({} ms)",
+                inner.limit_ms.load(Ordering::Relaxed)
+            ))
+        } else {
+            None
+        }
+    })
 }
 
 /// Read `runtime.wall_clock_limit_ms` / `runtime.memory_limit_mb` out of `cfg`.
@@ -242,8 +349,9 @@ pub fn allocation_cap_bytes() -> Option<usize> {
     }
 }
 
-/// Enforce `memory.allocation_cap_mb` before a single large buffer/string/list
-/// allocation. Returns a catchable runtime error when `bytes` exceeds the cap.
+/// Enforce `memory.allocation_cap_mb`, `runtime.memory_limit_mb`, and the
+/// single-allocation host-abort safety cap before a large buffer/string/list
+/// allocation. Returns a catchable runtime error instead of aborting the host.
 pub fn check_single_allocation(bytes: usize) -> Result<(), String> {
     if let Some(cap) = allocation_cap_bytes() {
         if bytes > cap {
@@ -253,7 +361,83 @@ pub fn check_single_allocation(bytes: usize) -> Result<(), String> {
             ));
         }
     }
+    let mut mem_mb = ACTIVE_MEM_CAP_MB.load(Ordering::Relaxed);
+    if mem_mb <= 0 {
+        mem_mb = crate::config::get("runtime.memory_limit_mb")
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+    }
+    if mem_mb > 0 {
+        let cap_bytes = (mem_mb as usize).saturating_mul(1024 * 1024);
+        if bytes > cap_bytes
+            || crate::value::gc::cached_memory_usage_bytes().saturating_add(bytes) > cap_bytes
+        {
+            return Err(format!(
+                "out of memory: script exceeded memory_limit_mb ({})",
+                mem_mb
+            ));
+        }
+    }
+    if allocation_cap_bytes().is_none() && bytes > DEFAULT_SINGLE_ALLOC_CAP {
+        return Err(format!(
+            "out of memory: single allocation of {} bytes exceeds limit ({} bytes)",
+            bytes, DEFAULT_SINGLE_ALLOC_CAP
+        ));
+    }
     Ok(())
+}
+
+/// Fast-path allocation check: skips global limit checks for tiny allocations
+/// below 16 KiB so hot inner loops pay one branch instruction.
+#[inline(always)]
+pub fn check_alloc_fast(bytes: usize) -> Result<(), String> {
+    if bytes < 16 * 1024 {
+        return Ok(());
+    }
+    check_single_allocation(bytes)
+}
+
+/// Concatenate two strings with memory/allocation cap checks and `try_reserve_exact`.
+#[inline]
+pub fn concat_strings_checked(a: &str, b: &str) -> Result<String, String> {
+    let total = a
+        .len()
+        .checked_add(b.len())
+        .ok_or_else(|| "out of memory: string size overflow".to_string())?;
+    check_alloc_fast(total)?;
+    let mut s = String::new();
+    s.try_reserve_exact(total)
+        .map_err(|_| format!("out of memory: cannot allocate string of {} bytes", total))?;
+    s.push_str(a);
+    s.push_str(b);
+    Ok(s)
+}
+
+/// Append `rhs` onto `buf` with memory/allocation cap checks and `try_reserve`.
+#[inline]
+pub fn append_string_checked(buf: &mut String, rhs: &str) -> Result<(), String> {
+    let total = buf
+        .len()
+        .checked_add(rhs.len())
+        .ok_or_else(|| "out of memory: string size overflow".to_string())?;
+    check_alloc_fast(total)?;
+    buf.try_reserve(rhs.len())
+        .map_err(|_| format!("out of memory: cannot grow string to {} bytes", total))?;
+    buf.push_str(rhs);
+    Ok(())
+}
+
+/// Validate that growing a container of `T` by `extra` elements fits within
+/// configured memory and allocation caps without overflow or allocator abort.
+#[inline]
+pub fn check_vec_grow<T>(cur_len: usize, extra: usize) -> Result<(), String> {
+    let total_len = cur_len
+        .checked_add(extra)
+        .ok_or_else(|| "out of memory: container size overflow".to_string())?;
+    let bytes = total_len
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| "out of memory: container allocation overflow".to_string())?;
+    check_alloc_fast(bytes)
 }
 
 /// Apply the configured wall-clock / memory limits to the active run's
@@ -288,7 +472,9 @@ pub fn refresh_runtime_limits(cfg: &crate::config::Config) {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
     {
-        cap.store(mem_mb.min(i64::MAX as u64) as i64, Ordering::Relaxed);
+        let clamped = mem_mb.min(i64::MAX as u64) as i64;
+        cap.store(clamped, Ordering::Relaxed);
+        ACTIVE_MEM_CAP_MB.store(clamped, Ordering::Relaxed);
     }
 }
 

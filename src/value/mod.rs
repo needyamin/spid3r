@@ -2033,6 +2033,7 @@ fn has_len(v: &Value) -> bool {
             | Value::Matrix(_)
             | Value::Vector(_)
             | Value::Bytes(_)
+            | Value::Channel(_)
             | Value::Ring(_)
             | Value::Bag(_)
     )

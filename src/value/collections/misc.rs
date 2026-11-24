@@ -85,6 +85,12 @@ impl HeapData {
         if let Some(first) = self.items.first() {
             self.less(&v, first)?;
         }
+        if self.items.len() == self.items.capacity() {
+            crate::budget::check_vec_grow::<Value>(self.items.len(), 1)?;
+            self.items
+                .try_reserve(1)
+                .map_err(|_| "out of memory: heap allocation failed".to_string())?;
+        }
         self.items.push(v);
         let n = self.items.len();
         self.sift_up(n - 1)?;
@@ -279,6 +285,12 @@ impl PrioQueueData {
     }
 
     pub fn push(&mut self, value: Value, prio: f64) -> Result<Value, String> {
+        if self.items.len() == self.items.capacity() {
+            crate::budget::check_vec_grow::<PqItem>(self.items.len(), 1)?;
+            self.items
+                .try_reserve(1)
+                .map_err(|_| "out of memory: priority_queue allocation failed".to_string())?;
+        }
         let item = PqItem {
             value,
             prio,
@@ -318,7 +330,12 @@ impl PrioQueueData {
                 Ok(Value::Null)
             }
             "push" => {
-                want(name, args, 2)?;
+                if args.len() != 2 {
+                    return Err(format!(
+                        "priority_queue.push(value, priority) expects 2 argument(s), got {}",
+                        args.len()
+                    ));
+                }
                 let prio = want_num(&args[1], "priority_queue.push")?;
                 self.push(args[0].clone(), prio)
             }
@@ -897,9 +914,22 @@ impl HashTableData {
             .map(|i| (b, i))
     }
 
-    fn rehash(&mut self) {
-        let new_len = self.buckets.len() * 2;
-        let mut buckets: Vec<Vec<(MapKey, Value)>> = vec![Vec::new(); new_len];
+    fn try_rehash(&mut self) -> Result<(), String> {
+        let new_len = self
+            .buckets
+            .len()
+            .checked_mul(2)
+            .ok_or_else(|| "out of memory: hash_table size overflow".to_string())?;
+        let bucket_bytes = new_len.saturating_mul(std::mem::size_of::<Vec<(MapKey, Value)>>());
+        let entry_bytes = self
+            .size
+            .saturating_mul(std::mem::size_of::<(MapKey, Value)>());
+        crate::budget::check_alloc_fast(bucket_bytes.saturating_add(entry_bytes))?;
+        let mut buckets: Vec<Vec<(MapKey, Value)>> = Vec::new();
+        buckets
+            .try_reserve_exact(new_len)
+            .map_err(|_| "out of memory: hash_table allocation failed".to_string())?;
+        buckets.resize_with(new_len, Vec::new);
         for old in self.buckets.drain(..) {
             for (k, v) in old {
                 let b = Self::bucket_of(&k, new_len);
@@ -907,18 +937,22 @@ impl HashTableData {
             }
         }
         self.buckets = buckets;
+        Ok(())
     }
 
     pub fn set(&mut self, key: MapKey, value: Value) -> Result<Value, String> {
         if let Some((b, i)) = self.find(&key) {
             self.buckets[b][i].1 = value;
         } else {
+            if (self.size & 255) == 0 {
+                crate::budget::check_vec_grow::<(MapKey, Value)>(self.size, 1)?;
+            }
+            if (self.size + 1) as f64 / self.buckets.len() as f64 > LOAD_FACTOR_THRESHOLD {
+                self.try_rehash()?;
+            }
             let b = Self::bucket_of(&key, self.buckets.len());
             self.buckets[b].push((key, value));
             self.size += 1;
-            if self.size as f64 / self.buckets.len() as f64 > LOAD_FACTOR_THRESHOLD {
-                self.rehash();
-            }
         }
         Ok(Value::Null)
     }
@@ -2455,7 +2489,15 @@ impl BagData {
                     .find(|(v, _)| values_equal(v, &args[0]))
                 {
                     Some((_, n)) => *n += 1,
-                    None => self.counts.push((args[0].clone(), 1)),
+                    None => {
+                        if self.counts.len() == self.counts.capacity() {
+                            crate::budget::check_vec_grow::<(Value, usize)>(self.counts.len(), 1)?;
+                            self.counts
+                                .try_reserve(1)
+                                .map_err(|_| "out of memory: bag allocation failed".to_string())?;
+                        }
+                        self.counts.push((args[0].clone(), 1));
+                    }
                 }
                 Ok(Value::Null)
             }
@@ -2768,6 +2810,11 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
             if !(0..=255).contains(&val) {
                 return Err(format!("byte value must be between 0 and 255, got {}", val));
             }
+            if b.len() == b.capacity() {
+                crate::budget::check_vec_grow::<u8>(b.len(), 1)?;
+                b.try_reserve(1)
+                    .map_err(|_| "out of memory: bytes allocation failed".to_string())?;
+            }
             b.push(val as u8);
             Ok(Value::Null)
         }
@@ -2792,6 +2839,7 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
         "to_list" => {
             want(name, args, 0)?;
             let b = cell.lock().unwrap();
+            crate::budget::check_vec_grow::<Value>(0, b.len())?;
             let items: Vec<Value> = b.iter().map(|&x| Value::Int(x as i64)).collect();
             Ok(make_list(items))
         }

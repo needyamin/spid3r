@@ -823,7 +823,8 @@ fn n_eprint(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-fn n_read_line(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_read_line(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("read_line", &args, 0)?;
     use std::io::BufRead;
     let stdin = std::io::stdin();
     let mut line = String::new();
@@ -1370,7 +1371,8 @@ fn n_sleep_ms(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-fn n_now(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_now(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("now", &args, 0)?;
     // Docs promise a MONOTONIC timestamp; wall-clock time can jump backwards
     // under NTP or a manual clock change. Report milliseconds since the
     // process's first monotonic call instead. This reads the SAME process-wide
@@ -1409,7 +1411,8 @@ pub fn enable_lazy_env_script_args() {
     SCRIPT_ARGS_LAZY_ENV.store(true, std::sync::atomic::Ordering::Release);
 }
 
-fn n_args(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_args(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("args", &args, 0)?;
     if SCRIPT_ARGS_LAZY_ENV.swap(false, std::sync::atomic::Ordering::AcqRel) {
         *SCRIPT_ARGS.write().unwrap() = std::env::args().skip(1).collect();
     }
@@ -2250,12 +2253,14 @@ fn n_exec_capture(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 // ------------------------------------------------------------------ tasks
 
-fn n_yield(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_yield(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("yield", &args, 0)?;
     std::thread::yield_now();
     Ok(Value::Null)
 }
 
-fn n_task_count(ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_task_count(ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("task_count", &args, 0)?;
     Ok(Value::Int(ctx.sched.live_tasks() as i64))
 }
 
@@ -3255,7 +3260,8 @@ fn n_type_of(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 /// `gc_collect()` — run one cycle-collection pass; returns the cells swept.
-fn n_gc_collect(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_gc_collect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("gc_collect", &args, 0)?;
     // A mark-sweep reads each cell's strong count and then walks its children;
     // another thread that is *running* can move a value between those steps and
     // make a live cell look like garbage (audit A-4). Collect only when the
@@ -3271,7 +3277,8 @@ fn n_gc_collect(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
 }
 
 /// `gc_live_cells()` — number of currently-live tracked container cells.
-fn n_gc_live_cells(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_gc_live_cells(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("gc_live_cells", &args, 0)?;
     Ok(Value::Int(crate::value::gc::live_cells() as i64))
 }
 
@@ -5815,7 +5822,8 @@ fn n_config_set(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Bool(true))
 }
 
-fn n_config_reload(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+fn n_config_reload(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    collections::want("config_reload", &args, 0)?;
     let cfg = crate::config::reload();
     Ok(Value::Str(
         cfg.path
@@ -5895,4 +5903,72 @@ fn capability_stub(
         return Some(sandbox_env_stub);
     }
     None
+}
+
+#[cfg(test)]
+mod arity_sweep_tests {
+    use super::*;
+
+    /// AUD-DX-04: every non-variadic builtin native must reject excess arguments
+    /// instead of silently ignoring them.
+    #[test]
+    fn all_non_variadic_natives_reject_excess_arguments() {
+        const VARIADIC: &[&str] = &[
+            "print",
+            "println",
+            "eprint",
+            "min",
+            "max",
+            "path_join",
+            "select",
+            "list",
+            "vec",
+            "stack",
+            "queue",
+            "deque",
+            "linked_list",
+            "singly_linked_list",
+            "doubly_linked_list",
+            "map",
+            "module_namespace",
+            "set",
+            "tuple",
+            "vector",
+            "bytes",
+            "bag",
+            "array",
+            "binary_tree",
+        ];
+
+        let sched = crate::sched::Scheduler::shared();
+        let ctx = NativeCtx { sched };
+        let excess: Vec<Value> = (0..10).map(Value::Int).collect();
+        let mut failures = Vec::new();
+        for (name, func) in native_defs() {
+            if VARIADIC.contains(&name) {
+                continue;
+            }
+            match func(&ctx, excess.clone()) {
+                Ok(_) => failures.push((name, "returned Ok".to_string())),
+                Err(msg) => {
+                    let lower = msg.to_ascii_lowercase();
+                    if !lower.contains("argument")
+                        && !lower.contains("arg")
+                        && !lower.contains("takes")
+                        && !lower.contains("arity")
+                        && !lower.contains("disabled")
+                        && !lower.contains("tls")
+                        && !lower.contains("not supported")
+                    {
+                        failures.push((name, msg));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "non-variadic natives did not report an arity error for 10 arguments: {:?}",
+            failures
+        );
+    }
 }

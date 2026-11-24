@@ -324,11 +324,17 @@ impl ListData {
             }
             "push_back" => {
                 want(name, args, 1)?;
+                if (self.len & 255) == 0 {
+                    crate::budget::check_vec_grow::<Mutex<LLNode>>(self.len, 1)?;
+                }
                 self.push_back(args[0].clone());
                 Ok(Value::Null)
             }
             "push_front" => {
                 want(name, args, 1)?;
+                if (self.len & 255) == 0 {
+                    crate::budget::check_vec_grow::<Mutex<LLNode>>(self.len, 1)?;
+                }
                 self.push_front(args[0].clone());
                 Ok(Value::Null)
             }
@@ -456,6 +462,9 @@ impl BstData {
 
     pub fn insert(&mut self, v: Value) -> Result<Value, String> {
         Self::cmp(&v, &v)?;
+        if (self.len & 255) == 0 {
+            crate::budget::check_vec_grow::<Mutex<BstNode>>(self.len, 1)?;
+        }
         let node: BstRef = Arc::new(Mutex::new(BstNode {
             value: v,
             left: None,
@@ -722,6 +731,9 @@ impl BinTreeData {
     }
 
     pub fn insert(&mut self, v: Value) -> Result<Value, String> {
+        if (self.len & 255) == 0 {
+            crate::budget::check_vec_grow::<Mutex<BtNode>>(self.len, 1)?;
+        }
         let node: BtRef = Arc::new(Mutex::new(BtNode {
             value: v,
             left: None,

@@ -5,6 +5,10 @@
 //! '\d', '\w', '\s', '\D', '\W', '\S', alternation '|', and grouping '()'.
 //! Linear time execution with no exponential backtracking.
 //!
+//! Alternation follows **POSIX leftmost-longest** semantics (not PCRE
+//! leftmost-first): for example, `regex_find("a|ab", "ab")` yields `some("ab")`
+//! rather than `some("a")`.
+//!
 //! Bounded repeats are expanded at parse time (`a{2,4}` becomes `aa(a(a)?)?`,
 //! `a{2,}` becomes `aa a*`), so the NFA compiler needs no extra state kind.
 //! A `{` that does not form a valid quantifier (`a{`, `a{x}`, `a{2`, `{}`)
@@ -859,24 +863,20 @@ pub fn regex_replace(pattern: &str, text: &str, replacement: &str) -> Result<Str
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut pos = 0;
-    while pos < chars.len() {
+    while pos <= chars.len() {
         match nfa.search(&chars, pos) {
             Some((s, e)) => {
-                // A match that starts at end-of-input is never replaced (the
-                // pre-single-pass implementation skipped that position too),
-                // but the unmatched prefix still has to be emitted.
-                if s == chars.len() {
-                    out.extend(&chars[pos..]);
-                    break;
-                }
                 out.extend(&chars[pos..s]);
                 out.push_str(replacement);
                 if e > s {
                     pos = e;
-                } else {
-                    // Empty match: emit the character so the loop advances.
+                } else if s < chars.len() {
+                    // Empty match inside input: emit the char so the loop advances.
                     out.push(chars[s]);
                     pos = s + 1;
+                } else {
+                    // Empty match at end-of-input: replacement emitted, done.
+                    break;
                 }
             }
             None => {
@@ -897,6 +897,15 @@ mod tests {
         assert!(regex_match("a+b", "aaab").unwrap());
         assert!(!regex_match("^a+b$", "aaabc").unwrap());
         assert!(regex_match("^a+b$", "aaab").unwrap());
+    }
+
+    #[test]
+    fn test_replace_empty_match_at_end_of_input() {
+        assert_eq!(regex_replace("x*", "abc", "-").unwrap(), "-a-b-c-");
+        assert_eq!(regex_replace("$", "ab", "X").unwrap(), "abX");
+        assert_eq!(regex_replace("x*", "", "-").unwrap(), "-");
+        assert_eq!(regex_replace("b*", "abc", "-").unwrap(), "-a--c-");
+        assert_eq!(regex_replace("^", "ab", "X").unwrap(), "Xab");
     }
 
     #[test]

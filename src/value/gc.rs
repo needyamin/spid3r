@@ -763,6 +763,16 @@ fn rescan_memory() {
     LAST_MEM_SCAN_MS.store(now, Ordering::Relaxed);
 }
 
+/// Lock-free read of the last cached tracked-heap byte estimate.
+///
+/// Safe to call while holding any container `Mutex` (unlike
+/// [`memory_usage_bytes`], which may trigger `rescan_memory()` and lock
+/// every tracked container in `REGISTRY`).
+#[inline]
+pub fn cached_memory_usage_bytes() -> usize {
+    MEM_BYTES.load(Ordering::Relaxed)
+}
+
 /// Total heap used by tracked script values, in bytes (approximate).
 /// Recomputed at most once per [`MEM_RESCAN_INTERVAL_MS`], and only while
 /// this thread is the only one executing Spid3r code (the same gate the

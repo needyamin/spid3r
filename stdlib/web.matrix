@@ -521,6 +521,9 @@ fn b64url_decode_str(s) {
 }
 
 public fn jwt_sign(payload_map, secret) {
+    if type_of(secret) != "string" or len(secret) == 0 {
+        throw "jwt_sign: secret must be a non-empty string";
+    }
     let header = map("alg", "HS256", "typ", "JWT");
     let h_b64 = b64url_encode_str(json_write(header));
     let p_b64 = b64url_encode_str(json_write(payload_map));
@@ -545,9 +548,21 @@ public fn jwt_sign(payload_map, secret) {
 /// does not invent a lifetime. The payload must be a JSON object, as RFC 7519
 /// requires; a signed array or scalar is rejected.
 public fn jwt_verify(token, secret, skew = 60) {
+    if type_of(secret) != "string" or len(secret) == 0 {
+        return err("invalid JWT: secret must be a non-empty string");
+    }
     let parts = token.split(".");
     if parts.len() != 3 {
         return err("invalid JWT: expected 3 dot-separated parts");
+    }
+    let header = null;
+    try {
+        header = json_parse(b64url_decode_str(parts[0]));
+    } catch (e) {
+        return err("failed to decode JWT header: " + string(e));
+    }
+    if type_of(header) != "map" or not header.has("alg") or header["alg"] != "HS256" {
+        return err("invalid JWT: unsupported algorithm (expected HS256)");
     }
     let signing_input = parts[0] + "." + parts[1];
     let hex_sig = hmac_sha256(secret, signing_input);

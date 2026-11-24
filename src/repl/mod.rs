@@ -765,6 +765,9 @@ pub fn run() {
             Ok(None) => {}
             Err(d) => {
                 eprintln!("{}", d);
+                if let Some(h) = d.help() {
+                    eprintln!("  = help: {}", h);
+                }
             }
         }
     }
@@ -898,7 +901,9 @@ fn eval_line(
                 // the diagnostic now names the real problem against the line
                 // that was typed.
                 if d.message.contains("found end of file") && !src.trim_end().ends_with(';') {
-                    let mut friendly = d.clone();
+                    let mut friendly = d.clone().with_help(
+                        "statements (let, const, assignments) require a trailing ';'; bare expressions do not",
+                    );
                     friendly.message = "missing ';' at end of statement".to_string();
                     let len = src.trim_end().chars().count() as u32;
                     friendly.span =

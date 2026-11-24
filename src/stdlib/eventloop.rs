@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::{self, Sender};
@@ -99,7 +99,10 @@ enum LoopCmd {
     RearmReadable(i64),
     RearmWritable(i64),
     Unwatch(i64),
+    UnwatchTimer(i64),
     Wake,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Sync(Sender<()>),
 }
 
 struct LoopControl {
@@ -107,6 +110,7 @@ struct LoopControl {
     running: Mutex<bool>,
     cv: Condvar,
     stopped: AtomicBool,
+    watcher_count: AtomicUsize,
     sched: Mutex<Option<Arc<sched::Scheduler>>>,
 }
 
@@ -124,6 +128,7 @@ fn control() -> &'static LoopControl {
             running: Mutex::new(false),
             cv: Condvar::new(),
             stopped: AtomicBool::new(false),
+            watcher_count: AtomicUsize::new(0),
             sched: Mutex::new(None),
         }
     })
@@ -134,6 +139,16 @@ fn send_cmd(cmd: LoopCmd) {
     let _ = ctl.tx.lock().unwrap().send(cmd);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     wake_pipe();
+}
+
+/// Remove a cancelled timer from the event-loop watcher map without spawning
+/// the loop thread if the event loop has never been started.
+pub(crate) fn unwatch_timer(id: i64) {
+    if let Some(ctl) = CONTROL.get() {
+        let _ = ctl.tx.lock().unwrap().send(LoopCmd::UnwatchTimer(id));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        wake_pipe();
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,7 +209,26 @@ fn dispatch_timer_cb(id: i64, cb: Value, invoker: CallbackInvoker) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn prune_stale_watchers(w: &mut Watchers) {
+    w.timers.retain(|&tid, _| timer::is_pending(tid));
+    w.read.retain(|&id, h| h.in_flight || net::is_open(id));
+    w.write.retain(|&id, h| h.in_flight || net::is_open(id));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_watcher_count(w: &mut Watchers) {
+    prune_stale_watchers(w);
+    let n = w.read.len() + w.write.len() + w.timers.len();
+    let ctl = control();
+    ctl.watcher_count.store(n, Ordering::SeqCst);
+    if n == 0 {
+        ctl.cv.notify_all();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn drain_cmds(rx: &Receiver<LoopCmd>, w: &mut Watchers) {
+    let mut syncs = Vec::new();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
             LoopCmd::WatchReadable { id, cb, invoker } => {
@@ -242,8 +276,18 @@ fn drain_cmds(rx: &Receiver<LoopCmd>, w: &mut Watchers) {
                 w.read.remove(&id);
                 w.write.remove(&id);
             }
+            LoopCmd::UnwatchTimer(id) => {
+                w.timers.remove(&id);
+            }
             LoopCmd::Wake => {}
+            LoopCmd::Sync(reply) => {
+                syncs.push(reply);
+            }
         }
+    }
+    sync_watcher_count(w);
+    for reply in syncs {
+        let _ = reply.send(());
     }
 }
 
@@ -258,6 +302,7 @@ fn fire_due_timers(w: &mut Watchers) {
             dispatch_timer_cb(tid, cb, invoker);
         }
     }
+    sync_watcher_count(w);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -773,11 +818,34 @@ fn n_event_loop_run(ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     *r = true;
     ctl.stopped.store(false, Ordering::SeqCst);
     drop(r);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (stx, srx) = mpsc::channel();
+        send_cmd(LoopCmd::Sync(stx));
+        let _ = srx.recv();
+    }
+    #[cfg(target_arch = "wasm32")]
     send_cmd(LoopCmd::Wake);
 
     let mut r = ctl.running.lock().unwrap();
+    let mut exit_err: Option<String> = None;
     while *r && !ctl.stopped.load(Ordering::SeqCst) && !super::shutdown::is_requested() {
         if sched::current_task_cancelled() {
+            break;
+        }
+        if let Some(msg) = crate::budget::active_wall_message() {
+            exit_err = Some(msg);
+            break;
+        }
+        if !crate::budget::charge_active_budget(1) {
+            exit_err = Some("execution budget exhausted".to_string());
+            break;
+        }
+        if ctl.watcher_count.load(Ordering::SeqCst) == 0
+            && !sched::in_spawned_task()
+            && ctx.sched.live_tasks() == 0
+        {
             break;
         }
         let (guard, _) = ctl.cv.wait_timeout(r, Duration::from_millis(25)).unwrap();
@@ -785,5 +853,8 @@ fn n_event_loop_run(ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     }
     *r = false;
     ctl.stopped.store(false, Ordering::SeqCst);
+    if let Some(msg) = exit_err {
+        return Err(msg);
+    }
     Ok(Value::Null)
 }

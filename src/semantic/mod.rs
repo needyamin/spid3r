@@ -517,6 +517,90 @@ impl Checker {
     /// A type-mismatch diagnostic with the suggestion users actually need:
     /// annotations are compile-time only, so the fix is either `any` or a
     /// conversion.
+    fn is_nullable_or_union(t: &Ty) -> bool {
+        matches!(t, Ty::Null | Ty::Nullable(_) | Ty::Union(_))
+    }
+
+    fn check_binop_types(
+        &self,
+        op: BinOp,
+        lt: &Ty,
+        rt: &Ty,
+        span: &Span,
+    ) -> Result<(), Diagnostic> {
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            return Ok(());
+        }
+        if !Self::is_nullable_or_union(lt) && !Self::is_nullable_or_union(rt) {
+            return Ok(());
+        }
+        let ok = match op {
+            BinOp::Add => {
+                (Self::ty_all_numeric(lt) && Self::ty_all_numeric(rt))
+                    || (Self::ty_all_str(lt) && Self::ty_all_str(rt))
+                    || (Self::ty_all_list(lt) && Self::ty_all_list(rt))
+            }
+            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                Self::ty_all_numeric(lt) && Self::ty_all_numeric(rt)
+            }
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                (Self::ty_all_numeric(lt) && Self::ty_all_numeric(rt))
+                    || (Self::ty_all_str(lt) && Self::ty_all_str(rt))
+            }
+            BinOp::Eq | BinOp::Ne => true,
+        };
+        if !ok {
+            let op_s = match op {
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::Lt => "<",
+                BinOp::Le => "<=",
+                BinOp::Gt => ">",
+                BinOp::Ge => ">=",
+                BinOp::Eq => "==",
+                BinOp::Ne => "!=",
+            };
+            return Err(self.mismatch(
+                span,
+                format!(
+                    "cannot apply operator '{}' to {} and {}",
+                    op_s,
+                    lt.detail_name(),
+                    rt.detail_name()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ty_all_numeric(t: &Ty) -> bool {
+        match t {
+            Ty::Int | Ty::Float | Ty::Any => true,
+            Ty::Union(ms) => !ms.is_empty() && ms.iter().all(Self::ty_all_numeric),
+            _ => false,
+        }
+    }
+
+    fn ty_all_str(t: &Ty) -> bool {
+        match t {
+            Ty::Str | Ty::Any => true,
+            Ty::Union(ms) => !ms.is_empty() && ms.iter().all(Self::ty_all_str),
+            _ => false,
+        }
+    }
+
+    fn ty_all_list(t: &Ty) -> bool {
+        match t {
+            Ty::Coll(name, _) if name == "list" => true,
+            Ty::Any => true,
+            Ty::Union(ms) => !ms.is_empty() && ms.iter().all(Self::ty_all_list),
+            _ => false,
+        }
+    }
+
     fn mismatch(&self, span: &Span, msg: String) -> Diagnostic {
         self.err(span, msg).with_help(
             "annotations are checked before the program runs; use `any` to opt out, \
@@ -1999,6 +2083,23 @@ impl Checker {
         }
     }
 
+    fn invalidate_incompatible_narrowed(&mut self, name: &str, got: &Ty) {
+        let drop_layers: Vec<usize> = self
+            .narrowed
+            .iter()
+            .enumerate()
+            .filter_map(|(i, layer)| {
+                layer
+                    .get(name)
+                    .is_some_and(|prev| !self.assignable(got, prev))
+                    .then_some(i)
+            })
+            .collect();
+        for i in drop_layers {
+            self.narrowed[i].remove(name);
+        }
+    }
+
     /// Strip `Null` from a nullable/union/option/result type (R6.3).
     fn non_null_ty(ty: &Ty) -> Ty {
         match ty {
@@ -2732,6 +2833,10 @@ impl Checker {
                         ));
                     }
                 }
+                let declared_ty = ty
+                    .as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .or_else(|| value.as_ref().and_then(|v| self.fn_value_type(v)));
                 self.declare(
                     name,
                     span,
@@ -2742,23 +2847,24 @@ impl Checker {
                         // SIGNATURE when it binds a function value, so calls
                         // through the new name are checked; everything else
                         // stays dynamically typed (Any).
-                        ty: ty
-                            .as_ref()
-                            .map(|t| self.resolve_type(t))
-                            .or_else(|| value.as_ref().and_then(|v| self.fn_value_type(v))),
+                        ty: declared_ty.clone(),
                         is_import: false,
                         ..Default::default()
                     },
                 )?;
-                if ty.is_none() {
-                    if let Some(v) = value {
-                        let vt = self.type_of(v);
+                if let Some(v) = value {
+                    let vt = self.type_of(v);
+                    if ty.is_none() {
                         if matches!(v, Expr::Propagate(..)) && vt != Ty::Any {
                             self.set_narrowed(name.clone(), vt);
                         } else if let Ty::Class(ref en) = vt {
                             if self.enums.contains_key(en) {
                                 self.set_narrowed(name.clone(), vt);
                             }
+                        }
+                    } else if let Some(ref dt) = declared_ty {
+                        if matches!(dt, Ty::Nullable(_) | Ty::Union(_)) && vt != Ty::Any {
+                            self.set_narrowed(name.clone(), vt);
                         }
                     }
                 }
@@ -3938,10 +4044,25 @@ impl Checker {
                 self.fn_depth -= 1;
                 r
             }
-            Expr::Unary { expr, .. } => self.check_expr(expr),
-            Expr::Binary { l, r, .. } => {
+            Expr::Unary { op, expr, span } => {
+                self.check_expr(expr)?;
+                if matches!(op, UnOp::Neg) {
+                    let t = self.type_of(expr);
+                    if Self::is_nullable_or_union(&t) && !Self::ty_all_numeric(&t) {
+                        return Err(self.mismatch(
+                            span,
+                            format!("cannot apply unary '-' to {}", t.detail_name()),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            Expr::Binary { op, l, r, span } => {
                 self.check_expr(l)?;
-                self.check_expr(r)
+                self.check_expr(r)?;
+                let lt = self.type_of(l);
+                let rt = self.type_of(r);
+                self.check_binop_types(*op, &lt, &rt, span)
             }
             Expr::Logical { l, r, .. } => {
                 self.check_expr(l)?;
@@ -3949,41 +4070,59 @@ impl Checker {
             }
             Expr::Assign {
                 target,
+                op,
                 value,
                 span,
-                ..
             } => {
+                let compound_op = match op {
+                    AssignOp::Assign => None,
+                    AssignOp::AddAssign => Some(BinOp::Add),
+                    AssignOp::SubAssign => Some(BinOp::Sub),
+                    AssignOp::MulAssign => Some(BinOp::Mul),
+                    AssignOp::DivAssign => Some(BinOp::Div),
+                    AssignOp::ModAssign => Some(BinOp::Mod),
+                };
                 match &**target {
-                    Expr::Ident(name, _) => match self.lookup(name) {
-                        Some(v) if v.is_const => {
-                            return Err(self.err(span, format!("cannot assign to const '{}'", name)))
+                    Expr::Ident(name, _) => {
+                        let is_const = self.lookup(name).is_some_and(|v| v.is_const);
+                        if is_const {
+                            return Err(
+                                self.err(span, format!("cannot assign to const '{}'", name))
+                            );
                         }
-                        None if !self.known(name) => return Err(self.unknown_name(span, name)),
-                        Some(v) => {
-                            let got = self.type_of(value);
-                            if let Some(t) = &v.ty {
-                                if !self.assignable(&got, t) {
-                                    return Err(self.mismatch(
-                                        span,
-                                        format!(
-                                            "type mismatch assigning to '{}': expected {}, got {}",
-                                            name,
-                                            t.detail_name(),
-                                            got.detail_name()
-                                        ),
-                                    ));
-                                }
+                        let declared_ty = self.lookup(name).and_then(|v| v.ty.clone());
+                        if self.lookup(name).is_none() && !self.known(name) {
+                            return Err(self.unknown_name(span, name));
+                        }
+                        let got = self.type_of(value);
+                        if let Some(binop) = compound_op {
+                            let lhs_ty = self.declared_or_narrowed_ty(name);
+                            self.check_binop_types(binop, &lhs_ty, &got, span)?;
+                        }
+                        if let Some(ref t) = declared_ty {
+                            if !self.assignable(&got, t) {
+                                return Err(self.mismatch(
+                                    span,
+                                    format!(
+                                        "type mismatch assigning to '{}': expected {}, got {}",
+                                        name,
+                                        t.detail_name(),
+                                        got.detail_name()
+                                    ),
+                                ));
+                            }
+                            if compound_op.is_none() {
+                                self.invalidate_incompatible_narrowed(name, &got);
                                 if matches!(t, Ty::Nullable(_) | Ty::Union(_)) && got != Ty::Any {
                                     self.set_narrowed(name.clone(), got);
                                 } else {
                                     self.clear_narrowed(name);
                                 }
-                            } else {
-                                self.clear_narrowed(name);
                             }
+                        } else if compound_op.is_none() {
+                            self.clear_narrowed(name);
                         }
-                        _ => {}
-                    },
+                    }
                     // A10: the index expression is evaluated at run time
                     // (`a[ghost()] = 1`), so it must be checked statically too.
                     // This arm used to drop it, letting unknown names, arity
@@ -3991,6 +4130,20 @@ impl Checker {
                     Expr::Index { object, index, .. } => {
                         self.check_expr(object)?;
                         self.check_expr(index)?;
+                        let ot = self.type_of(object);
+                        if matches!(ot, Ty::Null | Ty::Nullable(_)) {
+                            return Err(self.mismatch(
+                                span,
+                                format!("cannot index nullable type {}", ot.detail_name()),
+                            ));
+                        }
+                        let it = self.type_of(index);
+                        if matches!(it, Ty::Null | Ty::Nullable(_)) {
+                            return Err(self.mismatch(
+                                span,
+                                format!("cannot index with nullable type {}", it.detail_name()),
+                            ));
+                        }
                         // A module namespace is a read-only view of the
                         // module: its `public const` exports cannot be
                         // rebound through the alias (`mu["VERSION"] = 1`).
@@ -4355,9 +4508,28 @@ impl Checker {
                 }
                 Ok(())
             }
-            Expr::Index { object, index, .. } => {
+            Expr::Index {
+                object,
+                index,
+                span,
+            } => {
                 self.check_expr(object)?;
-                self.check_expr(index)
+                self.check_expr(index)?;
+                let ot = self.type_of(object);
+                if matches!(ot, Ty::Null | Ty::Nullable(_)) {
+                    return Err(self.mismatch(
+                        span,
+                        format!("cannot index nullable type {}", ot.detail_name()),
+                    ));
+                }
+                let it = self.type_of(index);
+                if matches!(it, Ty::Null | Ty::Nullable(_)) {
+                    return Err(self.mismatch(
+                        span,
+                        format!("cannot index with nullable type {}", it.detail_name()),
+                    ));
+                }
+                Ok(())
             }
             Expr::Field { object, name, span } => {
                 self.check_expr(object)?;

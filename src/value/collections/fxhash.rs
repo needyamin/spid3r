@@ -107,7 +107,9 @@ pub fn fx_hash_bytes(bytes: &[u8]) -> u64 {
                         << 24)
             }
         };
-        return (hash.rotate_left(5) ^ word).wrapping_mul(K);
+        let h = (hash.rotate_left(5) ^ word).wrapping_mul(K);
+        let h = (h ^ (h >> 32)).wrapping_mul(K);
+        return h ^ (h >> 32);
     }
     fx_hash_bytes_long(bytes)
 }
@@ -135,7 +137,8 @@ fn fx_hash_bytes_long(bytes: &[u8]) -> u64 {
     if !rest.is_empty() {
         hash = (hash.rotate_left(5) ^ (rest[0] as u64)).wrapping_mul(K);
     }
-    hash
+    let h = (hash ^ (hash >> 32)).wrapping_mul(K);
+    h ^ (h >> 32)
 }
 
 /// Hash a little-endian SSO `ValueV2` string directly from its `tag` word when `len <= 3`,
@@ -146,7 +149,9 @@ pub fn fx_hash_sso_tag_le(tag: u64, raw: &[u8]) -> u64 {
     if len <= 3 {
         let hash = 3u64.wrapping_mul(K);
         let word = ((len as u64) << 56) | (tag >> 8);
-        return (hash.rotate_left(5) ^ word).wrapping_mul(K);
+        let h = (hash.rotate_left(5) ^ word).wrapping_mul(K);
+        let h = (h ^ (h >> 32)).wrapping_mul(K);
+        return h ^ (h >> 32);
     }
     fx_hash_bytes(raw)
 }
@@ -209,5 +214,19 @@ mod tests {
                 s
             );
         }
+    }
+
+    #[test]
+    fn fx_hash_bytes_spreads_prefixed_keys_in_low_bits() {
+        let mut low16 = std::collections::HashSet::new();
+        for i in 10_000..11_024 {
+            let k = format!("k_{i}");
+            low16.insert(fx_hash_bytes(k.as_bytes()) & 0xFFFF);
+        }
+        assert!(
+            low16.len() > 900,
+            "prefixed keys collapsed in low 16 bits: only {} distinct buckets out of 1024",
+            low16.len()
+        );
     }
 }

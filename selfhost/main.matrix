@@ -36,20 +36,89 @@ import "test_runner";
 import "fmt";
 import "pkg";
 
+fn diag_code(phase, lint, msg) {
+    if phase == "lexer" {
+        if msg.contains("unterminated string") {
+            return "E1101";
+        }
+        if msg.contains("unterminated block comment") {
+            return "E1102";
+        }
+        return "E1100";
+    }
+    if phase == "parser" {
+        if msg.contains("unterminated block") {
+            return "E1021";
+        }
+        if msg.contains("expected an expression") {
+            return "E1022";
+        }
+        if msg.contains("expected an identifier") {
+            return "E1023";
+        }
+        if msg.contains("decorator must precede") {
+            return "E1024";
+        }
+        if msg.contains("import must appear before") {
+            return "E1025";
+        }
+        return "E1027";
+    }
+    if phase == "semantic" {
+        if lint == "unused-variable" {
+            return "E1391";
+        }
+        if lint == "unused-parameter" {
+            return "E1392";
+        }
+        if lint == "unused-import" {
+            return "E1393";
+        }
+        if lint == "unreachable-code" {
+            return "E1394";
+        }
+        if msg.contains("unknown name") {
+            return "E1301";
+        }
+        if msg.contains("type mismatch") {
+            return "E1302";
+        }
+        if msg.contains("not exhaustive") {
+            return "E1303";
+        }
+        if msg.contains("unknown type") {
+            return "E1304";
+        }
+        return "E1300";
+    }
+    if phase == "runtime" {
+        return "E1400";
+    }
+    if phase == "vm" {
+        return "E1500";
+    }
+    if phase == "usage" {
+        return "E1600";
+    }
+    return "E1700";
+}
+
 fn diag_to_json(sev, phase, lint, msg, path, sp, help) {
     let lint_js = "null";
     if lint != null {
         lint_js = jstr(lint);
     }
-    let span_js = "\"file\":null,\"line\":null,\"col\":null,\"len\":null";
+    let span_js = "\"file\":null,\"line\":null,\"col\":null,\"len\":null,\"end_line\":null,\"end_col\":null";
     if sp != null and sp[0] >= 0 {
-        span_js = "\"file\":" + jstr(path) + ",\"line\":" + string(sp[0]) + ",\"col\":" + string(sp[1]) + ",\"len\":" + string(sp[2]);
+        let end_col = sp[1] + sp[2];
+        span_js = "\"file\":" + jstr(path) + ",\"line\":" + string(sp[0]) + ",\"col\":" + string(sp[1]) + ",\"len\":" + string(sp[2]) + ",\"end_line\":" + string(sp[0]) + ",\"end_col\":" + string(end_col);
     }
     let help_js = "null";
     if help != null {
         help_js = jstr(help);
     }
-    return "{\"severity\":" + jstr(sev) + ",\"phase\":" + jstr(phase) + ",\"lint\":" + lint_js + ",\"message\":" + jstr(msg) + "," + span_js + ",\"help\":" + help_js + ",\"notes\":[],\"trace\":[]}";
+    let code_js = jstr(diag_code(phase, lint, msg));
+    return "{\"severity\":" + jstr(sev) + ",\"code\":" + code_js + ",\"phase\":" + jstr(phase) + ",\"lint\":" + lint_js + ",\"message\":" + jstr(msg) + "," + span_js + ",\"help\":" + help_js + ",\"notes\":[],\"trace\":[]}";
 }
 
 fn main() {

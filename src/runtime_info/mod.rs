@@ -86,6 +86,135 @@ pub fn is_policy_key(key: &str) -> bool {
         || k == "cache.bytecode_dir"
 }
 
+/// True when a value has the shape of a bearer token, JWT / signed session
+/// context, long hex key, or high-entropy opaque credential — even when stored
+/// under an environment variable name the key-name heuristic does not know.
+pub fn looks_like_secret(value: &str) -> bool {
+    let v = value.trim();
+    if v.len() < 10 {
+        return false;
+    }
+    let lower = v.to_ascii_lowercase();
+    if lower.starts_with("bearer ") || lower.starts_with("basic ") {
+        let rest = v.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
+        if rest.len() >= 4 {
+            return true;
+        }
+    }
+    // URLs carrying embedded user:password@ credentials (e.g. proxy or DB URLs).
+    if let Some((_, after_scheme)) = v.split_once("://") {
+        let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+        if let Some((userinfo, host)) = authority.rsplit_once('@') {
+            if !host.is_empty() {
+                if let Some((user, pass)) = userinfo.split_once(':') {
+                    if !user.is_empty() && !pass.is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    if v.len() < 16 {
+        return false;
+    }
+    const SECRET_PREFIXES: &[&str] = &[
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "sk-",
+        "sk_live_",
+        "sk_test_",
+        "xoxb-",
+        "xoxp-",
+        "akia",
+        "asia",
+        "aiza",
+    ];
+    if SECRET_PREFIXES.iter().any(|p| lower.starts_with(p)) && !v.contains(char::is_whitespace) {
+        return true;
+    }
+    // JWT or 3-part dot-separated base64url signed token (e.g. header.payload.sig).
+    // Avoid false positives on plain lowercase DNS names (e.g. `service.example.internal`)
+    // by requiring either the standard JWT `eyJ` JSON-header prefix or a long
+    // mixed-class segment (>= 16 chars with upper/digit/`_`/`-` variety).
+    if !v.contains(char::is_whitespace) {
+        let parts: Vec<&str> = v.split('.').collect();
+        if parts.len() == 3
+            && v.len() >= 24
+            && parts.iter().all(|p| {
+                !p.is_empty()
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'=')
+            })
+            && parts.iter().filter(|p| p.len() >= 6).count() >= 2
+        {
+            let is_jwt_header = parts[0].starts_with("eyJ");
+            let has_token_shape = parts.iter().any(|p| p.len() >= 16)
+                && (v.bytes().any(|b| b.is_ascii_uppercase())
+                    || v.bytes().any(|b| b.is_ascii_digit())
+                    || v.bytes().any(|b| b == b'_' || b == b'-'));
+            if is_jwt_header || has_token_shape {
+                return true;
+            }
+        }
+    }
+    // >= 32-char pure hexadecimal secret / digest token.
+    if v.len() >= 32 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return true;
+    }
+    // High-entropy opaque token (no spaces, no path/list separators).
+    if v.len() >= 24
+        && !v.contains(char::is_whitespace)
+        && !v.contains('/')
+        && !v.contains('\\')
+        && !v.contains(';')
+        && !v.contains(',')
+        && v.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'+' | b'=' | b'.' | b':')
+        })
+    {
+        let mut has_lower = false;
+        let mut has_upper = false;
+        let mut has_digit = false;
+        let mut has_sym = false;
+        let mut counts = [0u32; 128];
+        for &b in v.as_bytes() {
+            if b.is_ascii_lowercase() {
+                has_lower = true;
+            } else if b.is_ascii_uppercase() {
+                has_upper = true;
+            } else if b.is_ascii_digit() {
+                has_digit = true;
+            } else {
+                has_sym = true;
+            }
+            if (b as usize) < 128 {
+                counts[b as usize] += 1;
+            }
+        }
+        let classes = (has_lower as u8) + (has_upper as u8) + (has_digit as u8) + (has_sym as u8);
+        if classes >= 3 {
+            let n = v.len() as f64;
+            let entropy: f64 = counts
+                .iter()
+                .filter(|&&c| c > 0)
+                .map(|&c| {
+                    let p = (c as f64) / n;
+                    -p * p.log2()
+                })
+                .sum();
+            if entropy >= 3.8 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Remote-side redaction: credentials plus the policy keys (F-003). Used by
 /// EVERY agent remote branch that ships configuration to a paired device —
 /// the keyed `config.get` path, the dump-all `config.get` path (no `key`
@@ -97,7 +226,7 @@ pub fn redact_value_remote(key: &str, value: &str) -> String {
     if value.is_empty() {
         return String::new();
     }
-    if !is_sensitive_key(key) && !is_policy_key(key) {
+    if !is_sensitive_key(key) && !is_policy_key(key) && !looks_like_secret(value) {
         return value.to_string();
     }
     hash_redact(value)
@@ -109,7 +238,7 @@ pub fn redact_value(key: &str, value: &str) -> String {
     if value.is_empty() {
         return String::new();
     }
-    if !is_sensitive_key(key) {
+    if !is_sensitive_key(key) && !looks_like_secret(value) {
         return value.to_string();
     }
     hash_redact(value)
@@ -892,6 +1021,12 @@ pub fn sections_to_value(sections: &[Section]) -> Value {
 /// `"html"` / `"json"` / `"text"` return the rendered string.
 /// A second truthy argument disables redaction (local operator choice).
 pub fn n_spid3rinfo(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() > 2 {
+        return Err(format!(
+            "spid3rinfo expects at most 2 argument(s), got {}",
+            args.len()
+        ));
+    }
     let mode = match args.first() {
         None => "map",
         Some(Value::Str(s)) => match s.as_ref() {

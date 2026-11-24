@@ -196,7 +196,7 @@ public fn new_checker(is_main, source_file) {
     return [
     map(), map(), map(), [map()], 0, 0, false, false, null, null,
     is_main, source_file, map(), map(), map(), map(), [], 0, [],
-    map(), map(),
+    map(), map(), [map()],
     ];
 }
 
@@ -231,6 +231,330 @@ fn chk_err(st, sp, msg) {
 
 // The type-mismatch diagnostic's actionable help (the oracle's `= help:` line
 // is decoration; the message itself is the parity surface).
+fn chk_is_nullable_or_union(t) {
+    return t[0] == "Null" or t[0] == "Nullable" or t[0] == "Union";
+}
+
+fn chk_check_binop_types(op, lt, rt, sp) {
+    if op == "Eq" or op == "Ne" {
+        return;
+    }
+    if not chk_is_nullable_or_union(lt) and not chk_is_nullable_or_union(rt) {
+        return;
+    }
+    let ok = false;
+    if op == "Add" {
+        ok = (chk_ty_all_numeric(lt) and chk_ty_all_numeric(rt))
+        or (chk_ty_all_str(lt) and chk_ty_all_str(rt))
+        or (chk_ty_all_list(lt) and chk_ty_all_list(rt));
+    } else if op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+        ok = chk_ty_all_numeric(lt) and chk_ty_all_numeric(rt);
+    } else if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" {
+        ok = (chk_ty_all_numeric(lt) and chk_ty_all_numeric(rt))
+        or (chk_ty_all_str(lt) and chk_ty_all_str(rt));
+    } else {
+        ok = true;
+    }
+    if not ok {
+        mismatch(
+            sp,
+            "cannot apply operator '" + chk_binop_sym(op) + "' to " + ty_detail_name(lt) + " and " + ty_detail_name(rt)
+        );
+    }
+}
+
+fn chk_map_without(m, drop_key) {
+    let out = map();
+    for k in keys_of(m) {
+        if k != drop_key {
+            out[k] = m[k];
+        }
+    }
+    return out;
+}
+
+fn chk_clone_map(m) {
+    let out = map();
+    for k in keys_of(m) {
+        out[k] = m[k];
+    }
+    return out;
+}
+
+fn chk_extend_map(dst, src) {
+    for k in keys_of(src) {
+        dst[k] = src[k];
+    }
+}
+
+fn chk_lookup_narrowed(st, name) {
+    let layers = st[21];
+    let i = layers.len() - 1;
+    while i >= 0 {
+        if layers[i].has(name) {
+            return layers[i][name];
+        }
+        i -= 1;
+    }
+    return null;
+}
+
+fn chk_set_narrowed(st, name, ty) {
+    let layers = st[21];
+    if layers.len() > 0 {
+        layers[layers.len() - 1][name] = ty;
+    }
+}
+
+fn chk_clear_narrowed(st, name) {
+    let layers = st[21];
+    let i = 0;
+    while i < layers.len() {
+        if layers[i].has(name) {
+            layers[i] = chk_map_without(layers[i], name);
+        }
+        i += 1;
+    }
+}
+
+fn chk_invalidate_incompatible_narrowed(st, name, got) {
+    let layers = st[21];
+    let i = 0;
+    while i < layers.len() {
+        if layers[i].has(name) {
+            let prev = layers[i][name];
+            if not assignable(st, got, prev) {
+                layers[i] = chk_map_without(layers[i], name);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn chk_non_null_ty(ty) {
+    let tag = ty[0];
+    if tag == "Nullable" {
+        return chk_non_null_ty(ty[1]);
+    }
+    if tag == "Union" {
+        let out = [];
+        for m in ty[1] {
+            if m[0] == "Null" {
+                continue;
+            }
+            let u = chk_non_null_ty(m);
+            let dup = false;
+            for x in out {
+                if x == u {
+                    dup = true;
+                    break;
+                }
+            }
+            if not dup {
+                out.push(u);
+            }
+        }
+        if out.len() == 0 {
+            return ["Any"];
+        }
+        if out.len() == 1 {
+            return out[0];
+        }
+        return ["Union", out];
+    }
+    if tag == "Coll" and ty[2] != null {
+        let k = ty[1];
+        if k == "option" or k == "result" or k == "some" or k == "ok" {
+            return chk_non_null_ty(ty[2]);
+        }
+    }
+    return ty;
+}
+
+fn chk_declared_or_narrowed_ty(st, name) {
+    let nt = chk_lookup_narrowed(st, name);
+    if nt != null {
+        return nt;
+    }
+    let v = lookup(st, name);
+    if v != null and v[2] != null {
+        return v[2];
+    }
+    return ["Any"];
+}
+
+fn chk_extract_null_guards(st, cond) {
+    let tag = cond[0];
+    if tag == "Binary" {
+        let op = cond[1];
+        if op == "Ne" or op == "Eq" {
+            let l = cond[2];
+            let r = cond[3];
+            let name = null;
+            if l[0] == "Ident" and r[0] == "Null" {
+                name = l[1];
+            } else if l[0] == "Null" and r[0] == "Ident" {
+                name = r[1];
+            }
+            if name != null {
+                let base = chk_declared_or_narrowed_ty(st, name);
+                let nn = chk_non_null_ty(base);
+                let t_map = map();
+                let f_map = map();
+                if op == "Ne" {
+                    t_map[name] = nn;
+                    f_map[name] = ["Null"];
+                } else {
+                    t_map[name] = ["Null"];
+                    f_map[name] = nn;
+                }
+                return [t_map, f_map];
+            }
+        }
+        return [map(), map()];
+    }
+    if tag == "Call" {
+        let callee = cond[1];
+        let args = cond[2];
+        if callee[0] == "Ident" and callee[1] == "is_null" and args.len() == 1 {
+            if args[0][0] == "Ident" {
+                let name = args[0][1];
+                let base = chk_declared_or_narrowed_ty(st, name);
+                let nn = chk_non_null_ty(base);
+                let t_map = map();
+                let f_map = map();
+                t_map[name] = ["Null"];
+                f_map[name] = nn;
+                return [t_map, f_map];
+            }
+        }
+        return [map(), map()];
+    }
+    if tag == "Unary" and cond[1] == "Not" {
+        let sub = chk_extract_null_guards(st, cond[2]);
+        return [sub[1], sub[0]];
+    }
+    if tag == "Logical" {
+        if cond[1] == "And" {
+            let lg = chk_extract_null_guards(st, cond[2]);
+            let rg = chk_extract_null_guards(st, cond[3]);
+            chk_extend_map(lg[0], rg[0]);
+            return [lg[0], map()];
+        }
+        if cond[1] == "Or" {
+            let lg = chk_extract_null_guards(st, cond[2]);
+            let rg = chk_extract_null_guards(st, cond[3]);
+            chk_extend_map(lg[1], rg[1]);
+            return [map(), lg[1]];
+        }
+    }
+    return [map(), map()];
+}
+
+fn chk_block_always_diverges(b) {
+    let stmts = b[1];
+    if stmts.len() == 0 {
+        return false;
+    }
+    let last = stmts[stmts.len() - 1];
+    let t = last[0];
+    return t == "Return" or t == "Throw" or t == "Break" or t == "Continue";
+}
+
+fn chk_ty_all_numeric(t) {
+    if t[0] == "Int" or t[0] == "Float" or t[0] == "Any" {
+        return true;
+    }
+    if t[0] == "Union" {
+        let ms = t[1];
+        if ms.len() == 0 {
+            return false;
+        }
+        for m in ms {
+            if not chk_ty_all_numeric(m) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+fn chk_ty_all_str(t) {
+    if t[0] == "Str" or t[0] == "Any" {
+        return true;
+    }
+    if t[0] == "Union" {
+        let ms = t[1];
+        if ms.len() == 0 {
+            return false;
+        }
+        for m in ms {
+            if not chk_ty_all_str(m) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+fn chk_ty_all_list(t) {
+    if t[0] == "Any" {
+        return true;
+    }
+    if t[0] == "Coll" and t[1] == "list" {
+        return true;
+    }
+    if t[0] == "Union" {
+        let ms = t[1];
+        if ms.len() == 0 {
+            return false;
+        }
+        for m in ms {
+            if not chk_ty_all_list(m) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+fn chk_binop_sym(op) {
+    if op == "Add" {
+        return "+";
+    }
+    if op == "Sub" {
+        return "-";
+    }
+    if op == "Mul" {
+        return "*";
+    }
+    if op == "Div" {
+        return "/";
+    }
+    if op == "Mod" {
+        return "%";
+    }
+    if op == "Lt" {
+        return "<";
+    }
+    if op == "Le" {
+        return "<=";
+    }
+    if op == "Gt" {
+        return ">";
+    }
+    if op == "Ge" {
+        return ">=";
+    }
+    if op == "Eq" {
+        return "==";
+    }
+    return "!=";
+}
+
 fn mismatch(sp, msg) {
     err_at_sp(
         sp,
@@ -441,6 +765,7 @@ fn mark_used(st, name) {
 
 fn push_scope(st) {
     st[3].push(map());
+    st[21].push(map());
 }
 
 fn pop_scope(st) {
@@ -448,6 +773,9 @@ fn pop_scope(st) {
         return;
     }
     let scope = st[3].pop();
+    if st[21].len() > 0 {
+        st[21].pop();
+    }
     let top_level = st[3].len() == 0;
     for name in keys_of(scope) {
         let info = scope[name];
@@ -1504,28 +1832,64 @@ fn check_stmt(st, s) {
     }
     if tag == "If" {
         check_expr(st, s[1]);
-        check_block(st, s[2]);
+        let guards = chk_extract_null_guards(st, s[1]);
+        let true_map = guards[0];
+        let false_map = guards[1];
+        st[21].push(true_map);
+        try {
+            check_block(st, s[2]);
+        } finally {
+            st[21].pop();
+        }
         for e in s[3] {
-            check_expr(st, e[1]);
-            check_block(st, e[2]);
+            st[21].push(chk_clone_map(false_map));
+            let cg = null;
+            try {
+                check_expr(st, e[1]);
+                cg = chk_extract_null_guards(st, e[1]);
+            } finally {
+                st[21].pop();
+            }
+            let branch_map = chk_clone_map(false_map);
+            chk_extend_map(branch_map, cg[0]);
+            st[21].push(branch_map);
+            try {
+                check_block(st, e[2]);
+            } finally {
+                st[21].pop();
+            }
+            chk_extend_map(false_map, cg[1]);
         }
         if s[4] != null {
-            check_block(st, s[4]);
+            st[21].push(chk_clone_map(false_map));
+            try {
+                check_block(st, s[4]);
+            } finally {
+                st[21].pop();
+            }
+        } else if chk_block_always_diverges(s[2]) and s[3].len() == 0 {
+            if st[21].len() > 0 {
+                chk_extend_map(st[21][st[21].len() - 1], false_map);
+            }
         }
         return;
     }
     if tag == "While" {
         check_expr(st, s[1]);
+        let guards = chk_extract_null_guards(st, s[1]);
         st[4] += 1;
+        st[21].push(guards[0]);
         let had = false;
         try {
             check_block(st, s[2]);
         } catch (e) {
             had = true;
+            st[21].pop();
             st[4] -= 1;
             throw e;
         }
         if not had {
+            st[21].pop();
             st[4] -= 1;
         }
         return;
@@ -2139,6 +2503,14 @@ fn check_let(st, s, is_const) {
         tyo = fn_value_type(st, s[4]);
     }
     declare(st, s[2], s[5], [is_const, cls, tyo, false, "local", false, null]);
+    if not is_const and s[4] != null {
+        let vt = chk_type_of(st, s[4]);
+        if s[3] != null and tyo != null {
+            if (tyo[0] == "Nullable" or tyo[0] == "Union") and vt[0] != "Any" {
+                chk_set_narrowed(st, s[2], vt);
+            }
+        }
+    }
 }
 
 fn is_const_default(e) {
@@ -2504,9 +2876,20 @@ fn check_expr(st, e) {
                 );
             }
         }
-        check_block(st, e[2]);
+        let guards = chk_extract_null_guards(st, e[1]);
+        st[21].push(guards[0]);
+        try {
+            check_block(st, e[2]);
+        } finally {
+            st[21].pop();
+        }
         if e[3] != null {
-            check_block(st, e[3]);
+            st[21].push(guards[1]);
+            try {
+                check_block(st, e[3]);
+            } finally {
+                st[21].pop();
+            }
         }
         return;
     }
@@ -2636,11 +3019,21 @@ fn check_expr(st, e) {
     }
     if tag == "Unary" {
         check_expr(st, e[2]);
+        if e[1] == "Neg" {
+            let t = chk_type_of(st, e[2]);
+            if chk_is_nullable_or_union(t) and not chk_ty_all_numeric(t) {
+                mismatch(e[3], "cannot apply unary '-' to " + ty_detail_name(t));
+            }
+        }
         return;
     }
     if tag == "Binary" {
+        let op = e[1];
         check_expr(st, e[2]);
         check_expr(st, e[3]);
+        let lt = chk_type_of(st, e[2]);
+        let rt = chk_type_of(st, e[3]);
+        chk_check_binop_types(op, lt, rt, e[4]);
         return;
     }
     if tag == "Logical" {
@@ -2673,6 +3066,14 @@ fn check_expr(st, e) {
     if tag == "Index" {
         check_expr(st, e[1]);
         check_expr(st, e[2]);
+        let ot = chk_type_of(st, e[1]);
+        if ot[0] == "Null" or ot[0] == "Nullable" {
+            mismatch(e[3], "cannot index nullable type " + ty_detail_name(ot));
+        }
+        let it = chk_type_of(st, e[2]);
+        if it[0] == "Null" or it[0] == "Nullable" {
+            mismatch(e[3], "cannot index with nullable type " + ty_detail_name(it));
+        }
         return;
     }
     if tag == "FieldE" {
@@ -2698,9 +3099,22 @@ fn check_expr(st, e) {
 }
 
 fn check_assign(st, e) {
+    let op = e[1];
     let sp = e[4];
     let target = e[2];
     let value = e[3];
+    let compound_op = null;
+    if op == "AddAssign" {
+        compound_op = "Add";
+    } else if op == "SubAssign" {
+        compound_op = "Sub";
+    } else if op == "MulAssign" {
+        compound_op = "Mul";
+    } else if op == "DivAssign" {
+        compound_op = "Div";
+    } else if op == "ModAssign" {
+        compound_op = "Mod";
+    }
     let ttag = target[0];
     if ttag == "Ident" {
         let name = target[1];
@@ -2709,14 +3123,28 @@ fn check_assign(st, e) {
             if v[0] {
                 chk_err(st, sp, "cannot assign to const '" + name + "'");
             }
+            let got = chk_type_of(st, value);
+            if compound_op != null {
+                let lhs_ty = chk_declared_or_narrowed_ty(st, name);
+                chk_check_binop_types(compound_op, lhs_ty, got, sp);
+            }
             if v[2] != null {
-                let got = chk_type_of(st, value);
                 if not assignable(st, got, v[2]) {
                     mismatch(
                         sp,
                         "type mismatch assigning to '" + name + "': expected " + ty_detail_name(v[2]) + ", got " + ty_detail_name(got)
                     );
                 }
+                if compound_op == null {
+                    chk_invalidate_incompatible_narrowed(st, name, got);
+                    if (v[2][0] == "Nullable" or v[2][0] == "Union") and got[0] != "Any" {
+                        chk_set_narrowed(st, name, got);
+                    } else {
+                        chk_clear_narrowed(st, name);
+                    }
+                }
+            } else if compound_op == null {
+                chk_clear_narrowed(st, name);
             }
         } else if not known(st, name) {
             unknown_name(st, sp, name);
@@ -2724,6 +3152,14 @@ fn check_assign(st, e) {
     } else if ttag == "Index" {
         check_expr(st, target[1]);
         check_expr(st, target[2]);
+        let ot = chk_type_of(st, target[1]);
+        if ot[0] == "Null" or ot[0] == "Nullable" {
+            mismatch(sp, "cannot index nullable type " + ty_detail_name(ot));
+        }
+        let it = chk_type_of(st, target[2]);
+        if it[0] == "Null" or it[0] == "Nullable" {
+            mismatch(sp, "cannot index with nullable type " + ty_detail_name(it));
+        }
         let consts = alias_const_exports(st, target[1]);
         if consts != null {
             let key = string_literal(target[2]);
@@ -2862,7 +3298,11 @@ fn check_call(st, e) {
                     } else {
                         want = string(fi[1]) + " to " + string(fi[0]) + " argument(s)";
                     }
-                    chk_err(st, sp, name + " expects " + want + ", got " + string(args.len()));
+                    chk_err(
+                        st,
+                        sp,
+                        name + " expects " + want + ", got " + string(args.len())
+                    );
                 }
             } else {
                 let sig = null;
@@ -2957,7 +3397,11 @@ fn check_method(st, e) {
                     } else {
                         want = string(fi[1]) + " to " + string(fi[0]) + " argument(s)";
                     }
-                    chk_err(st, sp, name + " expects " + want + ", got " + string(args.len()));
+                    chk_err(
+                        st,
+                        sp,
+                        name + " expects " + want + ", got " + string(args.len())
+                    );
                 }
             }
         }
@@ -3114,7 +3558,10 @@ fn chk_type_of(st, e) {
         return ["Any"];
     }
     if tag == "Coalesce" {
-        return common_type(chk_type_of(st, e[1]), chk_type_of(st, e[2]));
+        return common_type(
+            chk_non_null_ty(chk_type_of(st, e[1])),
+            chk_type_of(st, e[2])
+        );
     }
     if tag == "Ident" {
         let name = e[1];
@@ -3123,6 +3570,10 @@ fn chk_type_of(st, e) {
                 return ["Class", st[8]];
             }
             return ["Any"];
+        }
+        let nt = chk_lookup_narrowed(st, name);
+        if nt != null {
+            return nt;
         }
         let v = lookup(st, name);
         if v != null and v[2] != null {
