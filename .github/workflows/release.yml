@@ -152,12 +152,65 @@ jobs:
 
       - name: Install NSIS and LLVM 23.1.0
         timeout-minutes: 20
+        shell: pwsh
         run: |
-          choco install nsis -y --no-progress
-          curl -L -o LLVM-23.1.0-win64.msi https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.0/LLVM-23.1.0-win64.msi
-          Start-Process msiexec -ArgumentList '/i', 'LLVM-23.1.0-win64.msi', '/qn', '/norestart' -Wait
-          Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll"
-          Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib"
+          $ErrorActionPreference = 'Stop'
+          function Find-Makensis {
+            $cmd = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            foreach ($p in @(
+              "C:\Program Files (x86)\NSIS\makensis.exe",
+              "C:\Program Files\NSIS\makensis.exe",
+              "C:\ProgramData\chocolatey\bin\makensis.exe",
+              "C:\nsis\nsis-3.10\makensis.exe",
+              "C:\nsis\makensis.exe"
+            )) {
+              if (Test-Path $p) { return $p }
+            }
+            return $null
+          }
+
+          $makensis = Find-Makensis
+          if (-not $makensis) {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              Write-Host "Attempting choco install nsis (attempt $attempt)..."
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -eq 0) {
+                $makensis = Find-Makensis
+                if ($makensis) { break }
+              }
+              Start-Sleep -Seconds 5
+            }
+          }
+          if (-not $makensis) {
+            Write-Host "Chocolatey NSIS install unavailable; trying winget..."
+            winget install --id NSIS.NSIS -e --silent --accept-package-agreements --accept-source-agreements
+            $makensis = Find-Makensis
+          }
+          if (-not $makensis) {
+            Write-Host "Downloading portable NSIS 3.10 archive fallback..."
+            curl.exe -fsSL --retry 3 --retry-delay 5 -o nsis-3.10.zip "https://sourceforge.net/projects/nsis/files/NSIS%203/3.10/nsis-3.10.zip/download"
+            if ($LASTEXITCODE -eq 0 -and (Test-Path nsis-3.10.zip)) {
+              Expand-Archive -Force -Path nsis-3.10.zip -DestinationPath C:\nsis
+              $makensis = Find-Makensis
+            }
+          }
+          if (-not $makensis) {
+            throw "makensis.exe not found after Chocolatey, winget, and portable archive attempts"
+          }
+          $nsisDir = Split-Path -Parent $makensis
+          $nsisDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          Write-Host "Using makensis: $makensis ($(& $makensis /VERSION))"
+
+          curl.exe -fsSL --retry 3 --retry-delay 5 -o LLVM-23.1.0-win64.msi "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.0/LLVM-23.1.0-win64.msi"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download LLVM-23.1.0-win64.msi" }
+          $msiProc = Start-Process msiexec -ArgumentList '/i', 'LLVM-23.1.0-win64.msi', '/qn', '/norestart' -PassThru -Wait
+          if ($msiProc.ExitCode -ne 0 -and $msiProc.ExitCode -ne 3010) {
+            throw "LLVM MSI install failed with exit code $($msiProc.ExitCode)"
+          }
+          if (-not (Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll") -or -not (Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib")) {
+            throw "LLVM-C.dll or LLVM-C.lib missing under C:\Program Files\LLVM after installation"
+          }
           "LLVM_SYS_231_PREFIX=C:\Program Files\LLVM" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "SPID3R_LLVM_LIB_DIR=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
