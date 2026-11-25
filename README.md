@@ -15,9 +15,10 @@ fn main() {
 
 ```bash
 $ spid3r run hello.matrix
-Hello, Spid3r!
+  Hello, Spid3r!
+
 $ sp run hello.mt
-Hello, Spid3r!
+  Hello, Spid3r!
 ```
 
 Both `.matrix` and `.mt` source extensions and both `spid3r` and `sp` CLI binaries are first-class equivalents with zero runtime overhead.

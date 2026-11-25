@@ -9,7 +9,7 @@
 <rect x="0" y="0" width="880" height="300" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
 <rect x="32" y="118" width="136" height="64" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
-<text x="100" y="142" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#0F172A">app.matrix / .mt</text>
+<text x="100" y="142" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#0F172A">app.matrix / app.mt</text>
 <text x="100" y="162" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">spid3r / sp CLI</text>
 
 <path d="M168 150 L206 150" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
