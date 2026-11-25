@@ -1746,28 +1746,14 @@ impl MapData {
                     None => Err(format!("missing key {}", k.display())),
                 }
             }
-            "remove" => {
+            "remove" | "delete" => {
                 want(name, args, 1)?;
                 let k = as_key(&args[0])?;
-                if let Some(e) = self.mutation_error(Some(&k), "remove") {
+                if let Some(e) = self.mutation_error(Some(&k), name) {
                     return Err(e);
                 }
                 match self.find(&k) {
                     Some(i) => Ok(self.remove_at(&k, i)),
-                    None => Err(format!("missing key {}", k.display())),
-                }
-            }
-            "delete" => {
-                want(name, args, 1)?;
-                let k = as_key(&args[0])?;
-                if let Some(e) = self.mutation_error(Some(&k), "delete") {
-                    return Err(e);
-                }
-                match self.find(&k) {
-                    Some(i) => {
-                        self.remove_at(&k, i);
-                        Ok(Value::Null)
-                    }
                     None => Err(format!("missing key {}", k.display())),
                 }
             }

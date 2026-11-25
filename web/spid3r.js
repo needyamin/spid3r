@@ -52,6 +52,9 @@
      * @returns {{ ok: boolean, exit_code?: number, stdout?: string, error?: string, thrown?: string, line?: number, col?: number }}
      */
     eval(source, engine = "vm") {
+      if (typeof this.exports.spid3r_wasm_set_epoch_ms === 'function') {
+        this.exports.spid3r_wasm_set_epoch_ms(Date.now());
+      }
       const s = this._writeString(source || "");
       const e = this._writeString(engine || "vm");
       const resPtr = this.exports.spid3r_wasm_eval(s.ptr, s.len, e.ptr, e.len);
@@ -122,6 +125,9 @@
      * @param {string} [engine="vm"]
      */
     evalSession(source, engine = "vm") {
+      if (typeof this.exports.spid3r_wasm_set_epoch_ms === 'function') {
+        this.exports.spid3r_wasm_set_epoch_ms(Date.now());
+      }
       const s = this._writeString(source || "");
       const e = this._writeString(engine || "vm");
       const resPtr = this.exports.spid3r_wasm_session_eval(s.ptr, s.len, e.ptr, e.len);

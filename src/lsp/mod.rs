@@ -1732,7 +1732,10 @@ fn stdlib_module_names() -> Vec<String> {
         };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().map(|x| x == "matrix").unwrap_or(false) {
+            if p.extension()
+                .map(|x| x == "matrix" || x == "mt")
+                .unwrap_or(false)
+            {
                 if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
                     out.push(stem.to_string());
                 }

@@ -307,17 +307,20 @@ fn disabled_by_module_names(names: &[String], spec: &str) -> Option<String> {
     None
 }
 
-/// Strip the `.matrix` suffix the resolver treats as equivalent. On Windows
-/// the suffix compares case-insensitively (the file-name rules): the file
-/// `json.Matrix` is the same file as `json.matrix` there.
+/// Strip the `.matrix` or `.mt` suffix the resolver treats as equivalent. On
+/// Windows/macOS the suffix compares case-insensitively (the file-name rules):
+/// `json.Matrix` and `json.MT` resolve to the same file as `json.matrix`/`json.mt`.
 fn strip_matrix_suffix(s: &str) -> &str {
-    if let Some(body) = s.strip_suffix(".matrix") {
-        return body;
-    }
-    if fs_is_case_insensitive() && s.len() >= 7 && s.is_char_boundary(s.len() - 7) {
-        let (body, ext) = s.split_at(s.len() - 7);
-        if ext.eq_ignore_ascii_case(".matrix") {
+    for suffix in [".matrix", ".mt"] {
+        if let Some(body) = s.strip_suffix(suffix) {
             return body;
+        }
+        let n = suffix.len();
+        if fs_is_case_insensitive() && s.len() >= n && s.is_char_boundary(s.len() - n) {
+            let (body, ext) = s.split_at(s.len() - n);
+            if ext.eq_ignore_ascii_case(suffix) {
+                return body;
+            }
         }
     }
     s

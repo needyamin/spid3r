@@ -186,7 +186,7 @@ public keys (order 1/2/4/8), which is stricter than RFC 8032.
 
 | Function | Description |
 |---|---|
-| `json_parse(text)` | Parse JSON into Spid3r values (including `\uXXXX` escapes and surrogate pairs); nesting is capped at 512 levels. |
+| `json_parse(text)` | Parse strict RFC 8259 JSON into Spid3r values (including `\uXXXX` escapes and UTF-16 surrogate pairs; raw unescaped control characters U+0000–U+001F are rejected); nesting is capped at 512 levels. |
 | `json_write(value)` | Serialize a value to a JSON string. Non-finite floats are an error; nesting is capped at 512 levels. |
 | `msgpack_encode(val)` / `msgpack_decode(bytes)` | MessagePack binary serialization. `encode` returns `bytes`; `decode` returns `ok(val)` or `err(msg)`. |
 | `cbor_encode(val)` / `cbor_decode(bytes)` | RFC 8949 Concise Binary Object Representation. `encode` returns `bytes`; `decode` returns `ok(val)`. |
@@ -305,7 +305,7 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 
 | Function | Description |
 |---|---|
-| `parse_csv(text, opts?)` | Parse CSV string into `ok(map("headers", list, "rows", list_of_lists))` with automatic type inference. `opts` supports `"delimiter"` and `"has_header"`. |
+| `parse_csv(text, opts?)` | Parse CSV string into `ok(map("headers", list, "rows", list_of_lists))`. Quoted fields, leading-zero identifiers (`"007"`), scientific-notation IDs (`"1e5"`), trailing-zero decimals (`"1.50"`), and `"-0"` are preserved as strings; unquoted lossless scalars infer `int`/`float`/`bool`/`null`. `opts` supports `"delimiter"`, `"has_header"`, and `"infer_types"` (set `false` to keep every cell as `string`). |
 | `read_csv(path, opts?)` | Read and parse CSV file at `path`. |
 | `write_csv(path, headers, rows)` | Write RFC-4180 formatted CSV data to `path`. |
 
@@ -329,9 +329,9 @@ Monotonic and epoch time conversion with high-precision civil calendar math.
 
 | Function | Description |
 |---|---|
-| `unix_time()` | Current Unix epoch timestamp in whole seconds (`int`). |
+| `unix_time()` | Current Unix epoch timestamp in whole seconds (`int`). In `spid3r.wasm`, reads the host-seeded clock (`spid3r_wasm_set_epoch_ms(Date.now())`, called automatically by `web/spid3r.js`; returns `0` if unseeded, never traps). |
 | `now_ms()` | Monotonic millisecond clock (`int`) — for measuring elapsed time. |
-| `unix_ms()` | Current Unix epoch timestamp in milliseconds (`int`). |
+| `unix_ms()` | Current Unix epoch timestamp in milliseconds (`int`). Safe on `spid3r.wasm` via host-seeded epoch clock. |
 | `datetime_parts(epoch_sec)` | Decompose Unix timestamp into map (`year`, `month`, `day`, `hour`, `minute`, `second`, `weekday`). Supports negative and leap-year timestamps. Parts are localized by `runtime.timezone` (`spid3r.ini`); UTC by default. |
 | `datetime_from_parts(y, m, d, h, min, s)` | Convert civil date-time components into epoch seconds (`int`). Civil parts are interpreted in `runtime.timezone` (`spid3r.ini`); UTC by default. |
 | `format_datetime(epoch_sec, fmt_str)` | Strftime-style formatting in the default zone `runtime.timezone` (`spid3r.ini`); UTC by default. Specifiers: `%Y` `%m` `%d` `%e` `%H` `%I` `%M` `%S` `%p` `%a` `%A` `%b` `%B` `%j` `%w` `%u` `%z` (`+0600` for `Asia/Dhaka`, `+0000` in UTC) `%Z` (the zone abbreviation, e.g. `+06:00` for a fixed offset, `CET` for `Europe/Berlin`, `UTC` in UTC) `%F` `%T` `%%`. Pass an explicit zone to `tz_format()` to override per call. |
@@ -670,7 +670,7 @@ throws is reported and the suite continues; `done()` returns the failure count, 
 | `range_gen(start, stop?, step?)` | Lazy numeric sequence generator. |
 | `next(g)` | Fetch next item from generator (`null` when exhausted). |
 | `take(g, n)` | Take first `n` items into a list and stop generator. |
-| `collect(g)` | Drain entire generator into a `list`. |
+| `collect(g)` | Drain a generator into a `list` (also accepts a `list` directly, so `collect(take(...))` composes cleanly; throws a clear type error on other types). |
 | `map(g, f)` / `filter(g, f)` | Lazy transformation and filtering pipelines. |
 | `close(g)` | Terminate generator and reclaim background task. |
 

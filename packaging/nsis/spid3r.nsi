@@ -146,6 +146,7 @@ Section "Spid3r compiler & runtime (required)" SecCore
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${SPID3R_EXE}"
+  File "/oname=sp.exe" "${SPID3R_EXE}"
 !ifdef SPID3R_SELF_EXE
   File "/oname=spid3r-self.exe" "${SPID3R_SELF_EXE}"
 !endif
@@ -350,10 +351,13 @@ Section /o "Desktop shortcuts" SecDesktop
 !endif
 SectionEnd
 
-Section "Associate .matrix files with Spid3r" SecAssoc
+Section "Associate .matrix and .mt files with Spid3r" SecAssoc
   WriteRegStr HKCU "Software\Classes\.matrix" "" "Spid3r.Matrix"
   WriteRegStr HKCU "Software\Classes\.matrix" "Content Type" "text/plain"
   WriteRegStr HKCU "Software\Classes\.matrix" "PerceivedType" "text"
+  WriteRegStr HKCU "Software\Classes\.mt" "" "Spid3r.Matrix"
+  WriteRegStr HKCU "Software\Classes\.mt" "Content Type" "text/plain"
+  WriteRegStr HKCU "Software\Classes\.mt" "PerceivedType" "text"
   WriteRegStr HKCU "Software\Classes\Spid3r.Matrix" "" "Spid3r Program"
   WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\DefaultIcon" "" "$INSTDIR\spid3r.ico"
   WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\open\command" "" '"$INSTDIR\spid3r.exe" run "%1"'
@@ -541,6 +545,7 @@ Section "Uninstall"
 
   ; --- file association ---
   DeleteRegKey HKCU "Software\Classes\.matrix"
+  DeleteRegKey HKCU "Software\Classes\.mt"
   DeleteRegKey HKCU "Software\Classes\Spid3r.Matrix"
   System::Call 'shell32::SHChangeNotify(l 0x08000000, l 0, p 0, p 0)'
 
@@ -555,6 +560,7 @@ Section "Uninstall"
 
   ; --- files ---
   Delete "$INSTDIR\spid3r.exe"
+  Delete "$INSTDIR\sp.exe"
   Delete "$INSTDIR\spid3r-self.exe"
   Delete "$INSTDIR\spid3r-control.exe"
   Delete "$INSTDIR\calculator.exe"

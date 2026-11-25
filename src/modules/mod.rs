@@ -251,7 +251,10 @@ static VIRTUAL_MODULES: std::sync::Mutex<Option<std::collections::HashMap<String
 fn normalize_virtual_key(name: &str) -> String {
     let s = name.trim().replace('\\', "/");
     let s = s.strip_prefix("./").unwrap_or(&s);
-    let s = s.strip_suffix(".matrix").unwrap_or(s);
+    let s = s
+        .strip_suffix(".matrix")
+        .or_else(|| s.strip_suffix(".mt"))
+        .unwrap_or(s);
     s.to_string()
 }
 
@@ -314,12 +317,20 @@ pub fn embedded_path(path: &str) -> Option<PathBuf> {
 /// normal file read.
 pub fn read_module_source(path: &std::path::Path) -> std::io::Result<String> {
     if let Some(name) = path.to_str().and_then(|s| s.strip_prefix(VIRTUAL_PREFIX)) {
-        if let Some(src) = virtual_module_source(name.trim_end_matches(".matrix")) {
+        let bare = name
+            .strip_suffix(".matrix")
+            .or_else(|| name.strip_suffix(".mt"))
+            .unwrap_or(name);
+        if let Some(src) = virtual_module_source(bare) {
             return Ok(src);
         }
     }
     if let Some(name) = path.to_str().and_then(|s| s.strip_prefix(EMBEDDED_PREFIX)) {
-        if let Some(src) = embedded_module(name.trim_end_matches(".matrix")) {
+        let bare = name
+            .strip_suffix(".matrix")
+            .or_else(|| name.strip_suffix(".mt"))
+            .unwrap_or(name);
+        if let Some(src) = embedded_module(bare) {
             return Ok(src.to_string());
         }
     }
@@ -647,14 +658,22 @@ fn module_exports_inner(
                 }
             }
             crate::ast::Stmt::Enum(e) => {
+                let self_named = e.variants.iter().any(|v| v.name == e.name);
                 if e.vis == crate::ast::Vis::Public {
                     if direct {
+                        if !self_named {
+                            out.names.push((e.name.clone(), true));
+                        }
                         for v in &e.variants {
                             out.names.push((v.name.clone(), false));
                         }
                     }
                     out.enums.push(e.clone());
                 } else if direct {
+                    if !self_named {
+                        out.unexported
+                            .push((e.name.clone(), mod_display.clone(), "enum"));
+                    }
                     for v in &e.variants {
                         out.unexported
                             .push((v.name.clone(), mod_display.clone(), "enum"));
@@ -764,11 +783,18 @@ pub fn module_info_with_funcs_in(
                 }
             }
             crate::ast::Stmt::Enum(e) => {
+                let self_named = e.variants.iter().any(|v| v.name == e.name);
                 if e.vis == crate::ast::Vis::Public {
+                    if !self_named {
+                        names.push((e.name.clone(), true));
+                    }
                     for v in &e.variants {
                         names.push((v.name.clone(), false));
                     }
                 } else {
+                    if !self_named {
+                        unexported.push((e.name.clone(), mod_display.clone(), "enum"));
+                    }
                     for v in &e.variants {
                         unexported.push((v.name.clone(), mod_display.clone(), "enum"));
                     }

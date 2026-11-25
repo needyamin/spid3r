@@ -328,13 +328,14 @@ impl Lower {
                     let selections = alias
                         .as_deref()
                         .and_then(crate::modules::parse_import_selections);
-                    if alias.is_none() || selections.is_some() {
-                        if let Ok(exports) = crate::modules::module_exports_of_in(
-                            path,
-                            &span.file,
-                            span,
-                            &crate::modules::default_module_dirs(),
-                        ) {
+                    let import_types = alias.is_none() || selections.is_some();
+                    if let Ok(exports) = crate::modules::module_exports_of_in(
+                        path,
+                        &span.file,
+                        span,
+                        &crate::modules::default_module_dirs(),
+                    ) {
+                        if import_types {
                             for i in exports.interfaces {
                                 if !i.default_methods.is_empty() {
                                     self.default_iface_methods
@@ -386,12 +387,12 @@ impl Lower {
                                 }
                                 self.classes.entry(c.name.clone()).or_insert(cp);
                             }
-                            for e in exports.enums {
-                                for v in &e.variants {
-                                    self.variants
-                                        .entry(v.name.clone())
-                                        .or_insert_with(|| v.fields.clone());
-                                }
+                        }
+                        for e in exports.enums {
+                            for v in &e.variants {
+                                self.variants
+                                    .entry(v.name.clone())
+                                    .or_insert_with(|| v.fields.clone());
                             }
                         }
                     }
@@ -1204,6 +1205,41 @@ impl Lower {
                 },
                 span: span.clone(),
             }));
+        }
+        // Bind the enum namespace map (`const Color = map("Red", Red(), "Rgb", Rgb);`)
+        // so qualified variant access (`Color.Red`, `Color.Rgb(1, 2, 3)`) works
+        // identically across tree, VM, and AOT while keeping bare variant calls
+        // (`Red()`, `Rgb(1, 2, 3)`) backwards compatible. Skip when a single-variant
+        // newtype enum shares the enum's own name (`enum At { At(x, y) }`) so the
+        // constructor function `At(...)` is not shadowed by a map.
+        if !e.variants.iter().any(|v| v.name == e.name) {
+            let mut map_args = Vec::with_capacity(e.variants.len() * 2);
+            for v in &e.variants {
+                let vspan = v.span.clone();
+                map_args.push(Expr::Str(v.name.clone(), vspan.clone()));
+                if v.fields.is_empty() {
+                    map_args.push(Expr::Call {
+                        callee: Box::new(Expr::Ident(v.name.clone(), vspan.clone())),
+                        type_args: Vec::new(),
+                        args: Vec::new(),
+                        span: vspan,
+                    });
+                } else {
+                    map_args.push(Expr::Ident(v.name.clone(), vspan));
+                }
+            }
+            out.push(Stmt::Const {
+                vis: e.vis,
+                name: e.name.clone(),
+                ty: None,
+                value: Expr::Call {
+                    callee: Box::new(Expr::Ident("module_namespace".to_string(), e.span.clone())),
+                    type_args: Vec::new(),
+                    args: map_args,
+                    span: e.span.clone(),
+                },
+                span: e.span.clone(),
+            });
         }
         out
     }

@@ -55,6 +55,7 @@ pub(crate) fn find_byte(bytes: &[u8], needle: u8) -> Option<usize> {
 }
 
 /// Find the first `"` (`0x22`) or `\` (`0x5C`) in JSON string content.
+#[cfg(test)]
 #[inline]
 pub(crate) fn find_json_string_end(bytes: &[u8]) -> Option<usize> {
     let len = bytes.len();

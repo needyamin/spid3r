@@ -175,7 +175,7 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
       </div>
       <div class="item">
         <div class="info"><b>Source file</b>
-          <div class="desc">.matrix / .matrixc path (or pick a scanned one).</div></div>
+          <div class="desc">.matrix / .mt / .matrixc path (or pick a scanned one).</div></div>
         <div class="ctl"><select id="lang-pick" style="max-width:260px"><option value="">— scanned files —</option></select>
           <input type="text" id="lang-file" placeholder="src\main.matrix" style="width:260px"></div>
       </div>
@@ -605,14 +605,44 @@ pub fn run() -> Result<(), String> {
         builder.with_any_thread(true);
         builder.build()
     };
-    #[cfg(not(windows))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    let event_loop = {
+        use tao::platform::unix::EventLoopBuilderExtUnix;
+        let mut builder = EventLoopBuilder::<Msg>::with_user_event();
+        builder.with_any_thread(true);
+        builder.build()
+    };
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
     let event_loop = EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = tao::window::WindowBuilder::new()
+    let mut wb = tao::window::WindowBuilder::new()
         .with_title("Spid3r Control Panel")
         .with_inner_size(tao::dpi::LogicalSize::new(1080.0, 720.0))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(680.0, 500.0))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(680.0, 500.0));
+    #[cfg(target_os = "windows")]
+    {
+        use tao::platform::windows::{IconExtWindows, WindowBuilderExtWindows};
+        if let Ok(icon) = tao::window::Icon::from_resource(1, None) {
+            wb = wb
+                .with_window_icon(Some(icon.clone()))
+                .with_taskbar_icon(Some(icon));
+        }
+    }
+    let window = wb
         .build(&event_loop)
         .map_err(|e| format!("cannot open the control panel window: {e}"))?;
 
@@ -642,6 +672,7 @@ pub fn run() -> Result<(), String> {
     // run cleanly without locking one shared WebView2 profile directory.
     #[cfg(target_os = "windows")]
     let builder = {
+        use wry::WebViewBuilderExtWindows;
         if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
             let root = std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
@@ -655,7 +686,7 @@ pub fn run() -> Result<(), String> {
             let _ = std::fs::create_dir_all(&base);
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", base);
         }
-        builder.with_incognito(true)
+        builder.with_incognito(true).with_https_scheme(true)
     };
 
     let webview = builder.build(&window).map_err(|e| {

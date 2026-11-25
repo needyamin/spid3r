@@ -417,6 +417,12 @@ fn link_unix(obj_path, out_path, staticlib_path, triple, opt) {
             }
         }
     }
+    if not is_macos {
+        let origin_rpath = "-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib";
+        if not link_contains_str(args, origin_rpath) {
+            args.push(origin_rpath);
+        }
+    }
     let llvm_dir = find_llvm_lib_dir();
     if llvm_dir != null {
         let lflag = "-L" + llvm_dir;

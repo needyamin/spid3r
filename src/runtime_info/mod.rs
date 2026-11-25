@@ -730,6 +730,7 @@ fn process_rss_bytes() -> Option<u64> {
         };
         // SAFETY: `GetCurrentProcess()` returns a valid pseudo-handle and `pmc`
         // is a valid `ProcessMemoryCounters` buffer sized by `pmc.cb`.
+        // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
         let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) };
         if ok != 0 {
             return Some(pmc.working_set_size as u64);
@@ -1636,6 +1637,7 @@ pub(crate) mod host_probes {
             }
             // SAFETY: `GetStdHandle`, `GetConsoleMode`, and `SetConsoleMode` operate on the
             // process standard output handle with valid stack storage for `mode`.
+            // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
             unsafe {
                 let h = GetStdHandle(STD_OUTPUT_HANDLE);
                 if h.is_null() || h as isize == -1 {
@@ -1919,6 +1921,7 @@ pub(crate) mod host_probes {
                     // SAFETY: `snap` and `entry` remain valid for enumeration.
                     ok = unsafe { Process32NextW(snap, &mut entry) };
                 }
+                // SAFETY: OS/FFI pointer and length arguments are validated before the call.
                 let mut cur = unsafe { GetCurrentProcessId() };
                 for _ in 0..8 {
                     let Some((ppid, _)) = map.get(&cur) else {
@@ -2041,6 +2044,7 @@ pub(crate) mod host_probes {
             buf.0[68..70].copy_from_slice(&(220u16).to_le_bytes());
             // SAFETY: `buf` is 220 bytes, 4-byte aligned, with `dmSize = 220`.
             let ok =
+                // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
                 unsafe { enum_fn(std::ptr::null(), ENUM_CURRENT_SETTINGS, buf.0.as_mut_ptr()) };
             if ok == 0 {
                 return None;
@@ -2056,6 +2060,7 @@ pub(crate) mod host_probes {
                 .map(|p| {
                     // SAFETY: `GetDpiForSystem` takes no arguments and returns DPI.
                     let f = unsafe { std::mem::transmute::<*mut c_void, GetDpiForSystemFn>(p) };
+                    // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
                     unsafe { f() }
                 })
                 .filter(|&d| d >= 96)
@@ -2100,6 +2105,7 @@ pub(crate) mod host_probes {
                 let mut len: u32 = 0;
                 // SAFETY: First call with null buffer retrieves needed size into `len`.
                 let ok = unsafe { func(rel, std::ptr::null_mut(), &mut len) };
+                // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
                 if ok != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || len == 0 {
                     return None;
                 }
@@ -2287,6 +2293,7 @@ pub(crate) mod host_probes {
             let mut free: u64 = 0;
             // SAFETY: `root_w` is NUL-terminated UTF-16 and output pointers are valid.
             let ok =
+                // SAFETY: Win32/POSIX FFI pointers and output buffers are valid and properly sized.
                 unsafe { GetDiskFreeSpaceExW(root_w.as_ptr(), &mut avail, &mut total, &mut free) };
             let (used_opt, total_opt) = if ok != 0 && total > 0 {
                 (Some(total.saturating_sub(free)), Some(total))

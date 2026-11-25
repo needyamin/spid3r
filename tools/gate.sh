@@ -55,6 +55,19 @@ for cfg in "default" "gui" "native" "native+gui"; do
     step "clippy [$cfg]" cargo clippy --all-targets "${feat_args[@]}" -- -D warnings
 done
 
+echo "== unsafe / SAFETY invariant =="
+PY_CMD=""
+if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+    PY_CMD="python3"
+elif command -v python >/dev/null 2>&1 && python --version >/dev/null 2>&1; then
+    PY_CMD="python"
+fi
+if [ -n "$PY_CMD" ]; then
+    step "unsafe/SAFETY gate" "$PY_CMD" tools/check_unsafe_safety.py
+else
+    step "unsafe/SAFETY gate" sh -c 'echo "neither python3 nor python found" >&2; exit 2'
+fi
+
 echo "== release build =="
 step "build --release --features \"native gui\"" cargo build --release --features "native gui"
 

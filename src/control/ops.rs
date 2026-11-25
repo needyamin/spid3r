@@ -187,7 +187,33 @@ fn parse_json_str(s: &str) -> Option<(String, usize)> {
                             hex.push(chars.next()?.1);
                         }
                         let code = u32::from_str_radix(&hex, 16).ok()?;
-                        out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            // RFC 8259 §7: combine UTF-16 high+low surrogate pair.
+                            let mut look = chars.clone();
+                            let pair = (|| -> Option<(char, std::str::CharIndices<'_>)> {
+                                if look.next()?.1 != '\\' || look.next()?.1 != 'u' {
+                                    return None;
+                                }
+                                let mut lo_hex = String::with_capacity(4);
+                                for _ in 0..4 {
+                                    lo_hex.push(look.next()?.1);
+                                }
+                                let lo = u32::from_str_radix(&lo_hex, 16).ok()?;
+                                if !(0xDC00..=0xDFFF).contains(&lo) {
+                                    return None;
+                                }
+                                let scalar = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+                                Some((char::from_u32(scalar)?, look))
+                            })();
+                            if let Some((ch, next_iter)) = pair {
+                                out.push(ch);
+                                chars = next_iter;
+                            } else {
+                                out.push('\u{fffd}');
+                            }
+                        } else {
+                            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                        }
                     }
                     other => out.push(other),
                 }

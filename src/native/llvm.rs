@@ -86,6 +86,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllTargetInfos() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86TargetInfo();
@@ -102,6 +103,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllTargets() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86Target();
@@ -118,6 +120,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllTargetMCs() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86TargetMC();
@@ -134,6 +137,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllAsmPrinters() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86AsmPrinter();
@@ -150,6 +154,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllAsmParsers() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86AsmParser();
@@ -166,6 +171,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeAllDisassemblers() {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86Disassembler();
@@ -183,6 +189,7 @@ mod win_shims {
     /// `LLVMBool` is `i32` (0 = success).
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeNativeTarget() -> i32 {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             {
@@ -214,6 +221,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeNativeAsmPrinter() -> i32 {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86AsmPrinter();
@@ -229,6 +237,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeNativeAsmParser() -> i32 {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86AsmParser();
@@ -244,6 +253,7 @@ mod win_shims {
 
     #[no_mangle]
     pub extern "C" fn LLVM_InitializeNativeDisassembler() -> i32 {
+        // SAFETY: LLVM target registration C-API call is guarded by std::sync::Once and takes no borrowed pointers.
         unsafe {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             LLVMInitializeX86Disassembler();

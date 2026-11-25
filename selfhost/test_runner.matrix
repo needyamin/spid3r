@@ -130,15 +130,21 @@ fn tst_find_oracle() {
 }
 
 fn tst_ends_with_matrix(name) {
-    if name.len() <= 7 {
-        return false;
+    if name.len() > 7 and name.slice(name.len() - 7, name.len()) == ".matrix" {
+        return true;
     }
-    return name.slice(name.len() - 7, name.len()) == ".matrix";
+    if name.len() > 3 and name.slice(name.len() - 3, name.len()) == ".mt" {
+        return true;
+    }
+    return false;
 }
 
 fn tst_stem(name) {
-    if tst_ends_with_matrix(name) {
+    if name.len() > 7 and name.slice(name.len() - 7, name.len()) == ".matrix" {
         return name.slice(0, name.len() - 7);
+    }
+    if name.len() > 3 and name.slice(name.len() - 3, name.len()) == ".mt" {
+        return name.slice(0, name.len() - 3);
     }
     return name;
 }

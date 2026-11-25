@@ -1855,9 +1855,9 @@
             </thead>
             <tbody>
               <tr>
-                <td><code>spid3r run &lt;file.matrix&gt;</code></td>
-                <td><code>spid3r run main.matrix</code></td>
-                <td>Compile and execute program (defaults to the bytecode VM via <code>spid3r.engine = vm</code>). Flags:
+                <td><code>spid3r run &lt;file.matrix|.mt&gt;</code><br><code>sp run &lt;file.mt&gt;</code></td>
+                <td><code>spid3r run main.matrix</code> · <code>sp run main.mt</code></td>
+                <td>Compile and execute program (both <code>spid3r</code> and short alias <code>sp</code>, and both <code>.matrix</code> and <code>.mt</code> source files, are supported with zero runtime overhead; defaults to the bytecode VM via <code>spid3r.engine = vm</code>). Flags:
                   <code>--engine vm|tree</code>, <code>--prof</code> (prints
                   per-opcode execution counts plus per-function self-time and inclusive instruction attribution in
                   <code>==== function profile (self-time) ====</code>), <code>--budget N</code> (stop after roughly N steps with the
@@ -1946,10 +1946,15 @@
                 </td>
               </tr>
               <tr>
-                <td><code>spid3r gui &lt;file.matrix&gt;</code></td>
-                <td><code>spid3r gui window.matrix</code></td>
-                <td>Run an interactive desktop GUI application backed by native WebViews. Flags:
-                  <code>--html &lt;path&gt;</code>, <code>--dry-run</code>, <code>--engine tree|vm</code> (the VM also
+                <td><code>spid3r gui &lt;file.matrix|.mt&gt;</code></td>
+                <td><code>spid3r gui window.matrix --width 1280 --height 800 --theme dark</code></td>
+                <td>Run an interactive desktop GUI application backed by native WebViews (<code>https://spid3r.app</code> secure context on Windows WebView2 with default embedded icon loading and <code>PageLoadEvent::Finished</code> JS flush gating). Flags:
+                  <code>--html &lt;path&gt;</code> (with an embedded <code>--payload</code>, selects a payload entry name only),
+                  <code>--icon &lt;path&gt;</code>, <code>--width &lt;px&gt;</code>, <code>--height &lt;px&gt;</code>,
+                  <code>--min-size &lt;WxH&gt;</code>, <code>--maximized</code>, <code>--fullscreen</code>,
+                  <code>--theme light|dark|system</code>, <code>--bg-color &lt;#hex&gt;</code>,
+                  <code>--devtools</code>, <code>--clipboard</code>/<code>--no-clipboard</code>, <code>--zoom</code>,
+                  <code>--dry-run</code>, <code>--engine tree|vm</code> (the VM also
                   runs a <code>.matrixc</code> argument directly); or <code>--payload &lt;exe&gt;</code> to run a
                   program embedded by <code>build --embed</code> straight out of the executable, with its assets served
                   from memory (<code>--persist</code> keeps the webview profile on disk). A payload carrying a
@@ -4133,7 +4138,7 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
               <tr>
                 <td><strong>Shared state</strong></td>
                 <td><code>ref(v)</code> (<code>get/set</code>, safe across tasks) · <code>weak(r)</code>/<code>deref(w)</code>
-                  (non-owning; <code>null</code> if collected) · <code>mutex(v)</code> (RAII <code>lock()</code>) ·
+                  (non-owning; <code>null</code> if collected) · <code>mutex(v)</code> (RAII <code>lock()</code>/<code>unlock()</code>, <code>set(v)</code>/<code>store(v)</code>, <code>with(f)</code>) ·
                   <code>atomic_int(init?)</code> (<code>load/store/cas/exchange/fetch_add/fetch_sub</code>) ·
                   <code>channel()</code> (<code>send/recv/try_recv/state/len</code>) · <code>task</code> (from
                   <code>spawn</code>, joined with <code>await</code>)</td>
@@ -4142,16 +4147,18 @@ let okv  = ok(1);  let errv = err("bad");   // result</div>
                 <td><strong>Sum types</strong></td>
                 <td><code>option</code> (<code>some/none</code>, <code>unwrap/unwrap_or</code>) ·
                   <code>result</code> (<code>ok/err</code>, <code>unwrap/unwrap_err</code>) ·
-                  <code>enum Name { Variant1, Variant2(field) }</code> — each variant lowers to an ordinary public
-                  constructor function (works across <code>import</code>); a value is a map carrying
+                  <code>enum Name { Variant1, Variant2(field) }</code> — binds both <code>Name</code> as a namespace map
+                  (<code>Name.Variant1</code> value, <code>Name.Variant2(x)</code> constructor) and bare variant
+                  constructors (works across <code>import</code>); a value is a map carrying
                   <code>__tag</code>, <code>__fields</code> and one key per payload field; <code>match</code> arms
-                  use the bare variant name</td>
+                  accept both qualified (<code>Name.Variant1</code>) and bare variant names</td>
               </tr>
               <tr>
                 <td><strong>Binary I/O &amp; formats</strong></td>
                 <td><code>read_bytes/write_bytes</code> · <code>save_npy/load_npy</code> (NumPy v1.0 little-endian
-                  <code>&lt;f8</code>) · <code>parse_csv/read_csv/write_csv</code> (RFC-4180, quoted fields,
-                  type inference) · <code>regex_match/find/find_all/replace</code> (Thompson NFA) ·
+                  <code>&lt;f8</code>) · <code>parse_csv/read_csv/write_csv</code> (RFC-4180, quoted fields &amp;
+                  lossless string preservation for <code>"007"</code>/<code>"1e5"</code>/<code>"1.50"</code>/<code>"-0"</code>,
+                  plus <code>{"infer_types": false}</code>) · <code>regex_match/find/find_all/replace</code> (Thompson NFA) ·
                   <code>unix_time/unix_ms/datetime_parts/datetime_from_parts/format_datetime</code></td>
               </tr>
             </tbody>
@@ -5831,7 +5838,7 @@ errors.level = warn
             (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>), <code>spid3r-self</code>
             reaches a bit-identical <strong>Stage 1 &rarr; Stage 2 &rarr; Stage 3</strong> object fixed point across the
             136-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
-            (<code>spid3r-self verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and
+            (<code>spid3r verify-runtime</code> / <code>spid3r-self verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and
             links split runtime units (<code>spid3r_reg_core</code> plus 10 opt-in subsystem groups) alongside compact
             16-byte <code>Value</code>/<code>ThinArcStr</code> representations and pre-decoded VM superinstructions. See
             <a href="../selfhost/README.md">the self-hosting hub</a>,

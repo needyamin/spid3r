@@ -51,6 +51,18 @@ fn has_gui_natives(program: &Program) -> bool {
         "gui_on",
         "gui_emit",
         "gui_title",
+        "gui_icon",
+        "gui_size",
+        "gui_min_size",
+        "gui_maximize",
+        "gui_fullscreen",
+        "gui_resizable",
+        "gui_decorations",
+        "gui_theme",
+        "gui_bg_color",
+        "gui_devtools",
+        "gui_cancel_close",
+        "gui_close",
     ];
     fn check_expr(e: &crate::ast::Expr) -> bool {
         match e {
@@ -696,7 +708,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     // that could never start.
     let has_program = entries
         .iter()
-        .any(|(n, _)| n.ends_with(".matrix") || n.ends_with(".matrixc"));
+        .any(|(n, _)| n.ends_with(".matrix") || n.ends_with(".mt") || n.ends_with(".matrixc"));
     if !has_program && (bundle_runtime || !entries.is_empty()) {
         return Err(Diagnostic::new(
             Phase::Build,

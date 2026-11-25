@@ -76,7 +76,11 @@ cargo run --release -- build examples/hello.matrix -o hello
 ./hello
 ```
 
-The `spid3r` binary is at `target/release/spid3r` (`.exe` on Windows).
+The `spid3r` and short-alias `sp` binaries are at `target/release/spid3r` and
+`target/release/sp` (`.exe` on Windows). On Linux, `build.rs` and
+`selfhost/link.matrix` set `-Wl,-rpath,$ORIGIN:$ORIGIN/../lib` and release
+tarballs bundle `libLLVM.so.23.1` under `lib/` (plus a `sp -> spid3r` symlink)
+so installed binaries run on clean Linux hosts with no system `libllvm23`.
 
 > **Build all targets, not just `--bin spid3r`.** `spid3r build` links apps
 > against `target/release/spid3r_lang.lib`, the crate's `staticlib` artifact.
@@ -631,11 +635,15 @@ when in doubt, rebuild and re-run the two scripts above.
 
 ### wasm platform constraints
 
-`wasm32-unknown-unknown` has no OS process and no filesystem:
-`std::env::temp_dir()`, `std::process::id()` and `std::env::vars()` abort the
-module. Anything reachable from the playground — notably `spid3rinfo()`, which
-reports config, state, cache and log paths — must guard those calls with
-`cfg!(target_arch = "wasm32")` and return a harmless placeholder. See
-`logging::path()` and `stdlib::runtime_cache_root()` for the established
-pattern. `tools/verify_dev_snippets.js` runs the developer-guide samples
-against the wasm build and is the regression gate for these paths.
+`wasm32-unknown-unknown` has no OS process, no wall clock, and no filesystem:
+`std::env::temp_dir()`, `std::process::id()`, `std::env::vars()`, and
+`std::time::SystemTime::now()` / `Instant::now()` abort the module. Anything
+reachable from the playground — notably `spid3rinfo()`, `unix_time()`,
+`unix_ms()`, and `now_ms()` — guards those calls with
+`cfg!(target_arch = "wasm32")`. For wall-clock epoch time, `spid3r.wasm`
+exports `spid3r_wasm_set_epoch_ms(ms: f64)` (called automatically with
+`Date.now()` by `web/spid3r.js` before evaluation; returns `0` cleanly if
+unseeded and never traps). See `src/stdlib/datetime.rs`, `logging::path()`,
+and `stdlib::runtime_cache_root()` for the established pattern.
+`tools/verify_dev_snippets.js` runs the developer-guide samples against the
+wasm build and is the regression gate for these paths.

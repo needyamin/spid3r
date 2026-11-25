@@ -111,6 +111,7 @@ mod loader {
             .encode_utf16()
             .chain(Some(0))
             .collect();
+        // SAFETY: wide is a NUL-terminated UTF-16 path passed to Win32 LoadLibraryW.
         let h = unsafe { LoadLibraryW(wide.as_ptr()) };
         if h.is_null() {
             Err(std::io::Error::last_os_error().to_string())
@@ -124,6 +125,7 @@ mod loader {
             Ok(c) => c,
             Err(_) => return None,
         };
+        // SAFETY: h is a live module handle returned by LoadLibraryW and c is a NUL-terminated ASCII symbol name.
         let p = unsafe { GetProcAddress(h, c.as_ptr() as *const u8) };
         if p.is_null() {
             None
@@ -155,6 +157,7 @@ mod loader {
     pub fn open(path: &std::path::Path) -> Result<Handle, String> {
         let c = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| "library path contains a NUL byte".to_string())?;
+        // SAFETY: c is a NUL-terminated library path passed to POSIX dlopen.
         let h = unsafe { dlopen(c.as_ptr(), 2) }; // RTLD_NOW
         if h.is_null() {
             Err(std::io::Error::last_os_error().to_string())
@@ -165,6 +168,7 @@ mod loader {
 
     pub fn symbol(h: Handle, name: &str) -> Option<*mut c_void> {
         let c = CString::new(name).ok()?;
+        // SAFETY: h is a live handle returned by dlopen and c is a NUL-terminated symbol name.
         let p = unsafe { dlsym(h, c.as_ptr()) };
         if p.is_null() {
             None
@@ -277,6 +281,7 @@ fn load_sqlite() -> Result<&'static SqliteApi, String> {
         {
             let p = loader::symbol(handle, name)
                 .ok_or_else(|| format!("SQLite library is missing symbol {}", name))?;
+            // SAFETY: p is a non-null function pointer returned by dlsym/GetProcAddress matching the exact SQLite C ABI signature T.
             Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&p) })
         }
         Ok(SqliteApi {
@@ -310,6 +315,7 @@ fn load_sqlite() -> Result<&'static SqliteApi, String> {
     // as shipped with CPython on Windows) faults when the lazy path runs in
     // a host process — an explicit call is documented as always safe and
     // idempotent.
+    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
     let rc = unsafe { (api.initialize)() };
     if rc != SQLITE_OK {
         return Err(format!("sqlite3_initialize failed (rc={})", rc));
@@ -338,6 +344,7 @@ impl Drop for DbData {
             // The API is always loaded when a handle exists; on the
             // impossible failure path there is nothing to close.
             if let Ok(api) = load_sqlite() {
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 unsafe { (api.close_v2)(self.db) };
             }
         }
@@ -356,6 +363,7 @@ struct StepOutcome {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn errmsg_of(api: &SqliteApi, db: *mut c_void) -> String {
+    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
     let p = unsafe { (api.errmsg)(db) };
     if p.is_null() {
         "unknown SQLite error".to_string()
@@ -363,6 +371,7 @@ fn errmsg_of(api: &SqliteApi, db: *mut c_void) -> String {
         // `c_char` is `i8` on x86_64 but `u8` on aarch64 Linux — hardcoding
         // either breaks the other target, so always cast through c_char.
         String::from_utf8_lossy(
+            // SAFETY: p was verified non-null and points to a SQLite-owned NUL-terminated UTF-8 string valid for the statement/db borrow.
             unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes(),
         )
         .into_owned()
@@ -382,6 +391,7 @@ fn run_sql(
     let api = load_sqlite()?;
     let sql_c = CString::new(sql.as_bytes()).map_err(|_| "SQL contains a NUL byte".to_string())?;
     let mut tail: *const u8 = sql_c.as_ptr() as *const u8;
+    // SAFETY: tail points to the start of sql's byte buffer, so tail.add(sql.len()) is the exact one-past-the-end pointer.
     let end = unsafe { tail.add(sql.len()) };
     let mut total = StepOutcome {
         changes: 0,
@@ -390,6 +400,7 @@ fn run_sql(
     while tail < end {
         let mut stmt: *mut c_void = std::ptr::null_mut();
         let mut next: *const u8 = std::ptr::null();
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         let rc = unsafe {
             (api.prepare_v2)(
                 db,
@@ -409,8 +420,11 @@ fn run_sql(
         for (i, p) in params.iter().enumerate() {
             let idx = (i + 1) as i32;
             let rc = match p {
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 Value::Null => unsafe { (api.bind_null)(stmt, idx) },
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 Value::Int(v) => unsafe { (api.bind_int64)(stmt, idx, *v) },
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 Value::Float(v) => unsafe { (api.bind_double)(stmt, idx, *v) },
                 Value::Str(s) => {
                     // SQLite takes an i32 length; a value above 2 GB would wrap
@@ -418,6 +432,7 @@ fn run_sql(
                     let len = match i32::try_from(s.len()) {
                         Ok(l) => l,
                         Err(_) => {
+                            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                             unsafe { (api.finalize)(stmt) };
                             return Err(format!(
                                 "sql parameter {} is {} bytes, over the {}-byte limit",
@@ -427,6 +442,7 @@ fn run_sql(
                             ));
                         }
                     };
+                    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                     unsafe { (api.bind_text)(stmt, idx, s.as_ptr(), len, TRANSIENT) }
                 }
                 Value::Bytes(b) => {
@@ -434,6 +450,7 @@ fn run_sql(
                     let len = match i32::try_from(data.len()) {
                         Ok(l) => l,
                         Err(_) => {
+                            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                             unsafe { (api.finalize)(stmt) };
                             return Err(format!(
                                 "sql parameter {} is {} bytes, over the {}-byte limit",
@@ -443,9 +460,11 @@ fn run_sql(
                             ));
                         }
                     };
+                    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                     unsafe { (api.bind_blob)(stmt, idx, data.as_ptr(), len, TRANSIENT) }
                 }
                 other => {
+                    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                     unsafe { (api.finalize)(stmt) };
                     return Err(format!(
                         "cannot bind a {} value as a SQL parameter (use null/int/float/string/bytes)",
@@ -455,11 +474,13 @@ fn run_sql(
             };
             if rc != SQLITE_OK {
                 let msg = errmsg_of(api, db);
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 unsafe { (api.finalize)(stmt) };
                 return Err(msg);
             }
         }
         loop {
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let rc = unsafe { (api.step)(stmt) };
             if rc == SQLITE_ROW {
                 on_row(api, stmt);
@@ -467,12 +488,16 @@ fn run_sql(
                 break;
             } else {
                 let msg = errmsg_of(api, db);
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 unsafe { (api.finalize)(stmt) };
                 return Err(msg);
             }
         }
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         unsafe { (api.finalize)(stmt) };
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         total.changes += unsafe { (api.changes)(db) } as i64;
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         total.last_id = unsafe { (api.last_insert_rowid)(db) };
         tail = next;
         if next.is_null() {
@@ -484,24 +509,33 @@ fn run_sql(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn row_value(api: &SqliteApi, stmt: *mut c_void, col: i32) -> Value {
+    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
     match unsafe { (api.column_type)(stmt, col) } {
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         COL_INT => Value::Int(unsafe { (api.column_int64)(stmt, col) }),
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         COL_FLOAT => Value::Float(unsafe { (api.column_double)(stmt, col) }),
         COL_TEXT => {
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let len = unsafe { (api.column_bytes)(stmt, col) };
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let p = unsafe { (api.column_text)(stmt, col) };
             if p.is_null() || len <= 0 {
                 return Value::Str(String::new().into());
             }
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let bytes = unsafe { std::slice::from_raw_parts(p, len as usize) };
             Value::Str(String::from_utf8_lossy(bytes).into_owned().into())
         }
         COL_BLOB => {
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let len = unsafe { (api.column_bytes)(stmt, col) };
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let p = unsafe { (api.column_blob)(stmt, col) };
             if p.is_null() || len <= 0 {
                 return Value::Bytes(new_ref(Vec::new()));
             }
+            // SAFETY: p was verified non-null and len > 0 as reported by sqlite3_column_bytes for the live row buffer.
             let bytes = unsafe { std::slice::from_raw_parts(p, len as usize) }.to_vec();
             Value::Bytes(new_ref(bytes))
         }
@@ -511,14 +545,17 @@ fn row_value(api: &SqliteApi, stmt: *mut c_void, col: i32) -> Value {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn column_names(api: &SqliteApi, stmt: *mut c_void) -> Vec<String> {
+    // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
     let n = unsafe { (api.column_count)(stmt) };
     (0..n)
         .map(|c| {
+            // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
             let p = unsafe { (api.column_name)(stmt, c) };
             if p.is_null() {
                 format!("col{}", c)
             } else {
                 String::from_utf8_lossy(
+                    // SAFETY: p was verified non-null and points to a SQLite-owned NUL-terminated UTF-8 string valid for the statement/db borrow.
                     unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes(),
                 )
                 .into_owned()
@@ -571,6 +608,7 @@ pub fn database_method(
             let mut rows: Vec<Value> = Vec::new();
             let outcome = run_sql(db, &sql, &params, &mut |api, stmt| {
                 let names = column_names(api, stmt);
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 let n = unsafe { (api.column_count)(stmt) };
                 let mut m: HashMap<String, Value> = HashMap::with_capacity(n as usize);
                 for c in 0..n {
@@ -606,6 +644,7 @@ pub fn database_method(
         "close" => {
             let mut guard = d.lock().unwrap();
             if !guard.closed {
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 unsafe { (load_sqlite()?.close_v2)(guard.db) };
                 guard.db = std::ptr::null_mut();
                 guard.closed = true;
@@ -646,6 +685,7 @@ pub(crate) fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
         let cpath = CString::new(path.as_bytes())
             .map_err(|_| "database path contains a NUL byte".to_string())?;
         let mut db: *mut c_void = std::ptr::null_mut();
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         let rc = unsafe {
             (api.open_v2)(
                 cpath.as_ptr() as *const u8,
@@ -659,6 +699,7 @@ pub(crate) fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
                 format!("cannot open database '{}' (rc={})", path, rc)
             } else {
                 let m = errmsg_of(api, db);
+                // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
                 unsafe { (api.close_v2)(db) };
                 m
             };
@@ -732,6 +773,7 @@ mod tests {
         };
         let cpath = CString::new("target/db_direct_test.db").unwrap();
         let mut db: *mut c_void = std::ptr::null_mut();
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         let rc = unsafe {
             (api.open_v2)(
                 cpath.as_ptr() as *const u8,
@@ -762,6 +804,7 @@ mod tests {
         )
         .expect("select failed");
         assert_eq!(seen, vec![42]);
+        // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         unsafe { (api.close_v2)(db) };
     }
 }

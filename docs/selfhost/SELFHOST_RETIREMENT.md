@@ -41,7 +41,7 @@ Release compiler binaries (`spid3r-self` / `spid3r-self.exe`), `spid3r-self` smo
 Trying to pretend Rust is completely absent would misstate the system architecture. The exact components that still depend on `rustc`/`cargo` are:
 
 ### 3.1 Rebuilding the runtime staticlib (`SH-6`, Phase 9.2 ADR)
-- **Files:** `src/native/rt.rs` (75 `spid3r_*` C-ABI trampolines), `src/stdlib/` (257 native entries), `src/value.rs`, `src/gc/`, `src/scheduler.rs` (`crate-type = ["staticlib"]` → `spid3r_lang.lib` / `libspid3r_lang.a`).
+- **Files:** `src/native/rt.rs` (117 `spid3r_*` C-ABI trampolines), `src/stdlib/` (254 native entries), `src/value/mod.rs`, `src/gc/`, `src/sched/` (`crate-type = ["staticlib"]` → `spid3r_lang.lib` / `libspid3r_lang.a`).
 - **Why:** By explicit owner-confirmed Phase 9.2 ADR ([SELFHOST.md](SELFHOST.md)), `rt.rs` remains in Rust inside the versioned, SHA-256-pinned runtime archive ([RUNTIME_ABI.md](RUNTIME_ABI.md)) to avoid duplicating low-level runtime internals across a second C ABI and to preserve a single semantic source of truth across tree/VM/AOT.
 - **Impact on compiler work:** Normal compiler edits (`selfhost/*.matrix`) **never** rebuild the runtime staticlib. Rust is only needed when adding/changing stdlib builtins, GC/value internals, or `spid3r_*` trampolines.
 
@@ -51,10 +51,10 @@ Trying to pretend Rust is completely absent would misstate the system architectu
 
 ### 3.3 Retained Rust-side runtime & optional developer tools (`SH-2`)
 Explicitly excluded from the self-hosting compiler target in [SELFHOST.md](SELFHOST.md):
-- Script engines & runtime commands (`spid3r run` tree/VM interpreters, `exec`, `disasm`)
-- Interactive tools (`repl`, VM line `debug`, `lsp`, `doc`, `agent`, `control`, `plugin` host, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
+- Script engines & runtime commands (`spid3r` / `sp` `run` tree/VM interpreters, `exec`, `disasm`, `verify-runtime`)
+- Interactive tools (`repl`, VM line `debug`, `lsp`, `doc`, `control`, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
 - GUI host (`gui` feature via `wry`/`tao`, `spid3r-control.exe`) and WASM browser bundle (`wasm32-unknown-unknown` `cdylib` powering `web/`)
-- Cross-target bootstrap convenience: on Linux/macOS, `spid3r-self` links dynamically against `libLLVM-23.so` / `libLLVM.dylib` when compiled natively. End-user release tarballs therefore continue bundling Stage-0 `spid3r` (core VM/interpreter/CLI with zero LLVM runtime dependency) alongside `spid3r-self`, so `install.sh` still works without system LLVM for script execution while compiler/AOT builds use `spid3r-self`. On Windows, the NSIS installer ships `LLVM-C.dll` + `LLVM-C.lib` + SHA-256-pinned `spid3r_lang.lib` beside `spid3r-self.exe`, so `spid3r-self build` works out of the box.
+- Cross-target bootstrap convenience: on Linux, release tarballs bundle `libLLVM.so.23.1` under `lib/` and link `spid3r` / `spid3r-self` with `-Wl,-rpath,$ORIGIN:$ORIGIN/../lib`, plus a `sp -> spid3r` symlink, so clean Linux hosts run out of the box without system `libllvm23`. On Windows, the NSIS installer ships `spid3r.exe`, `sp.exe`, `spid3r-self.exe`, `spid3r-control.exe`, `LLVM-C.dll` + `LLVM-C.lib`, and SHA-256-pinned `spid3r_lang.lib`, associating both `.matrix` and `.mt` files.
 
 ### 3.4 Verification & benchmark harnesses
 - `tools/*.sh`, `tools/*.py`, `tools/*.js`, `tools/*.ps1` stay script-side tooling and do not ship in releases.
@@ -72,7 +72,7 @@ Every commit keeps `src/` buildable and differential-tested (`tools/gate.sh` 9/9
   1. If a selfhost compiler or release pipeline regression escapes parity, revert the offending commits on `main` (or check out `v1.1.0` cleanly).
   2. Rebuild Stage 0 directly with Cargo:
      - Core: `cargo build --release --locked --no-default-features`
-     - Native + GUI (Windows): `cargo build --release --locked --no-default-features --features gui,native,plugins-wasm,tls`
+     - Native + GUI (Windows): `cargo build --release --locked --no-default-features --features gui,native,tls`
   3. On an emergency release tag, CI can fall back directly to Stage 0 `spid3r` without changing `.matrix` user programs or `.matrixc`/runtime contracts ([RUNTIME_ABI.md](RUNTIME_ABI.md) guarantees backward compatibility for pinned runtime staticlibs).
 
 ---
@@ -82,7 +82,7 @@ Every commit keeps `src/` buildable and differential-tested (`tools/gate.sh` 9/9
 All future compiler changes under `selfhost/` MUST obey the following rules before commit:
 
 1. **Frozen corpus parity (`SH-4`, `SH-5`):**
-   - `python tools/corpus_manifest.py verify` must report `135 files verified`. Never mutate `selfhost/corpus/` without a documented `SH-4` ledger entry and `python tools/corpus_manifest.py build && verify`.
+   - `python tools/corpus_manifest.py verify` must report `137 files verified` (`136` programs + `MANIFEST.sha256`). Never mutate `selfhost/corpus/` without a documented `SH-4` ledger entry and `python tools/corpus_manifest.py build && verify`.
    - All frontend/backend parity harnesses must pass with zero regressions:
      `selfhost_lex_parity.sh`, `selfhost_parse_parity.sh`, `selfhost_semantic_parity.sh`, `selfhost_lower_parity.sh`, `selfhost_compile_parity.sh`, `selfhost_sandbox_parity.sh`, `selfhost_test_parity.sh`, `selfhost_fmt_check_parity.sh`, `selfhost_pkg_parity.sh`, `selfhost_runtime_parity.sh`, plus 3-way `selfhost_bootstrap_parity.sh` on native hosts.
 2. **Fixed-point & release integrity (`SH-1`, `SEC-B`):**

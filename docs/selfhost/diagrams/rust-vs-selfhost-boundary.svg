@@ -41,7 +41,7 @@
 <!-- Right: permanent Rust -->
 <rect x="528" y="74" width="320" height="260" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.3"/>
 <text x="544" y="98" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" fill="#B45309">PERMANENT RUST STAGE 0 &amp; TOOLS</text>
-<text x="544" y="116" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#92400E">src/ + spid3r + tools/</text>
+<text x="544" y="116" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#92400E">src/ + spid3r / sp + tools/</text>
 
 <rect x="544" y="132" width="288" height="56" rx="6" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
 <text x="556" y="156" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#78350F">Cold seed &amp; parity oracle</text>

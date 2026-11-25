@@ -43,7 +43,74 @@ const INIT_SCRIPT: &str = r#"window.spid3r = {
 /// Wakes the window's event loop when the page, a worker thread, or shutdown notifies it.
 pub enum Msg {
     Event,
+    PageReady,
     Shutdown,
+}
+
+/// Initial window and webview configuration (populated from CLI flags and
+/// Phase-1 `gui_*` calls before the window opens).
+#[derive(Clone, Debug)]
+pub struct WindowOptions {
+    pub width: f64,
+    pub height: f64,
+    pub min_size: Option<(f64, f64)>,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub resizable: bool,
+    pub decorations: bool,
+    pub theme: Option<bridge::WindowTheme>,
+    pub bg_color: Option<(u8, u8, u8, u8)>,
+    pub icon: Option<String>,
+    pub devtools: bool,
+    pub clipboard: bool,
+    pub zoom: bool,
+}
+
+impl Default for WindowOptions {
+    fn default() -> Self {
+        Self {
+            width: 920.0,
+            height: 640.0,
+            min_size: Some((320.0, 200.0)),
+            maximized: false,
+            fullscreen: false,
+            resizable: true,
+            decorations: true,
+            theme: None,
+            bg_color: None,
+            icon: None,
+            devtools: cfg!(debug_assertions),
+            clipboard: true,
+            zoom: false,
+        }
+    }
+}
+
+impl WindowOptions {
+    /// Fold Phase-1 `WindowCommand`s into initial window options.
+    /// Returns `true` if `WindowCommand::Close` was requested during Phase 1.
+    pub fn apply_phase1_cmds(&mut self, cmds: Vec<bridge::WindowCommand>) -> bool {
+        let mut close_requested = false;
+        for cmd in cmds {
+            match cmd {
+                bridge::WindowCommand::Icon(p) => self.icon = Some(p),
+                bridge::WindowCommand::Size(w, h) => {
+                    self.width = w;
+                    self.height = h;
+                }
+                bridge::WindowCommand::MinSize(w, h) => self.min_size = Some((w, h)),
+                bridge::WindowCommand::Maximized(m) => self.maximized = m,
+                bridge::WindowCommand::Fullscreen(f) => self.fullscreen = f,
+                bridge::WindowCommand::Resizable(r) => self.resizable = r,
+                bridge::WindowCommand::Decorations(d) => self.decorations = d,
+                bridge::WindowCommand::Theme(t) => self.theme = Some(t),
+                bridge::WindowCommand::BgColor(r, g, b, a) => self.bg_color = Some((r, g, b, a)),
+                bridge::WindowCommand::DevTools(d) => self.devtools = d,
+                bridge::WindowCommand::Close => close_requested = true,
+            }
+        }
+        close_requested
+    }
 }
 
 /// Replay the bridge without a window: the `ready` event is dispatched and
@@ -94,19 +161,18 @@ pub fn open(
     source: PageSource,
     ephemeral: bool,
     app_id: &str,
+    mut opts: WindowOptions,
 ) -> Result<(), String> {
-    if shutdown::is_requested() {
+    if opts.apply_phase1_cmds(bridge::take_window_cmds()) || shutdown::is_requested() {
         bridge::mark_closed();
         crate::sched::join_tasks_at_exit();
         return Ok(());
     }
     let title = bridge::take_title().unwrap_or_else(|| "spid3r gui".to_string());
 
-    // The CLI runs every subcommand on a big-stack worker thread (deep AST
-    // recursion does not fit the 1 MiB main stack), so the event loop is
-    // usually NOT on the main thread. tao 0.34 aborts at build() unless this
-    // is set; the calculator launcher spawns a worker for the same stack
-    // reason.
+    // `cli::run` keeps `spid3r gui` on the OS main thread (required by macOS
+    // AppKit and Linux GTK), while Windows/Unix embedders may still call
+    // `open()` from a worker thread when `with_any_thread(true)` is available.
     #[cfg(windows)]
     let event_loop = {
         use tao::platform::windows::EventLoopBuilderExtWindows;
@@ -114,7 +180,27 @@ pub fn open(
         builder.with_any_thread(true);
         builder.build()
     };
-    #[cfg(not(windows))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    let event_loop = {
+        use tao::platform::unix::EventLoopBuilderExtUnix;
+        let mut builder = tao::event_loop::EventLoopBuilder::<Msg>::with_user_event();
+        builder.with_any_thread(true);
+        builder.build()
+    };
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
     let event_loop = tao::event_loop::EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -123,15 +209,47 @@ pub fn open(
     #[cfg(not(target_os = "windows"))]
     let _ = app_id;
 
-    let window = tao::window::WindowBuilder::new()
+    let site = Arc::new(match source {
+        PageSource::File(path) => StaticSite::from_html_path(&path)?,
+        PageSource::Memory { entry, files } => StaticSite::from_memory(entry, files),
+        PageSource::Builtin => StaticSite::builtin(),
+    });
+
+    let initial_icon = resolve_window_icon(opts.icon.as_deref(), &site);
+
+    let mut wb = tao::window::WindowBuilder::new()
         .with_title(title)
-        .with_inner_size(tao::dpi::LogicalSize::new(920.0, 640.0))
+        .with_inner_size(tao::dpi::LogicalSize::new(opts.width, opts.height))
+        .with_maximized(opts.maximized)
+        .with_resizable(opts.resizable)
+        .with_decorations(opts.decorations);
+    if let Some((mw, mh)) = opts.min_size {
+        wb = wb.with_min_inner_size(tao::dpi::LogicalSize::new(mw, mh));
+    }
+    if opts.fullscreen {
+        wb = wb.with_fullscreen(Some(tao::window::Fullscreen::Borderless(None)));
+    }
+    if let Some(t) = opts.theme.and_then(to_tao_theme) {
+        wb = wb.with_theme(Some(t));
+    }
+    if let Some(ref ic) = initial_icon {
+        wb = wb.with_window_icon(Some(ic.clone()));
+        #[cfg(target_os = "windows")]
+        {
+            use tao::platform::windows::WindowBuilderExtWindows;
+            wb = wb.with_taskbar_icon(Some(ic.clone()));
+        }
+    }
+    let window = wb
         .build(&event_loop)
         .map_err(|e| format!("cannot open the GUI window: {e}"))?;
 
     let mut builder = wry::WebViewBuilder::new()
         .with_initialization_script(INIT_SCRIPT)
         .with_incognito(ephemeral)
+        .with_devtools(opts.devtools)
+        .with_clipboard(opts.clipboard)
+        .with_hotkeys_zoom(opts.zoom)
         .with_ipc_handler({
             let proxy = proxy.clone();
             move |request: wry::http::Request<String>| {
@@ -148,30 +266,51 @@ pub fn open(
                 }
             }
         })
+        .with_drag_drop_handler({
+            let proxy = proxy.clone();
+            move |ev: wry::DragDropEvent| {
+                if let wry::DragDropEvent::Drop { paths, position } = ev {
+                    let event_name = if bridge::has_handler("file_drop") {
+                        Some("file_drop")
+                    } else if bridge::has_handler("drop") {
+                        Some("drop")
+                    } else {
+                        None
+                    };
+                    if let Some(name) = event_name {
+                        let json = encode_file_drop_json(&paths, position);
+                        bridge::push_event(name, &json);
+                        let _ = proxy.send_event(Msg::Event);
+                        return true;
+                    }
+                }
+                false
+            }
+        })
         .with_on_page_load_handler({
             let proxy = proxy.clone();
             move |event: wry::PageLoadEvent, _url: String| {
                 if matches!(event, wry::PageLoadEvent::Finished) {
-                    bridge::push_event("ready", "");
-                    let _ = proxy.send_event(Msg::Event);
+                    let _ = proxy.send_event(Msg::PageReady);
                 }
             }
         });
+    if let Some(rgba) = opts.bg_color {
+        builder = builder.with_background_color(rgba);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use wry::WebViewBuilderExtWindows;
+        builder = builder.with_https_scheme(true);
+    }
 
     // The page is served through the `spid3r://app/` custom protocol instead
     // of `file://` (B5): wry's IPC handler builds an `http::Request` whose URI
     // is the page's own URL and `unwrap()`s the parse, and the `http` crate
     // rejects any absolute URI without an authority — `file:///C:/...` and
-    // `about:blank` both fail, so the FIRST `window.spid3r.emit(...)` from a
-    // `--html` page aborted the process (0xC0000409). Under the protocol the
-    // page origin is `spid3r://app/...` (Windows workaround form:
-    // `http://spid3r.app/...`), which always parses. The custom-protocol
-    // handler also serves relative assets (css/js/images) from disk.
-    let site = Arc::new(match source {
-        PageSource::File(path) => StaticSite::from_html_path(&path)?,
-        PageSource::Memory { entry, files } => StaticSite::from_memory(entry, files),
-        PageSource::Builtin => StaticSite::builtin(),
-    });
+    // `about:blank` both fail. With `with_https_scheme(true)` on Windows the
+    // origin is `https://spid3r.app`, giving a secure context (`isSecureContext`,
+    // `crypto.subtle`, `navigator.clipboard`).
     builder = builder.with_custom_protocol("spid3r".to_string(), {
         let site = Arc::clone(&site);
         move |_id, request| site.serve(request)
@@ -190,7 +329,13 @@ pub fn open(
     shutdown::set_hook(Some(Arc::new(move || {
         let _ = shutdown_proxy.send_event(Msg::Shutdown);
     })));
-    let _ = proxy.send_event(Msg::Event);
+
+    // Gate JS evaluation behind `page_ready` (set on `PageLoadEvent::Finished`)
+    // so Phase-1 `gui_set_html` / `gui_eval` and early `spawn` worker calls
+    // never execute before the DOM and `#spid3r-root` finish loading.
+    let mut page_ready = false;
+    let mut initial_ready_sent = false;
+    let site_for_loop = Arc::clone(&site);
 
     // The loop owns the engine handle and the webview from here on.
     event_loop.run(move |event, _, control_flow| {
@@ -200,23 +345,119 @@ pub fn open(
                 event: tao::event::WindowEvent::CloseRequested,
                 ..
             } => {
-                shutdown::set_hook(None);
-                shutdown::request();
-                *control_flow = tao::event_loop::ControlFlow::Exit;
+                let mut cancelled = false;
+                let mut forced_close = false;
+                if let Some(entry) = bridge::get_handler_entry("before_close") {
+                    bridge::reset_close_cancelled();
+                    dispatch_one(&runtime, "before_close", "{}", entry);
+                    cancelled = bridge::take_close_cancelled();
+                    if apply_live_cmds(&window, &webview, &site_for_loop) {
+                        forced_close = true;
+                    }
+                    if page_ready {
+                        flush(&webview);
+                    }
+                }
+                if !cancelled && !forced_close {
+                    if let Some(entry) = bridge::get_handler_entry("close") {
+                        bridge::reset_close_cancelled();
+                        dispatch_one(&runtime, "close", "{}", entry);
+                        cancelled = bridge::take_close_cancelled();
+                        if apply_live_cmds(&window, &webview, &site_for_loop) {
+                            forced_close = true;
+                        }
+                        if page_ready {
+                            flush(&webview);
+                        }
+                    }
+                }
+                if !cancelled || forced_close {
+                    shutdown::set_hook(None);
+                    shutdown::request();
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                }
+            }
+            tao::event::Event::WindowEvent {
+                event: tao::event::WindowEvent::Resized(size),
+                ..
+            } => {
+                if bridge::has_handler("resize") {
+                    let payload =
+                        format!("{{\"width\":{},\"height\":{}}}", size.width, size.height);
+                    bridge::push_event("resize", &payload);
+                    let _ = proxy.send_event(Msg::Event);
+                }
+            }
+            tao::event::Event::WindowEvent {
+                event: tao::event::WindowEvent::Focused(focused),
+                ..
+            } => {
+                if bridge::has_handler("focus") {
+                    let payload = format!("{{\"focused\":{}}}", focused);
+                    bridge::push_event("focus", &payload);
+                    let _ = proxy.send_event(Msg::Event);
+                }
+            }
+            tao::event::Event::WindowEvent {
+                event: tao::event::WindowEvent::ThemeChanged(theme),
+                ..
+            } => {
+                if bridge::has_handler("theme_changed") {
+                    let label = match theme {
+                        tao::window::Theme::Dark => "dark",
+                        _ => "light",
+                    };
+                    let payload = format!("{{\"theme\":\"{}\"}}", label);
+                    bridge::push_event("theme_changed", &payload);
+                    let _ = proxy.send_event(Msg::Event);
+                }
             }
             tao::event::Event::UserEvent(Msg::Shutdown) => {
                 shutdown::set_hook(None);
                 *control_flow = tao::event_loop::ControlFlow::Exit;
             }
-            tao::event::Event::UserEvent(Msg::Event) => {
-                if let Some(new_title) = bridge::take_title() {
-                    window.set_title(&new_title);
+            tao::event::Event::UserEvent(Msg::PageReady) => {
+                page_ready = true;
+                if !initial_ready_sent {
+                    initial_ready_sent = true;
+                    bridge::push_event("ready", "");
+                }
+                if apply_live_cmds(&window, &webview, &site_for_loop) {
+                    shutdown::set_hook(None);
+                    shutdown::request();
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                    return;
                 }
                 dispatch(&runtime);
-                if let Some(new_title) = bridge::take_title() {
-                    window.set_title(&new_title);
+                if apply_live_cmds(&window, &webview, &site_for_loop) {
+                    shutdown::set_hook(None);
+                    shutdown::request();
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                    return;
                 }
                 flush(&webview);
+                if shutdown::is_requested() {
+                    shutdown::set_hook(None);
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                }
+            }
+            tao::event::Event::UserEvent(Msg::Event) => {
+                if apply_live_cmds(&window, &webview, &site_for_loop) {
+                    shutdown::set_hook(None);
+                    shutdown::request();
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                    return;
+                }
+                dispatch(&runtime);
+                if apply_live_cmds(&window, &webview, &site_for_loop) {
+                    shutdown::set_hook(None);
+                    shutdown::request();
+                    *control_flow = tao::event_loop::ControlFlow::Exit;
+                    return;
+                }
+                if page_ready {
+                    flush(&webview);
+                }
                 if shutdown::is_requested() {
                     shutdown::set_hook(None);
                     *control_flow = tao::event_loop::ControlFlow::Exit;
@@ -231,6 +472,111 @@ pub fn open(
             _ => {}
         }
     });
+}
+
+fn to_tao_theme(t: bridge::WindowTheme) -> Option<tao::window::Theme> {
+    match t {
+        bridge::WindowTheme::Light => Some(tao::window::Theme::Light),
+        bridge::WindowTheme::Dark => Some(tao::window::Theme::Dark),
+        bridge::WindowTheme::System => None,
+    }
+}
+
+fn resolve_window_icon(spec: Option<&str>, site: &StaticSite) -> Option<tao::window::Icon> {
+    if let Some(path) = spec {
+        let bytes = site.read_asset(path).or_else(|| std::fs::read(path).ok());
+        match bytes {
+            Some(b) => match super::icon::load_tao_icon(&b) {
+                Ok(ic) => return Some(ic),
+                Err(e) => eprintln!("error[runtime]: cannot decode icon '{}': {}", path, e),
+            },
+            None => eprintln!("error[runtime]: cannot read icon '{}'", path),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use tao::platform::windows::IconExtWindows;
+        if let Ok(ic) = tao::window::Icon::from_resource(1, None) {
+            return Some(ic);
+        }
+    }
+    None
+}
+
+fn apply_live_cmds(
+    window: &tao::window::Window,
+    webview: &wry::WebView,
+    site: &StaticSite,
+) -> bool {
+    if let Some(new_title) = bridge::take_title() {
+        window.set_title(&new_title);
+    }
+    let mut close = false;
+    for cmd in bridge::take_window_cmds() {
+        match cmd {
+            bridge::WindowCommand::Icon(path) => {
+                if let Some(ic) = resolve_window_icon(Some(&path), site) {
+                    window.set_window_icon(Some(ic.clone()));
+                    #[cfg(target_os = "windows")]
+                    {
+                        use tao::platform::windows::WindowExtWindows;
+                        window.set_taskbar_icon(Some(ic));
+                    }
+                }
+            }
+            bridge::WindowCommand::Size(w, h) => {
+                window.set_inner_size(tao::dpi::LogicalSize::new(w, h));
+            }
+            bridge::WindowCommand::MinSize(w, h) => {
+                window.set_min_inner_size(Some(tao::dpi::LogicalSize::new(w, h)));
+            }
+            bridge::WindowCommand::Maximized(m) => {
+                window.set_maximized(m);
+            }
+            bridge::WindowCommand::Fullscreen(f) => {
+                window.set_fullscreen(if f {
+                    Some(tao::window::Fullscreen::Borderless(None))
+                } else {
+                    None
+                });
+            }
+            bridge::WindowCommand::Resizable(r) => {
+                window.set_resizable(r);
+            }
+            bridge::WindowCommand::Decorations(d) => {
+                window.set_decorations(d);
+            }
+            bridge::WindowCommand::Theme(t) => {
+                window.set_theme(to_tao_theme(t));
+            }
+            bridge::WindowCommand::BgColor(r, g, b, a) => {
+                let _ = webview.set_background_color((r, g, b, a));
+            }
+            bridge::WindowCommand::DevTools(open) => {
+                if open {
+                    webview.open_devtools();
+                } else {
+                    webview.close_devtools();
+                }
+            }
+            bridge::WindowCommand::Close => {
+                close = true;
+            }
+        }
+    }
+    close
+}
+
+fn encode_file_drop_json(paths: &[PathBuf], pos: (i32, i32)) -> String {
+    let mut out = String::from("{\"paths\":[");
+    for (idx, p) in paths.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&bridge::json_quote(&p.to_string_lossy()));
+    }
+    out.push_str(&format!("],\"x\":{},\"y\":{}}}", pos.0, pos.1));
+    out
 }
 
 /// Point wry's WebView2 at a profile folder that belongs to *this* app.
@@ -302,6 +648,33 @@ fn prune_stale_ephemeral(ephemeral_root: &Path) {
     }
 }
 
+fn dispatch_one(runtime: &Runtime, event: &str, payload: &str, entry: bridge::HandlerEntry) {
+    let fallback_span = Span::new(Arc::from("<gui>"), 0, 0, 0);
+    let span = entry.span.clone().unwrap_or(fallback_span);
+    let args = match entry.arity {
+        bridge::HandlerArity::OneArg => vec![Value::Str(payload.into())],
+        bridge::HandlerArity::TwoArgs => {
+            vec![Value::Str(event.into()), Value::Str(payload.into())]
+        }
+    };
+    match runtime {
+        Runtime::Tree(interp) => match interp.call_value(entry.handler, args, &span) {
+            Ok(_) => {}
+            Err(flow) => report_flow(flow),
+        },
+        Runtime::Vm(vm) => {
+            if let Err(mut diag) = vm.borrow_mut().call_value_diag(&entry.handler, args) {
+                if diag.span.as_ref().is_none_or(|s| s.line == 0) {
+                    if let Some(ref handler_span) = entry.span {
+                        diag.span = Some(handler_span.clone());
+                    }
+                }
+                eprintln!("{}", diag);
+            }
+        }
+    }
+}
+
 /// Dispatch every queued event to its handler, then flush the JavaScript the
 /// handlers queued (handlers may queue more UI updates).
 fn dispatch(runtime: &Runtime) {
@@ -311,30 +684,7 @@ fn dispatch(runtime: &Runtime) {
             break;
         }
         for (event, payload, entry) in events {
-            let fallback_span = Span::new(Arc::from("<gui>"), 0, 0, 0);
-            let span = entry.span.clone().unwrap_or(fallback_span);
-            let args = match entry.arity {
-                bridge::HandlerArity::OneArg => vec![Value::Str(payload.into())],
-                bridge::HandlerArity::TwoArgs => {
-                    vec![Value::Str(event.into()), Value::Str(payload.into())]
-                }
-            };
-            match runtime {
-                Runtime::Tree(interp) => match interp.call_value(entry.handler, args, &span) {
-                    Ok(_) => {}
-                    Err(flow) => report_flow(flow),
-                },
-                Runtime::Vm(vm) => {
-                    if let Err(mut diag) = vm.borrow_mut().call_value_diag(&entry.handler, args) {
-                        if diag.span.as_ref().is_none_or(|s| s.line == 0) {
-                            if let Some(ref handler_span) = entry.span {
-                                diag.span = Some(handler_span.clone());
-                            }
-                        }
-                        eprintln!("{}", diag);
-                    }
-                }
-            }
+            dispatch_one(runtime, &event, &payload, entry);
         }
     }
 }
@@ -469,6 +819,27 @@ impl StaticSite {
         }
     }
 
+    /// Read an asset (such as a window icon) from an embedded `--payload`
+    /// archive if present, or from the site root on disk.
+    fn read_asset(&self, spec: &str) -> Option<Vec<u8>> {
+        let norm = spec.trim().replace('\\', "/");
+        let norm = norm.strip_prefix("./").unwrap_or(&norm);
+        if let Some(files) = &self.files {
+            if let Some(b) = files.get(norm) {
+                return Some(b.clone());
+            }
+        }
+        if let Some(root) = &self.root {
+            let candidate = root.join(spec);
+            if candidate.is_file() {
+                if let Ok(b) = std::fs::read(candidate) {
+                    return Some(b);
+                }
+            }
+        }
+        None
+    }
+
     /// The URL the webview navigates to. `wry` rewrites `spid3r://...` to
     /// `http://spid3r.app/...` for WebView2, so the page origin always parses
     /// as an `http::Uri`.
@@ -573,7 +944,7 @@ fn content_type(path: &str) -> &'static str {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "ico" => "image/x-icon",
-        "txt" | "matrix" | "md" => "text/plain; charset=utf-8",
+        "txt" | "matrix" | "mt" | "md" => "text/plain; charset=utf-8",
         "xml" => "application/xml",
         "wasm" => "application/wasm",
         "woff" => "font/woff",

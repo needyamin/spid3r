@@ -24,14 +24,25 @@ cargo run -- gui app.matrix
    built-in default page, or your own with `--html page.html` (served over
    `spid3r://app/`, see below). Before any page script runs, the bridge script
    below is injected.
-3. **`ready` fires.** When the page finishes loading, every queued JavaScript
-   command is evaluated in order.
+3. **`ready` fires.** When the page finishes loading (`PageLoadEvent::Finished`),
+   the `ready` event is dispatched and every queued JavaScript command is
+   evaluated in order. JavaScript queued during Phase 1 or by background `spawn`
+   tasks is buffered until `PageLoadEvent::Finished` so it never races initial
+   DOM construction.
 4. **The page talks back.** JS calls `window.spid3r.emit(event, payload)`;
-   the window's event loop decodes string payloads directly and preserves
-   non-string JSON values (objects, arrays, numbers, booleans, `null`) as JSON
-   text strings (parseable with `json_parse(payload)`), then dispatches each event
-   to the registered handler as `handler(event, payload)` (or `handler(payload)`
-   for a 1-arg handler) on the UI thread and evaluates any queued JavaScript.
+   the window's event loop decodes string payloads (including RFC 8259 UTF-16
+   surrogate pairs) directly and preserves non-string JSON values (objects,
+   arrays, numbers, booleans, `null`) as JSON text strings (parseable with
+   `json_parse(payload)`), then dispatches each event to the registered handler
+   as `handler(event, payload)` (or `handler(payload)` for a 1-arg handler) on
+   the OS main thread and evaluates any queued JavaScript.
+
+On Windows WebView2, `spid3r://app/` is served over the `https` scheme
+(`https://spid3r.app`) so `window.isSecureContext === true` and secure-context
+APIs (`window.crypto.subtle`, `navigator.clipboard`) work out of the box.
+Both `spid3r gui` and `spid3r-control` also load the executable's embedded PE
+icon resource (`#1`) as the default window and taskbar icon unless overridden
+with `--icon` or `gui_icon(path)`.
 
 Because the interpreter runs before the window exists, `gui_*` calls made
 during setup are queued and replayed at step 3.
@@ -78,7 +89,30 @@ The built-in page contains `<div id="spid3r-root">`, the element
 | `gui_set_html(html)` | Set `#spid3r-root`'s content (JSON-quoted into the JS command). |
 | `gui_on(event, handler)` | Call `handler(event, payload)` (or `handler(payload)` when `handler` takes 1 parameter) for every `event` the page emits. Re-registering replaces. Handlers taking 0 or >= 3 required parameters are rejected at registration. Parameters the handler does not read never trigger the unused-parameter lint; prefixing unused parameters with `_` also works. |
 | `gui_emit(event, payload)` | Queue an event as if the page emitted it (program-driven UI updates; also how tests drive handlers). |
-| `gui_title(text)` | Window title (read when the window opens; default `spid3r gui`). |
+| `gui_title(text)` | Window title (read when the window opens and applied live; default `spid3r gui`). |
+| `gui_icon(path)` | Set the window & taskbar icon from a `.ico` or `.png` file (disk path or embedded `--payload` entry). |
+| `gui_size(w, h)` | Set logical window size (default `920×640`). |
+| `gui_min_size(w, h)` | Set minimum logical window size (default `320×200`). |
+| `gui_maximize([bool])` | Maximize (default `true`) or unmaximize the window. |
+| `gui_fullscreen(bool)` | Enter or exit borderless fullscreen mode. |
+| `gui_resizable(bool)` | Enable or disable user resizing. |
+| `gui_decorations(bool)` | Show or hide native window decorations/titlebar. |
+| `gui_theme(mode)` | Set native titlebar theme (`"light"`, `"dark"`, or `"system"`). |
+| `gui_bg_color(hex)` | Set webview background color (`#RGB`, `#RRGGBB`, or `#RRGGBBAA`), eliminating white startup flash when called in Phase 1. |
+| `gui_devtools(bool)` | Enable/open or close WebView DevTools (requires `--devtools` or `gui_devtools(true)` in release builds). |
+| `gui_cancel_close()` | Cancel a pending window close from inside a `before_close` or `close` handler. |
+| `gui_close()` | Programmatically close the GUI window. |
+
+CLI window options on `spid3r gui` (or `sp gui`): `--icon <path>`, `--width <px>`,
+`--height <px>`, `--min-size <WxH>`, `--maximized`, `--fullscreen`,
+`--theme <light|dark|system>`, `--bg-color <#hex>`, `--devtools`,
+`--clipboard` / `--no-clipboard`, and `--zoom`.
+
+Window lifecycle events dispatched to `gui_on(...)` when registered:
+`ready`, `before_close` / `close` (opt-in cancellation via `gui_cancel_close()`),
+`resize` (`{"width":W,"height":H}`), `focus` (`{"focused":bool}`),
+`theme_changed` (`{"theme":"dark"|"light"}`), and `file_drop` / `drop`
+(`{"paths":[...],"x":X,"y":Y}`).
 
 All five take strings except `gui_on`'s handler, which must be a function
 (wrong types and arities are clean errors, not panics). There is no DOM

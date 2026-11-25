@@ -1593,6 +1593,14 @@ impl Parser {
                 TokenKind::Ident(name) => {
                     let sp = self.span();
                     self.pos += 1;
+                    // Qualified enum variant pattern: `Enum.Variant`, `Mod.Enum.Variant(...)`.
+                    let mut qualified = false;
+                    let mut name = name;
+                    while self.eat(&TokenKind::Dot) {
+                        let (vname, _) = self.expect_ident()?;
+                        name = vname;
+                        qualified = true;
+                    }
                     // `Name(...)` is a variant pattern; a bare identifier binds.
                     if self.at(&TokenKind::LParen) {
                         self.pos += 1;
@@ -1607,6 +1615,13 @@ impl Parser {
                         return Ok(Pattern::Variant {
                             name,
                             args,
+                            span: sp,
+                        });
+                    }
+                    if qualified {
+                        return Ok(Pattern::Variant {
+                            name,
+                            args: Vec::new(),
                             span: sp,
                         });
                     }

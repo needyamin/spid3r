@@ -149,7 +149,7 @@ ifExpr         = "if" expr valueBlock { ( "elif" | "else" "if" ) expr valueBlock
 matchExpr      = "match" "(" expr ")" "{" arm { [ "," ] arm } "}" ;
 arm            = pattern [ "if" expr ] "=>" ( valueBlock | expr ) ;
 pattern        = "_" | ident | literal
-               | ident "(" [ pattern { "," pattern } ] ")" ;
+               | { ident "." } ident [ "(" [ pattern { "," pattern } ] ")" ] ;
 
 listLit        = "[" [ args ] "]" ;
 fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
@@ -226,12 +226,16 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 - `spawn` takes any expression that evaluates to a function (`spawn work`,
   `spawn closure_var`), not just a `fn` literal.
 - `enum Name { A, B(x), C(x, y) }` declares a sum type. Each variant becomes a
-  `public` constructor function (`A()`, `B(1)`) returning a map with a `__tag`
-  key, so a variant works across `import` like any other function. A `match`
-  compiles to a chain of guarded `if`s: arms are tried in order and a failed
-  guard falls through to the next arm. A match that names variants of one enum
-  and has no `_`/binding arm must cover every variant (a semantic error
-  otherwise); otherwise an unmatched value throws at run time.
+  constructor function (`A()`, `B(1)`) returning a map with a `__tag` key, and
+  `Name` itself is bound as a `const` namespace map exposing unit variants as
+  values (`Name.A`) and payload variants as constructors (`Name.B(1)`). Both
+  `Name` and its variant constructors inherit the enum's `public` visibility
+  across `import`. A `match` compiles to a chain of guarded `if`s and accepts
+  both qualified (`Name.A`, `Name.B(x)`) and unqualified (`A`, `A()`, `B(x)`)
+  variant patterns: arms are tried in order and a failed guard falls through to
+  the next arm. A match that names variants of one enum and has no `_`/binding
+  arm must cover every variant (a semantic error otherwise); otherwise an
+  unmatched value throws at run time.
 - Expression/statement nesting is capped at 64 levels; deeper input is a parser
   diagnostic, never a stack overflow.
 - Bitwise `& | ^ << >>` follow C precedence and are desugared to the natives

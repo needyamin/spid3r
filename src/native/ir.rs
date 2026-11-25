@@ -1232,6 +1232,7 @@ impl<'ctx> Ir<'ctx> {
         payload: inkwell::values::IntValue<'ctx>,
     ) {
         let v2_ty = self.val_v2_ty();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let tag_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, slot, &[self.i64c(0), self.i32c(0)], "v2.t")
@@ -1240,6 +1241,7 @@ impl<'ctx> Ir<'ctx> {
         self.builder
             .build_store(tag_ptr, self.i64c(tag as i64))
             .unwrap();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let pay_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, slot, &[self.i64c(0), self.i32c(1)], "v2.p")
@@ -1337,6 +1339,7 @@ impl<'ctx> Ir<'ctx> {
         let arr_ty = self.ptr_ty().array_type(argv.len() as u32);
         let slot = self.alloca_entry_ty(arr_ty, "argv");
         for (i, a) in argv.iter().enumerate() {
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let elem = unsafe {
                 self.builder
                     .build_in_bounds_gep(
@@ -1865,6 +1868,7 @@ impl<'ctx> Ir<'ctx> {
     /// Convert a value handle to an i1 condition (inline `TAG_BOOL` fast path).
     fn cond_i1(&mut self, v: PointerValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
         let v2_ty = self.val_v2_ty();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let tag_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, v, &[self.i64c(0), self.i32c(0)], "c.tp")
@@ -1893,6 +1897,7 @@ impl<'ctx> Ir<'ctx> {
             .unwrap();
 
         self.builder.position_at_end(fast_bb);
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let pay_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, v, &[self.i64c(0), self.i32c(1)], "c.pp")
@@ -4964,6 +4969,7 @@ impl<'ctx> Ir<'ctx> {
             .build_load(self.ptr_ty(), data_slot, "ul.data")
             .unwrap()
             .into_pointer_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let elem_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(self.i64_ty(), data, &[idx], "ul.ep")
@@ -5024,6 +5030,7 @@ impl<'ctx> Ir<'ctx> {
             .build_load(self.ptr_ty(), data_slot, "ul.data")
             .unwrap()
             .into_pointer_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let elem_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(self.i64_ty(), data, &[idx], "ul.ep")
@@ -5079,6 +5086,7 @@ impl<'ctx> Ir<'ctx> {
             .build_load(self.ptr_ty(), data_slot, "ul.data")
             .unwrap()
             .into_pointer_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let elem_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(f64_t, data, &[idx], "ul.ep")
@@ -5144,6 +5152,7 @@ impl<'ctx> Ir<'ctx> {
             .build_load(self.ptr_ty(), data_slot, "ul.data")
             .unwrap()
             .into_pointer_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let elem_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(f64_t, data, &[idx], "ul.ep")
@@ -5221,11 +5230,13 @@ impl<'ctx> Ir<'ctx> {
             _ => {
                 let idx_v2 = self.compile_expr(index_expr)?;
                 let v2_ty = self.val_v2_ty();
+                // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                 let kt_p = unsafe {
                     self.builder
                         .build_in_bounds_gep(v2_ty, idx_v2, &[self.i64c(0), self.i32c(0)], "mv.ktp")
                         .unwrap()
                 };
+                // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                 let kp_p = unsafe {
                     self.builder
                         .build_in_bounds_gep(v2_ty, idx_v2, &[self.i64c(0), self.i32c(1)], "mv.kpp")
@@ -5282,11 +5293,13 @@ impl<'ctx> Ir<'ctx> {
         self.builder.position_at_end(probe_bb);
         let pos_phi = self.builder.build_phi(self.i64_ty(), "mv.pos").unwrap();
         let pos = pos_phi.as_basic_value().into_int_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let slot_ptr = unsafe {
             self.builder
                 .build_in_bounds_gep(slot_ty, slots, &[pos], "mv.sp")
                 .unwrap()
         };
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let st_p = unsafe {
             self.builder
                 .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(0)], "mv.stp")
@@ -5306,6 +5319,7 @@ impl<'ctx> Ir<'ctx> {
             .unwrap();
 
         self.builder.position_at_end(chk_pay_bb);
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let sp_p = unsafe {
             self.builder
                 .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(1)], "mv.spp")
@@ -5325,6 +5339,7 @@ impl<'ctx> Ir<'ctx> {
             .unwrap();
 
         self.builder.position_at_end(hit_bb);
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let sv_p = unsafe {
             self.builder
                 .build_in_bounds_gep(slot_ty, slot_ptr, &[self.i64c(0), self.i32c(2)], "mv.svp")
@@ -7027,6 +7042,7 @@ impl<'ctx> Ir<'ctx> {
             let Some(VarLoc::Local(orig_slot)) = self.lookup(name) else {
                 unreachable!("analyze_hoisted_while_loop checked Local for promoted scalar");
             };
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let tag_p = unsafe {
                 self.builder
                     .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(0)], "pm.tp")
@@ -7057,6 +7073,7 @@ impl<'ctx> Ir<'ctx> {
                 .unwrap();
             self.builder.position_at_end(next_bb);
 
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let pay_p = unsafe {
                 self.builder
                     .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(1)], "pm.pp")
@@ -7938,6 +7955,7 @@ impl<'ctx> Ir<'ctx> {
             let Some(VarLoc::Local(orig_slot)) = self.lookup(name) else {
                 unreachable!("analyze_hoisted_map_loop checked Local for promoted scalar");
             };
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let tag_p = unsafe {
                 self.builder
                     .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(0)], "mp.tp")
@@ -7964,6 +7982,7 @@ impl<'ctx> Ir<'ctx> {
                 .unwrap();
             self.builder.position_at_end(next_bb);
 
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let pay_p = unsafe {
                 self.builder
                     .build_in_bounds_gep(v2_ty, orig_slot, &[self.i64c(0), self.i32c(1)], "mp.pp")
@@ -10332,6 +10351,7 @@ impl<'ctx> Ir<'ctx> {
 
         let v2_ty = self.val_v2_ty();
         let out = self.alloc_v2_slot();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let tag_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, obj, &[self.i64c(0), self.i32c(0)], "len.tp")
@@ -10342,6 +10362,7 @@ impl<'ctx> Ir<'ctx> {
             .build_load(self.i64_ty(), tag_p, "len.tag")
             .unwrap()
             .into_int_value();
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let pay_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, obj, &[self.i64c(0), self.i32c(1)], "len.pp")
@@ -10481,11 +10502,13 @@ impl<'ctx> Ir<'ctx> {
         let v2_ty = self.val_v2_ty();
         let out = self.alloc_v2_slot();
 
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let lt_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, a, &[self.i64c(0), self.i32c(0)], "v2b.ltp")
                 .unwrap()
         };
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let rt_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, b, &[self.i64c(0), self.i32c(0)], "v2b.rtp")
@@ -10524,11 +10547,13 @@ impl<'ctx> Ir<'ctx> {
             .unwrap();
 
         self.builder.position_at_end(fast_bb);
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let lp_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, a, &[self.i64c(0), self.i32c(1)], "v2b.lpp")
                 .unwrap()
         };
+        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
         let rp_p = unsafe {
             self.builder
                 .build_in_bounds_gep(v2_ty, b, &[self.i64c(0), self.i32c(1)], "v2b.rpp")
@@ -10869,6 +10894,7 @@ impl<'ctx> Ir<'ctx> {
                         }
 
                         let v2_ty = self.val_v2_ty();
+                        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                         let tp = unsafe {
                             self.builder
                                 .build_in_bounds_gep(
@@ -10880,6 +10906,7 @@ impl<'ctx> Ir<'ctx> {
                                 .unwrap()
                         };
                         self.builder.build_store(tp, tag_w).unwrap();
+                        // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                         let pp = unsafe {
                             self.builder
                                 .build_in_bounds_gep(
@@ -10974,6 +11001,7 @@ impl<'ctx> Ir<'ctx> {
         let arr_ty = part_ty.array_type(compiled.len() as u32);
         let arr_slot = self.alloca_entry_ty(arr_ty, "str.parts");
         for (idx, cp) in compiled.into_iter().enumerate() {
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let elem_ptr = unsafe {
                 self.builder
                     .build_in_bounds_gep(part_ty, arr_slot, &[self.i64c(idx as i64)], "str.p")
@@ -13943,6 +13971,7 @@ impl<'ctx> Ir<'ctx> {
         }
         // constructors receive the receiver implicitly at argv[0]
         if self_offset == 1 {
+            // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
             let gep = unsafe {
                 self.builder
                     .build_in_bounds_gep(self.ptr_ty(), argv, &[self.i64c(0)], "self")
@@ -13977,6 +14006,7 @@ impl<'ctx> Ir<'ctx> {
                     .build_conditional_branch(has, then_bb, else_bb)
                     .unwrap();
                 self.builder.position_at_end(then_bb);
+                // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                 let gep = unsafe {
                     self.builder
                         .build_in_bounds_gep(
@@ -13997,6 +14027,7 @@ impl<'ctx> Ir<'ctx> {
                 phi.add_incoming(&[(&from_argv, then_bb), (&from_default, else_bb)]);
                 phi.as_basic_value().into_pointer_value()
             } else {
+                // SAFETY: LLVM in-bounds GEP targets a valid field/element within the allocated ValueV2, slot, array, or argv buffer.
                 let gep = unsafe {
                     self.builder
                         .build_in_bounds_gep(

@@ -480,6 +480,12 @@ pub fn declared_names(program: &Program) -> Vec<String> {
             }
             Stmt::Class(c) => out.push(c.name.clone()),
             Stmt::Interface(i) => out.push(i.name.clone()),
+            Stmt::Enum(e) => {
+                out.push(e.name.clone());
+                for v in &e.variants {
+                    out.push(v.name.clone());
+                }
+            }
             Stmt::Let { name, .. } | Stmt::Const { name, .. } => out.push(name.clone()),
             _ => {}
         }
@@ -961,6 +967,18 @@ const GUI_BUILTIN_FUNCTIONS: &[&str] = &[
     "gui_on",
     "gui_emit",
     "gui_title",
+    "gui_icon",
+    "gui_size",
+    "gui_min_size",
+    "gui_maximize",
+    "gui_fullscreen",
+    "gui_resizable",
+    "gui_decorations",
+    "gui_theme",
+    "gui_bg_color",
+    "gui_devtools",
+    "gui_cancel_close",
+    "gui_close",
 ];
 
 /// GUI natives known to this build (empty without the `gui` feature).
@@ -1205,6 +1223,12 @@ impl Checker {
                 // a function that `crate::lower` emits. Registering them here
                 // means a use above the declaration still type-checks.
                 Stmt::Enum(e) => {
+                    let self_named = e.variants.iter().any(|v| v.name == e.name);
+                    if !self_named && !seen.insert(e.name.clone()) {
+                        return Err(
+                            self.err(&e.span, format!("enum '{}' is declared twice", e.name))
+                        );
+                    }
                     let mut names = Vec::new();
                     for v in &e.variants {
                         if !seen.insert(v.name.clone()) {
@@ -1235,6 +1259,20 @@ impl Checker {
                         );
                     }
                     self.enums.insert(e.name.clone(), names);
+                    if !self_named {
+                        self.declare(
+                            &e.name,
+                            &e.span,
+                            VarInfo {
+                                is_const: true,
+                                class: None,
+                                ty: None,
+                                is_import: false,
+                                ..Default::default()
+                            },
+                        )?;
+                        self.predeclared.insert(e.name.clone());
+                    }
                 }
                 Stmt::Fn(f) => {
                     let name = f.name.clone().unwrap_or_default();
@@ -1345,24 +1383,21 @@ impl Checker {
                 let selections = alias
                     .as_deref()
                     .and_then(crate::modules::parse_import_selections);
-                if alias.is_none() || selections.is_some() {
-                    let src_file = if self.source_file.is_empty() {
-                        span.file.as_ref()
-                    } else {
-                        self.source_file.as_str()
-                    };
-                    let exports_res = crate::modules::module_exports_of_in(
-                        path,
-                        src_file,
-                        span,
-                        &self.module_dirs,
-                    );
-                    if let Err(ref e) = exports_res {
-                        if e.message.contains("circular import") {
-                            return Err(e.clone());
-                        }
+                let import_types = alias.is_none() || selections.is_some();
+                let src_file = if self.source_file.is_empty() {
+                    span.file.as_ref()
+                } else {
+                    self.source_file.as_str()
+                };
+                let exports_res =
+                    crate::modules::module_exports_of_in(path, src_file, span, &self.module_dirs);
+                if let Err(ref e) = exports_res {
+                    if e.message.contains("circular import") {
+                        return Err(e.clone());
                     }
-                    if let Ok(exports) = exports_res {
+                }
+                if let Ok(exports) = exports_res {
+                    if import_types {
                         for i in exports.interfaces {
                             if seen.contains(&i.name) || self.interfaces.contains_key(&i.name) {
                                 continue;
@@ -1433,14 +1468,16 @@ impl Checker {
                             }
                             self.classes.insert(c.name.clone(), ci);
                         }
-                        for e in exports.enums {
-                            if seen.contains(&e.name) || self.enums.contains_key(&e.name) {
-                                continue;
-                            }
-                            let mut vnames = Vec::new();
-                            for v in &e.variants {
-                                self.variant_enum.insert(v.name.clone(), e.name.clone());
-                                vnames.push(v.name.clone());
+                    }
+                    for e in exports.enums {
+                        if seen.contains(&e.name) || self.enums.contains_key(&e.name) {
+                            continue;
+                        }
+                        let mut vnames = Vec::new();
+                        for v in &e.variants {
+                            self.variant_enum.insert(v.name.clone(), e.name.clone());
+                            vnames.push(v.name.clone());
+                            if import_types {
                                 self.funcs
                                     .entry(v.name.clone())
                                     .or_insert_with(|| FuncInfo {
@@ -1460,8 +1497,8 @@ impl Checker {
                                         type_bounds: Vec::new(),
                                     });
                             }
-                            self.enums.insert(e.name.clone(), vnames);
                         }
+                        self.enums.insert(e.name.clone(), vnames);
                     }
                 }
             }

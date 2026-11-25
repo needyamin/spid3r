@@ -613,6 +613,10 @@ public fn fmt_format_source(src, path) {
     return out;
 }
 
+fn fmt_is_source_name(name) {
+    return fmt_ends_with(name, ".matrix") or fmt_ends_with(name, ".mt");
+}
+
 fn fmt_collect_matrix_files(dir) {
     let r = list_dir(dir);
     if not r.is_ok() {
@@ -621,7 +625,7 @@ fn fmt_collect_matrix_files(dir) {
     let names = r.unwrap();
     let out = [];
     for name in names {
-        if fmt_ends_with(name, ".matrix") {
+        if fmt_is_source_name(name) {
             let full = fmt_join_path(dir, name);
             if is_file(full) {
                 out.push(full);
@@ -656,7 +660,7 @@ public fn fmt_run_cli(argv) {
                 }
                 let found = [];
                 for name in r.unwrap() {
-                    if fmt_ends_with(name, ".matrix") {
+                    if fmt_is_source_name(name) {
                         found.push(fmt_join_path(dir, name));
                     }
                 }

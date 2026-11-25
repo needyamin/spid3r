@@ -66,8 +66,9 @@ step() {
   "$@"
 }
 
-# 1-4: Format & Clippy across core, gui, and native feature sets.
+# 1-4: Format, unsafe/SAFETY invariant, & Clippy across core, gui, and native feature sets.
 step "Rustfmt check" cargo fmt --all -- --check
+step "Unsafe / SAFETY invariant gate" "$PY_CMD" tools/check_unsafe_safety.py
 step "Clippy (core, zero-deps)" cargo clippy --no-default-features --all-targets -- -D warnings
 step "Clippy (gui feature)" cargo clippy --no-default-features --features gui --all-targets -- -D warnings
 step "Clippy (native feature)" cargo clippy --all-targets --features native -- -D warnings

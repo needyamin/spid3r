@@ -3636,6 +3636,15 @@ impl Vm {
                                     self.frames[nf].slots[recv_idx] = Value::Null;
                                     continue;
                                 }
+                                if mname == "with" && argc == 1 {
+                                    let args = self.pop_n(argc);
+                                    let obj = self.pop_top();
+                                    match self.host_callback_method(&obj, &name, args) {
+                                        Ok(v) => self.frames[nf].slots.push(v),
+                                        Err(e) => self.error = Some(e),
+                                    }
+                                    continue;
+                                }
                             }
                             Value::Map(m) => {
                                 let mname = name.as_ref();

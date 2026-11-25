@@ -392,6 +392,33 @@ impl MutexData {
         drop(state);
         self.cv.notify_one();
     }
+
+    /// Replace the value stored inside this mutex.
+    ///
+    /// If the calling context already holds the lock, the value is updated in
+    /// place without relocking. Otherwise the mutex is acquired for the write
+    /// and released immediately after, making scalar mutation (`m.set(v)`)
+    /// atomic and deadlock-free.
+    pub fn set(&self, v: Value) -> Result<(), String> {
+        let me = current_owner_id();
+        let already_owner = {
+            let state = self.state.lock().unwrap();
+            state.locked && state.owner == Some(me)
+        };
+        if already_owner {
+            *self.value.lock().unwrap() = v;
+            return Ok(());
+        }
+        let _ = self.lock()?;
+        *self.value.lock().unwrap() = v;
+        self.unlock();
+        Ok(())
+    }
+
+    /// Overwrite the inner value while the caller already holds the lock.
+    pub fn set_locked(&self, v: Value) {
+        *self.value.lock().unwrap() = v;
+    }
 }
 
 /// A held user mutex that unlocks when dropped — including during a panic

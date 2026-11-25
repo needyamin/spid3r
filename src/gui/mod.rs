@@ -26,8 +26,10 @@
 //! passing a `.matrixc` file or embedding one in a payload.
 
 pub mod bridge;
+pub mod icon;
 pub mod window;
 pub use window::PageSource;
+pub use window::WindowOptions;
 pub use window::DEFAULT_PAGE;
 
 use std::cell::RefCell;
@@ -52,7 +54,45 @@ fn gui_error(msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(Phase::Runtime, msg.into())
 }
 
-/// `spid3r gui file.matrix [--html page.html] [--dry-run]`
+fn parse_positive_dim(flag: &str, raw: &str) -> Result<f64, Diagnostic> {
+    let v: f64 = raw
+        .parse()
+        .map_err(|_| usage(format!("{} expects a positive number, got '{}'", flag, raw)))?;
+    if !v.is_finite() || v <= 0.0 || v > 16384.0 {
+        return Err(usage(format!(
+            "{} must be between 1 and 16384, got '{}'",
+            flag, raw
+        )));
+    }
+    Ok(v)
+}
+
+fn parse_size_pair(flag: &str, raw: &str) -> Result<(f64, f64), Diagnostic> {
+    let Some((w_s, h_s)) = raw.split_once('x').or_else(|| raw.split_once('X')) else {
+        return Err(usage(format!(
+            "{} expects WxH (e.g. 800x600), got '{}'",
+            flag, raw
+        )));
+    };
+    Ok((
+        parse_positive_dim(flag, w_s.trim())?,
+        parse_positive_dim(flag, h_s.trim())?,
+    ))
+}
+
+fn parse_theme_str(raw: &str) -> Result<bridge::WindowTheme, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "light" => Ok(bridge::WindowTheme::Light),
+        "dark" => Ok(bridge::WindowTheme::Dark),
+        "system" | "auto" | "" => Ok(bridge::WindowTheme::System),
+        other => Err(format!(
+            "theme expects 'light', 'dark', or 'system', got '{}'",
+            other
+        )),
+    }
+}
+
+/// `spid3r gui file.matrix [--html page.html] [--dry-run] ...`
 pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
     let mut file: Option<String> = None;
     let mut html: Option<String> = None;
@@ -60,6 +100,7 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
     let mut dry_run = false;
     let mut persist = false;
     let mut engine_vm = false;
+    let mut win_opts = WindowOptions::default();
     // Everything after the program file: what the program sees in `args()`.
     // Flags and their values are consumed below and never leak into it — a GUI
     // program used to see `["--html", "page.html"]` as its own arguments.
@@ -98,6 +139,55 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
                         .ok_or_else(|| usage("--html needs a path"))?,
                 );
             }
+            "--icon" => {
+                i += 1;
+                let p = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| usage("--icon needs a path (.ico or .png)"))?;
+                win_opts.icon = Some(p);
+            }
+            "--width" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| usage("--width needs a pixel value"))?;
+                win_opts.width = parse_positive_dim("--width", raw)?;
+            }
+            "--height" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| usage("--height needs a pixel value"))?;
+                win_opts.height = parse_positive_dim("--height", raw)?;
+            }
+            "--min-size" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| usage("--min-size needs WxH (e.g. 800x600)"))?;
+                win_opts.min_size = Some(parse_size_pair("--min-size", raw)?);
+            }
+            "--maximized" => win_opts.maximized = true,
+            "--fullscreen" => win_opts.fullscreen = true,
+            "--theme" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| usage("--theme needs 'light', 'dark', or 'system'"))?;
+                win_opts.theme = Some(parse_theme_str(raw).map_err(usage)?);
+            }
+            "--bg-color" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .ok_or_else(|| usage("--bg-color needs a hex color (e.g. #1e1e1e)"))?;
+                win_opts.bg_color = Some(bridge::parse_hex_color(raw).map_err(usage)?);
+            }
+            "--devtools" => win_opts.devtools = true,
+            "--clipboard" => win_opts.clipboard = true,
+            "--no-clipboard" => win_opts.clipboard = false,
+            "--zoom" => win_opts.zoom = true,
             "--dry-run" => dry_run = true,
             "--persist" => persist = true,
             "--payload" => {
@@ -195,31 +285,80 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
         let src = loaded
             .source
             .ok_or_else(|| gui_error("no program to run"))?;
-        let program: Program = parser::parse_file(&src, loaded.file_id.clone())?;
-        let warnings = semantic::check_file_with_warnings(&program, true, &loaded.display)?;
-        for w in &warnings {
-            if w.message.contains("explicit call to 'main'") {
-                eprintln!("{}", w.render());
+        // Run parse + semantic check (+ tree-interp Phase 1) on a big-stack
+        // worker thread so deep AST recursion cannot overflow a 1 MiB main
+        // stack, then join back to the OS main thread BEFORE `window::open()`
+        // creates `tao::EventLoop` (mandatory on macOS AppKit and Linux GTK).
+        fn gui_parse_check(
+            src: &str,
+            file_id: Arc<str>,
+            display: &str,
+        ) -> Result<Program, Diagnostic> {
+            let program: Program = parser::parse_file(src, file_id)?;
+            let warnings = semantic::check_file_with_warnings(&program, true, display)?;
+            for w in &warnings {
+                if w.message.contains("explicit call to 'main'") {
+                    eprintln!("{}", w.render());
+                }
             }
+            Ok(program)
+        }
+        fn gui_run_tree(
+            src: &str,
+            fid: Arc<str>,
+            disp: &str,
+            dirs: Vec<std::path::PathBuf>,
+        ) -> Result<(Arc<Interp>, i32), Diagnostic> {
+            let program = gui_parse_check(src, fid.clone(), disp)?;
+            let mut interp = Interp::new(fid, dirs);
+            interp.set_defer_task_drain(true);
+            let interp = Arc::new(interp);
+            interp.install_extra_natives(GUI_NATIVES);
+            let code = interp.run_program(&program)?;
+            Ok((interp, code))
         }
         if engine_vm {
+            let src_c = src.clone();
+            let fid_c = loaded.file_id.clone();
+            let disp_c = loaded.display.clone();
+            let program = match std::thread::Builder::new()
+                .name("spid3r-gui-check".to_string())
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || gui_parse_check(&src_c, fid_c, &disp_c))
+            {
+                Ok(h) => match h.join() {
+                    Ok(res) => res?,
+                    Err(p) => std::panic::resume_unwind(p),
+                },
+                Err(_) => gui_parse_check(&src, loaded.file_id.clone(), &loaded.display)?,
+            };
             let mut vm = crate::vm::Vm::new(loaded.file_id.clone(), dirs);
             vm.set_defer_task_drain(true);
             install_vm(&mut vm);
             let code = vm.run_program(&program)?;
             (Runtime::Vm(Rc::new(RefCell::new(vm))), code)
         } else {
-            let mut interp = Interp::new(loaded.file_id.clone(), dirs);
-            interp.set_defer_task_drain(true);
-            let interp = Arc::new(interp);
-            interp.install_extra_natives(GUI_NATIVES);
-            let code = interp.run_program(&program)?;
+            let src_c = src.clone();
+            let fid_c = loaded.file_id.clone();
+            let disp_c = loaded.display.clone();
+            let dirs_c = dirs.clone();
+            let (interp, code) = match std::thread::Builder::new()
+                .name("spid3r-gui-init".to_string())
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || gui_run_tree(&src_c, fid_c, &disp_c, dirs_c))
+            {
+                Ok(h) => match h.join() {
+                    Ok(res) => res?,
+                    Err(p) => std::panic::resume_unwind(p),
+                },
+                Err(_) => gui_run_tree(&src, loaded.file_id.clone(), &loaded.display, dirs)?,
+            };
             (Runtime::Tree(interp), code)
         }
     };
 
-    // Phase 2: show it. `--dry-run` prints the queued JavaScript instead of
-    // opening a window (what the test suite uses).
+    // Phase 2: show it on the OS main thread. `--dry-run` prints the queued
+    // JavaScript instead of opening a window (what the test suite uses).
     if dry_run {
         window::dry_run(&runtime);
         crate::sched::join_tasks_at_exit();
@@ -228,7 +367,7 @@ pub fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
         // them to disk would put the UI source back on the filesystem.
         let ephemeral = payload.is_some() && !persist;
         let app_id = app_identity(payload.as_deref().or(file.as_deref()));
-        window::open(runtime, loaded.page, ephemeral, &app_id).map_err(gui_error)?;
+        window::open(runtime, loaded.page, ephemeral, &app_id, win_opts).map_err(gui_error)?;
     }
     Ok(code)
 }
@@ -285,7 +424,8 @@ fn load_packaged(exe: &str, html: Option<&str>) -> Result<Loaded, Diagnostic> {
         // Bytecode first: a build that ships `.matrixc` ships no source at all,
         // and one that ships both should run the compiled form.
         let bytecode_name = pick(&files, "main.matrixc", ".matrixc");
-        let source_name = pick(&files, "main.matrix", ".matrix");
+        let source_name =
+            pick(&files, "main.matrix", ".matrix").or_else(|| pick(&files, "main.mt", ".mt"));
         if bytecode_name.is_none() && source_name.is_none() {
             return Err(gui_error(format!(
                 "'{}' carries an embedded payload but no .matrixc or .matrix program in it",
@@ -348,8 +488,12 @@ fn load_packaged(exe: &str, html: Option<&str>) -> Result<Loaded, Diagnostic> {
     }
 
     // No payload: run the loose files beside the executable. Bytecode wins for
-    // the same reason as above.
-    let base = exe_path.parent().unwrap_or(Path::new("."));
+    // the same reason as above. Treat an empty parent path (e.g. bare filename
+    // `app.exe`) as `.` so `std::fs::read_dir` looks in the current directory.
+    let base = match exe_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
     let loose = |ext: &str| -> Option<std::path::PathBuf> {
         std::fs::read_dir(base)
             .ok()?
@@ -358,7 +502,7 @@ fn load_packaged(exe: &str, html: Option<&str>) -> Result<Loaded, Diagnostic> {
             .find(|p| p.extension().and_then(|x| x.to_str()) == Some(ext))
     };
     let bytecode_path = loose("matrixc");
-    let matrix = loose("matrix");
+    let matrix = loose("matrix").or_else(|| loose("mt"));
     let chosen = bytecode_path
         .clone()
         .or_else(|| matrix.clone())
@@ -445,6 +589,18 @@ const GUI_NATIVES: &[(&str, GuiNative)] = &[
     ("gui_on", n_on),
     ("gui_emit", n_emit),
     ("gui_title", n_title),
+    ("gui_icon", n_icon),
+    ("gui_size", n_size),
+    ("gui_min_size", n_min_size),
+    ("gui_maximize", n_maximize),
+    ("gui_fullscreen", n_fullscreen),
+    ("gui_resizable", n_resizable),
+    ("gui_decorations", n_decorations),
+    ("gui_theme", n_theme),
+    ("gui_bg_color", n_bg_color),
+    ("gui_devtools", n_devtools),
+    ("gui_cancel_close", n_cancel_close),
+    ("gui_close", n_close),
 ];
 
 /// Install the GUI natives into a program's global table.
@@ -614,5 +770,140 @@ fn n_title(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arg_count("gui_title", &args, 1)?;
     let title = want_str("gui_title", &args[0])?;
     bridge::set_title(&title);
+    Ok(Value::Null)
+}
+
+fn want_pos_num(name: &str, v: &Value) -> Result<f64, String> {
+    let n = match v {
+        Value::Int(i) => *i as f64,
+        Value::Float(f) => *f,
+        other => {
+            return Err(format!(
+                "{} expects a number, found {}",
+                name,
+                crate::value::type_name(other)
+            ))
+        }
+    };
+    if !n.is_finite() || n <= 0.0 || n > 16384.0 {
+        return Err(format!("{} dimension must be between 1 and 16384", name));
+    }
+    Ok(n)
+}
+
+fn want_bool(name: &str, v: &Value) -> Result<bool, String> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        other => Err(format!(
+            "{} expects a bool, found {}",
+            name,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+/// `gui_icon(path)` — set the window & taskbar icon from a `.ico`/`.png` path or payload entry.
+fn n_icon(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_icon", &args, 1)?;
+    let path = want_str("gui_icon", &args[0])?;
+    bridge::push_window_cmd(bridge::WindowCommand::Icon(path));
+    Ok(Value::Null)
+}
+
+/// `gui_size(width, height)` — set the window's logical inner size.
+fn n_size(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_size", &args, 2)?;
+    let w = want_pos_num("gui_size", &args[0])?;
+    let h = want_pos_num("gui_size", &args[1])?;
+    bridge::push_window_cmd(bridge::WindowCommand::Size(w, h));
+    Ok(Value::Null)
+}
+
+/// `gui_min_size(width, height)` — set the window's minimum logical inner size.
+fn n_min_size(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_min_size", &args, 2)?;
+    let w = want_pos_num("gui_min_size", &args[0])?;
+    let h = want_pos_num("gui_min_size", &args[1])?;
+    bridge::push_window_cmd(bridge::WindowCommand::MinSize(w, h));
+    Ok(Value::Null)
+}
+
+/// `gui_maximize([bool])` — maximize (default `true`) or unmaximize the window.
+fn n_maximize(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let val = match args.len() {
+        0 => true,
+        1 => want_bool("gui_maximize", &args[0])?,
+        n => {
+            return Err(format!(
+                "gui_maximize expects 0 or 1 argument(s), got {}",
+                n
+            ))
+        }
+    };
+    bridge::push_window_cmd(bridge::WindowCommand::Maximized(val));
+    Ok(Value::Null)
+}
+
+/// `gui_fullscreen(bool)` — enter or exit borderless fullscreen mode.
+fn n_fullscreen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_fullscreen", &args, 1)?;
+    let val = want_bool("gui_fullscreen", &args[0])?;
+    bridge::push_window_cmd(bridge::WindowCommand::Fullscreen(val));
+    Ok(Value::Null)
+}
+
+/// `gui_resizable(bool)` — enable or disable user resizing of the window.
+fn n_resizable(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_resizable", &args, 1)?;
+    let val = want_bool("gui_resizable", &args[0])?;
+    bridge::push_window_cmd(bridge::WindowCommand::Resizable(val));
+    Ok(Value::Null)
+}
+
+/// `gui_decorations(bool)` — show or hide native window titlebar and borders.
+fn n_decorations(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_decorations", &args, 1)?;
+    let val = want_bool("gui_decorations", &args[0])?;
+    bridge::push_window_cmd(bridge::WindowCommand::Decorations(val));
+    Ok(Value::Null)
+}
+
+/// `gui_theme(mode)` — set native window theme (`"dark"`, `"light"`, or `"system"`).
+fn n_theme(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_theme", &args, 1)?;
+    let raw = want_str("gui_theme", &args[0])?;
+    let theme = parse_theme_str(&raw)?;
+    bridge::push_window_cmd(bridge::WindowCommand::Theme(theme));
+    Ok(Value::Null)
+}
+
+/// `gui_bg_color(hex)` — set webview background color (`#RRGGBB` or `#RRGGBBAA`).
+fn n_bg_color(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_bg_color", &args, 1)?;
+    let raw = want_str("gui_bg_color", &args[0])?;
+    let (r, g, b, a) = bridge::parse_hex_color(&raw)?;
+    bridge::push_window_cmd(bridge::WindowCommand::BgColor(r, g, b, a));
+    Ok(Value::Null)
+}
+
+/// `gui_devtools(bool)` — enable/open or close WebView DevTools.
+fn n_devtools(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_devtools", &args, 1)?;
+    let val = want_bool("gui_devtools", &args[0])?;
+    bridge::push_window_cmd(bridge::WindowCommand::DevTools(val));
+    Ok(Value::Null)
+}
+
+/// `gui_cancel_close()` — cancel the pending window close from a `before_close` / `close` handler.
+fn n_cancel_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_cancel_close", &args, 0)?;
+    bridge::cancel_close();
+    Ok(Value::Null)
+}
+
+/// `gui_close()` — close the GUI window cleanly.
+fn n_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arg_count("gui_close", &args, 0)?;
+    bridge::push_window_cmd(bridge::WindowCommand::Close);
     Ok(Value::Null)
 }

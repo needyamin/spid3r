@@ -16,7 +16,11 @@ fn main() {
 ```bash
 $ spid3r run hello.matrix
 Hello, Spid3r!
+$ sp run hello.mt
+Hello, Spid3r!
 ```
+
+Both `.matrix` and `.mt` source extensions and both `spid3r` and `sp` CLI binaries are first-class equivalents with zero runtime overhead.
 
 ## How it works
 
@@ -52,7 +56,7 @@ Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`**
 | Route | Trust | Status |
 |---|---|---|
 | Embedded stdlib | immutable, compiled in | shipped |
-| Project `.matrix` files | your own source | shipped |
+| Project `.matrix` / `.mt` files | your own source | shipped |
 | Vendored packages | checksummed, verified by `spid3r verify` | shipped |
 | FFI (`extern fn`) | trusted C ABI, AOT only | shipped |
 
@@ -94,11 +98,11 @@ See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirem
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | `127,005` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `22,301` lines) |
+| **Implementation** | `135,054` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `23,430` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · `.matrixc` container with SHA-256 integrity |
 | **Standard library** | `26` `.matrix` modules + `254` built-in native entries (linked via `117` AOT C-ABI trampolines) |
-| **Tests** | `1,426` Rust/integration tests (`1,381` core · `18` GUI · `27` native AOT) · 3-engine differential + `136`-program frozen selfhost corpus |
+| **Tests** | `1,436` Rust/integration tests (`1,391` core · `18` GUI · `27` native AOT) · 3-engine differential + `136`-program frozen selfhost corpus |
 | **Self-hosting** | Stage 1 → Stage 2 → Stage 3 `spid3r_main.o` bit-identical fixed point & SHA-256 runtime pin ([docs/selfhost/](docs/selfhost/README.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
 | **Binary** | `spid3r` (`~12.4 MB`) + self-hosted `spid3r-self` (`~5.1 MB`) · static CRT on Windows · no installed runtime needed |
@@ -137,9 +141,11 @@ curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | 
 cargo install --path . --no-default-features
 ```
 
-**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release (bundles `spid3r-self`, `spid3r`, `spid3r-control`, LLVM, and the SHA-256-pinned runtime).
+**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release (bundles `spid3r-self`, `spid3r`, `sp`, `spid3r-control`, LLVM, `.matrix`/`.mt` associations, and the SHA-256-pinned runtime).
 
 ## Toolchain
+
+All commands below work identically with `spid3r` or the short alias `sp`, and accept both `.matrix` and `.mt` source files.
 
 | Command | Does |
 |---|---|
@@ -168,7 +174,7 @@ cargo install --path . --no-default-features
 |---|---|
 | 0 | success |
 | 1 | compile failure, runtime failure, or invalid config / broken `SPID3R_INI` pin |
-| 2 | usage error (unknown command or invalid flags) |
+| 2 | usage error (unknown command, invalid flags, or missing input file) |
 | 4 | invalid bytecode (`.matrixc`) or corrupted/unpinned runtime archive |
 
 - **Limits:** `--budget` / `--max-steps` caps work on tree/VM; `--max-call-depth` caps recursion (AOT enforces the 1,000-depth limit without step budgets).

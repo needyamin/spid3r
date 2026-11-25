@@ -65,14 +65,13 @@ This is the cheapest extension point in the ecosystem: no ABI, no manifest, no
 version negotiation. It is also the only one that needs no cooperation from the
 language — which is why it shipped first.
 
-### Why not JSON-RPC yet
+### Why no embedded plugin host
 
-Out-of-process plugins over newline-delimited JSON-RPC is the C-ABI-free way to
-extend Spid3r without WASM. It is deliberately
-**deferred until the plugin ABI in `src/plugin/` exists**: the method set, the
-capability model and the error envelope all belong to that contract, and
-inventing them here would produce a second, incompatible plugin protocol. The
-external-tool dispatch above already covers "run someone else's binary".
+Spid3r deliberately does not embed a WASM or native plugin host inside the CLI.
+External CLI tools use `spidr-<name>` executables on `PATH` (described above),
+Rust host applications embed Spid3r via `spid3r_lang::embed::Engine`, and native
+libraries bind via `extern fn` (C FFI). Keeping those boundaries separate avoids
+coupling the core compiler/runtime to a custom plugin ABI.
 
 ## 3. Writing an external tool
 

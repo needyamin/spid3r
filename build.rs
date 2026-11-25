@@ -85,7 +85,10 @@ fn embedded_stdlib() {
     if let Ok(read) = fs::read_dir("stdlib") {
         for entry in read.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("matrix") {
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("matrix") | Some("mt")
+            ) {
                 continue;
             }
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -621,6 +624,13 @@ fn unix_llvm() {
 /// names (legacy behaviour).
 fn emit_unix_llvm_link(libdir: &str) {
     println!("cargo:rustc-link-search=native={libdir}");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "linux" {
+        // Search beside the binary, in ./lib (direct tarball extract), and in
+        // ../lib (install.sh bin/ + lib/ layout) so release tarballs that bundle
+        // libLLVM.so.23.1 run on clean hosts with no system libllvm23.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib");
+    }
     let dir = PathBuf::from(libdir);
     let has_unversioned = dir.join("libLLVM.so").is_file() || dir.join("libLLVM.dylib").is_file();
     let has_versioned =
@@ -707,6 +717,7 @@ fn windows_resources() {
     // spid3r bin was ever given the resource.
     let bins = vec![
         ("spid3r", "Spid3r Language Toolchain", "spid3r.exe"),
+        ("sp", "Spid3r Language Toolchain", "sp.exe"),
         (
             "spid3r-control",
             "Spid3r Control Panel",

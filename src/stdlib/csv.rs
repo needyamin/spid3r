@@ -7,14 +7,24 @@ use crate::value::collections::{make_list, MapData};
 use crate::value::{new_ref, MapKey, Value};
 
 pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<Value, String> {
+    parse_csv_text_opts(text, delimiter, has_header, true)
+}
+
+pub fn parse_csv_text_opts(
+    text: &str,
+    delimiter: char,
+    has_header: bool,
+    infer_types: bool,
+) -> Result<Value, String> {
     // A UTF-8 BOM (EF BB BF) is not part of the first header name. Excel writes
     // one by default, and leaving it in makes `headers[0]` compare unequal to
     // the obvious string ("name" != "\u{feff}name"), so every column lookup by
     // name silently misses.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut raw_rows: Vec<Vec<String>> = Vec::new();
-    let mut cur_row: Vec<String> = Vec::new();
+    let mut raw_rows: Vec<Vec<(String, bool)>> = Vec::new();
+    let mut cur_row: Vec<(String, bool)> = Vec::new();
     let mut cur_field = String::new();
+    let mut cur_quoted = false;
     let mut in_quotes = false;
 
     if delimiter.is_ascii() {
@@ -45,28 +55,32 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
                 pos += 1;
                 if ch == b'"' {
                     in_quotes = true;
+                    cur_quoted = true;
                 } else if ch == delim {
-                    cur_row.push(cur_field);
+                    cur_row.push((cur_field, cur_quoted));
                     cur_field = String::new();
+                    cur_quoted = false;
                 } else if ch == b'\r' {
                     if bytes.get(pos) == Some(&b'\n') {
                         pos += 1;
                     }
-                    if cur_row.is_empty() && cur_field.is_empty() {
+                    if cur_row.is_empty() && cur_field.is_empty() && !cur_quoted {
                         continue;
                     }
-                    cur_row.push(cur_field);
+                    cur_row.push((cur_field, cur_quoted));
                     raw_rows.push(cur_row);
                     cur_row = Vec::new();
                     cur_field = String::new();
+                    cur_quoted = false;
                 } else {
-                    if cur_row.is_empty() && cur_field.is_empty() {
+                    if cur_row.is_empty() && cur_field.is_empty() && !cur_quoted {
                         continue;
                     }
-                    cur_row.push(cur_field);
+                    cur_row.push((cur_field, cur_quoted));
                     raw_rows.push(cur_row);
                     cur_row = Vec::new();
                     cur_field = String::new();
+                    cur_quoted = false;
                 }
             } else {
                 cur_field.push_str(&text[pos..]);
@@ -89,28 +103,32 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
                 }
             } else if ch == '"' {
                 in_quotes = true;
+                cur_quoted = true;
             } else if ch == delimiter {
-                cur_row.push(cur_field);
+                cur_row.push((cur_field, cur_quoted));
                 cur_field = String::new();
+                cur_quoted = false;
             } else if ch == '\r' {
                 if chars.peek() == Some(&'\n') {
                     chars.next();
                 }
-                if cur_row.is_empty() && cur_field.is_empty() {
+                if cur_row.is_empty() && cur_field.is_empty() && !cur_quoted {
                     continue;
                 }
-                cur_row.push(cur_field);
+                cur_row.push((cur_field, cur_quoted));
                 raw_rows.push(cur_row);
                 cur_row = Vec::new();
                 cur_field = String::new();
+                cur_quoted = false;
             } else if ch == '\n' {
-                if cur_row.is_empty() && cur_field.is_empty() {
+                if cur_row.is_empty() && cur_field.is_empty() && !cur_quoted {
                     continue;
                 }
-                cur_row.push(cur_field);
+                cur_row.push((cur_field, cur_quoted));
                 raw_rows.push(cur_row);
                 cur_row = Vec::new();
                 cur_field = String::new();
+                cur_quoted = false;
             } else {
                 cur_field.push(ch);
             }
@@ -121,8 +139,8 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
         return Err("unclosed quote in CSV input".to_string());
     }
 
-    if !cur_field.is_empty() || !cur_row.is_empty() {
-        cur_row.push(cur_field);
+    if !cur_field.is_empty() || !cur_row.is_empty() || cur_quoted {
+        cur_row.push((cur_field, cur_quoted));
         raw_rows.push(cur_row);
     }
 
@@ -130,7 +148,10 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
         (Vec::new(), Vec::new())
     } else if has_header {
         let first = raw_rows.remove(0);
-        let headers: Vec<Value> = first.into_iter().map(|s| Value::Str(s.into())).collect();
+        let headers: Vec<Value> = first
+            .into_iter()
+            .map(|(s, _)| Value::Str(s.into()))
+            .collect();
         (headers, raw_rows)
     } else {
         let max_cols = raw_rows.iter().map(|r| r.len()).max().unwrap_or(0);
@@ -143,7 +164,16 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
     let rows_val: Vec<Value> = data_rows
         .into_iter()
         .map(|row| {
-            let row_vals: Vec<Value> = row.into_iter().map(|f| infer_csv_value(&f)).collect();
+            let row_vals: Vec<Value> = row
+                .into_iter()
+                .map(|(f, quoted)| {
+                    if !infer_types || quoted {
+                        Value::Str(f.into())
+                    } else {
+                        infer_csv_value(&f)
+                    }
+                })
+                .collect();
             make_list(row_vals)
         })
         .collect();
@@ -158,15 +188,66 @@ pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<V
     )))))
 }
 
+fn is_lossless_int_token(s: &str) -> bool {
+    if s.is_empty() || s.starts_with('+') {
+        return false;
+    }
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // Preserve leading-zero identifiers ("007", "0012") and "-0" as strings.
+    if digits.len() > 1 && digits.starts_with('0') {
+        return false;
+    }
+    if s == "-0" {
+        return false;
+    }
+    true
+}
+
+fn is_lossless_float_token(s: &str) -> bool {
+    if s.is_empty() || s.starts_with('+') || s.contains(['e', 'E']) {
+        return false;
+    }
+    let body = s.strip_prefix('-').unwrap_or(s);
+    let Some((int_part, frac_part)) = body.split_once('.') else {
+        return false;
+    };
+    if int_part.is_empty()
+        || frac_part.is_empty()
+        || !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    if int_part.len() > 1 && int_part.starts_with('0') {
+        return false;
+    }
+    // Preserve trailing-zero decimal strings like "1.50" and "-0.0".
+    if frac_part.ends_with('0') {
+        return false;
+    }
+    true
+}
+
 pub fn infer_csv_value(field: &str) -> Value {
     let trimmed = field.trim();
     if trimmed.is_empty() || trimmed == "NA" || trimmed == "null" || trimmed == "NULL" {
         Value::Null
-    } else if let Ok(i) = trimmed.parse::<i64>() {
-        Value::Int(i)
-    } else if let Ok(f) = trimmed.parse::<f64>() {
-        if f.is_finite() {
-            Value::Float(f)
+    } else if is_lossless_int_token(trimmed) {
+        if let Ok(i) = trimmed.parse::<i64>() {
+            Value::Int(i)
+        } else {
+            Value::Str(field.to_string().into())
+        }
+    } else if is_lossless_float_token(trimmed) {
+        if let Ok(f) = trimmed.parse::<f64>() {
+            if f.is_finite() {
+                Value::Float(f)
+            } else {
+                Value::Str(field.to_string().into())
+            }
         } else {
             Value::Str(field.to_string().into())
         }

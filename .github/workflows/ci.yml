@@ -59,6 +59,19 @@ jobs:
         timeout-minutes: 5
         run: cargo fmt --all -- --check
 
+      - name: Unsafe / SAFETY invariant gate (AGENTS.md §3)
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+            python3 tools/check_unsafe_safety.py
+          elif command -v python >/dev/null 2>&1 && python --version >/dev/null 2>&1; then
+            python tools/check_unsafe_safety.py
+          else
+            echo "FAIL: neither python3 nor python found" >&2
+            exit 2
+          fi
+
       - name: Run unit, integration, and fuzz/regression test suites
         timeout-minutes: 30
         shell: bash

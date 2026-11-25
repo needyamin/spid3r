@@ -3,6 +3,7 @@
 //! Provides epoch second and millisecond timestamps, civil calendar parts breakdown,
 //! civil parts to epoch timestamp conversion, and strftime-style formatting.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Days since 1970-01-01 -> (year, month 1..12, day 1..31)
@@ -32,20 +33,43 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146097 + (doe as i64) - 719468
 }
 
+#[cfg(target_arch = "wasm32")]
+static WASM_EPOCH_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Seed the WASM wall-clock Unix epoch time in milliseconds (e.g. from JS `Date.now()`).
+#[cfg(target_arch = "wasm32")]
+pub fn set_wasm_epoch_ms(ms: i64) {
+    WASM_EPOCH_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Current system time in Unix epoch seconds.
 pub fn unix_time() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unix_ms().div_euclid(1000)
+    }
 }
 
 /// Current system time in Unix epoch milliseconds.
 pub fn unix_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        WASM_EPOCH_MS.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Decompose epoch seconds into (year, month 1..12, day 1..31, hour 0..23, min 0..59, sec 0..59, weekday 0..6 where 0=Sunday).

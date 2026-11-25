@@ -22,9 +22,13 @@ include!(concat!(env!("OUT_DIR"), "/embedded_stdlib.rs"));
 
 /// Source of the stdlib module called `name`, if one is embedded.
 ///
-/// `name` is the import string, with or without the `.matrix` extension.
+/// `name` is the import string, with or without the `.matrix` or `.mt` extension.
 pub fn source(name: &str) -> Option<&'static str> {
-    let key = name.trim().trim_end_matches(".matrix");
+    let trimmed = name.trim();
+    let key = trimmed
+        .strip_suffix(".matrix")
+        .or_else(|| trimmed.strip_suffix(".mt"))
+        .unwrap_or(trimmed);
     EMBEDDED_STDLIB
         .iter()
         .find(|(module, _)| *module == key)

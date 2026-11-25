@@ -1063,6 +1063,11 @@ fn parse_pattern(st) {
         let sp = tsp(st);
         let name = kv(st);
         p_adv(st);
+        let qualified = false;
+        while eat_c(st, K_DOT) {
+            name = expect_ident(st)[0];
+            qualified = true;
+        }
         if at_c(st, K_LPAREN) {
             p_adv(st);
             let args = [];
@@ -1075,6 +1080,10 @@ fn parse_pattern(st) {
             expect_c(st, K_RPAREN, "')' after the variant's fields");
             st[4] -= 1;
             return n_pat_variant(name, args, sp);
+        }
+        if qualified {
+            st[4] -= 1;
+            return n_pat_variant(name, [], sp);
         }
         if name == "_" {
             res = n_wild();

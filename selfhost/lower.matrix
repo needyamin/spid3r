@@ -269,9 +269,8 @@ fn collect_tables(st, prog) {
             if alias != null {
                 selections = parse_import_selections_lower(alias);
             }
-            if alias == null or selections != null {
-                import_tables(st, s[1], selections);
-            }
+            let import_types = alias == null or selections != null;
+            import_tables(st, s[1], selections, import_types);
         } else if tag == "Interface" {
             if s[4].len() > 0 {
                 st[5][s[2]] = s[4];
@@ -332,11 +331,11 @@ fn parse_import_selections_lower(alias) {
 
 // The public classes/interfaces/enums of an imported module feed the
 // named-argument reorder tables and the cross-module match field names.
-fn import_tables(st, path, selections) {
+fn import_tables(st, path, selections, import_types) {
     let dir = dirname_of_lower(path);
     let src = "";
     let resolved = "";
-    let cands = [dir + path + ".matrix", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path];
+    let cands = [dir + path + ".matrix", dir + path + ".mt", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path + ".mt", "stdlib/" + path];
     for c in cands {
         if file_exists(c) {
             resolved = c;
@@ -365,7 +364,7 @@ fn import_tables(st, path, selections) {
     }
     for s in prog[0] {
         let tag = s[0];
-        if tag == "Interface" {
+        if tag == "Interface" and import_types {
             if s[1] == "public" and s[4].len() > 0 {
                 st[5][s[2]] = s[4];
                 if selections != null {
@@ -378,7 +377,7 @@ fn import_tables(st, path, selections) {
                     }
                 }
             }
-        } else if tag == "Class" {
+        } else if tag == "Class" and import_types {
             if s[1] != "public" {
                 continue;
             }
@@ -837,6 +836,25 @@ fn lower_enum_decl(st, e) {
             params.push(n_param(f, null, null, sp));
         }
         out.push(n_fn_stmt(n_fnproto(e[1], false, false, v[1], params, null, [], n_block(body, sp), sp)));
+    }
+    let self_named = false;
+    for v in ev {
+        if v[1] == e[2] {
+            self_named = true;
+        }
+    }
+    if not self_named {
+        let map_args = [];
+        for v in ev {
+            let vsp = v[3];
+            map_args.push(n_str(v[1], vsp));
+            if v[2].len() == 0 {
+                map_args.push(n_call(n_ident(v[1], vsp), [], vsp));
+            } else {
+                map_args.push(n_ident(v[1], vsp));
+            }
+        }
+        out.push(n_const(e[1], e[2], null, n_call(n_ident("module_namespace", e[4]), map_args, e[4]), e[4]));
     }
     return out;
 }

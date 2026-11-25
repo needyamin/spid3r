@@ -70,11 +70,11 @@ Spid3r follows the **core programming language model of PHP, Python, and Java**:
 
 ## 3. Security Invariants (GR-3, SEC-A…D)
 
-- **Unsafe boundary:** Do not add new `unsafe` outside `src/native/rt.rs` (and the existing audited host shims in `src/value/mod.rs`, `src/repl/mod.rs`, `src/runtime_info/mod.rs`). Every `unsafe` block requires a written `// SAFETY:` comment.
+- **Unsafe boundary:** Do not add new `unsafe` outside the 14 audited FFI/host-shim modules (`src/native/{ir,link,llvm,rt}.rs`, `src/repl/mod.rs`, `src/runtime_info/mod.rs`, `src/stdlib/{db,entropy,eventloop,file,net,shutdown}.rs`, `src/value/mod.rs`, `src/value/collections/seq.rs`), enforced by `tools/check_unsafe_safety.py` in `tools/gate.sh`. Every `unsafe` block requires a written `// SAFETY:` comment.
 - **Trust model:** `ptr`/`usize` FFI (`extern fn`) is T5 trusted code. `--sandbox` and `spid3r.ini` `[security]` switches are application-level policy filters for script engines (`tree`/`vm`) only — AOT executables run with full user authority by design (`docs/FFI.md`). Never claim `--sandbox` is an OS kernel sandbox.
 - **Integrity:** `.matrixc` bytecode and `spid3r_lang` staticlibs verify SHA-256 digests (`exit 4` on tamper).
 - **No network in compiler:** Compiler operations (`check`, `compile`, `build`, `fmt`, `doc`) perform zero network access.
-- **Exit codes:** `0` ok · `1` compile/runtime/config-pin error · `2` usage/driver error (`error[usage]`) · `4` corrupt/tampered `.matrixc` or runtime staticlib.
+- **Exit codes:** `0` ok · `1` compile/runtime/config-pin error · `2` usage/driver error (`error[usage]`: unknown command, invalid flags, or missing input file) · `4` corrupt/tampered `.matrixc` or runtime staticlib.
 
 ---
 
@@ -87,7 +87,7 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix (bit-identical f
 ```
 
 - Selfhost pipeline (`selfhost/main.matrix`): `parse → check → flatten → lower → codegen (LLVM-C) → verify → emit object → link.matrix`.
-- Runtime staticlib: `spid3r_lang.lib` (`87` AOT trampolines + `254` stdlib natives; see `docs/selfhost/RUNTIME_ABI.md`).
+- Runtime staticlib: `spid3r_lang.lib` (`117` AOT trampolines + `254` stdlib natives; see `docs/selfhost/RUNTIME_ABI.md`).
 - Retained in Rust (SH-2): Stage 0 oracle, runtime staticlib, VM, tree interpreter, LSP, GUI, `spid3r-control`, debugger, REPL, WASM target.
 
 ---

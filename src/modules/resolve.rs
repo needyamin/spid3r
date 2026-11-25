@@ -225,10 +225,14 @@ pub fn resolve_module(
     }
 
     for (dir, origin) in roots {
-        // As written first, then with the `.matrix` suffix: `import "util"`
-        // and `import "util.matrix"` both work, and an extensionless file
-        // named `util` wins over `util.matrix` beside it.
-        for candidate in [dir.join(spec), dir.join(format!("{}.matrix", spec))] {
+        // As written first, then with `.matrix`, then `.mt`: `import "util"`,
+        // `import "util.matrix"`, and `import "util.mt"` all work, and an
+        // extensionless file named `util` wins over suffixed files beside it.
+        for candidate in [
+            dir.join(spec),
+            dir.join(format!("{}.matrix", spec)),
+            dir.join(format!("{}.mt", spec)),
+        ] {
             if candidate.is_file() {
                 return Ok(ResolvedModule {
                     // Canonicalize so the module cache, cycle detection and the

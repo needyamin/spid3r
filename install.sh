@@ -296,14 +296,14 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
     # the ones that are actually installed so the build does not fail.
     if [ -z "$FEATURES" ] && [ "$CORE_ONLY" -eq 0 ]; then
         have_llvm=0; have_webkit=0
-        for c in llvm-config llvm-config-18 llvm-config-19 /usr/lib/llvm-18/bin/llvm-config; do
+        for c in llvm-config llvm-config-23 /usr/lib/llvm-23/bin/llvm-config; do
             if command -v "$c" >/dev/null 2>&1; then have_llvm=1; break; fi
         done
         if command -v pkg-config >/dev/null 2>&1 \
             && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then have_webkit=1; fi
         [ "$have_llvm" -eq 1 ]   && FEATURES="native"
         [ "$have_webkit" -eq 1 ] && FEATURES="${FEATURES:+$FEATURES,}gui"
-        [ "$have_llvm" -eq 1 ]   || warn "LLVM 18 not found: skipping the native backend (sudo apt install llvm-18-dev)"
+        [ "$have_llvm" -eq 1 ]   || warn "LLVM 23 not found: skipping the native backend (sudo apt install llvm-23-dev)"
         [ "$have_webkit" -eq 1 ] || warn "WebKit2GTK 4.1 not found: skipping 'spid3r gui' (sudo apt install libwebkit2gtk-4.1-dev)"
     fi
 
@@ -323,6 +323,9 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
 
     if [ -f "${PARENT_DIR}/bin/spid3r" ] && [ "${INSTALL_DIR}" != "${PARENT_DIR}/bin" ]; then
         cp -f "${PARENT_DIR}/bin/spid3r" "${INSTALL_DIR}/spid3r"
+    fi
+    if [ ! -e "${INSTALL_DIR}/sp" ] && [ -x "${INSTALL_DIR}/spid3r" ]; then
+        ln -sf spid3r "${INSTALL_DIR}/sp"
     fi
 
     # A source build is a single self-contained binary too: the stdlib is
@@ -396,9 +399,21 @@ SELF_SRC="$(find "$TMPDIR_DL" -type f -name spid3r-self | head -n 1 || true)"
 mkdir -p "$INSTALL_DIR"
 chmod +x "$BIN_SRC"
 mv -f "$BIN_SRC" "${INSTALL_DIR}/spid3r"
+ln -sf spid3r "${INSTALL_DIR}/sp"
 if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ]; then
     chmod +x "$SELF_SRC"
     mv -f "$SELF_SRC" "${INSTALL_DIR}/spid3r-self"
+fi
+# Install any bundled shared libraries (e.g. libLLVM.so.23.1 on Linux) into
+# the $ORIGIN/../lib directory searched by spid3r and spid3r-self RPATH.
+LIB_DIR="$(dirname "$INSTALL_DIR")/lib"
+BUNDLED_LIBS="$(find "$TMPDIR_DL" -type f \( -name 'libLLVM*.so*' -o -name 'libLLVM*.dylib' \) 2>/dev/null || true)"
+if [ -n "$BUNDLED_LIBS" ]; then
+    mkdir -p "$LIB_DIR"
+    printf '%s\n' "$BUNDLED_LIBS" | while IFS= read -r lib_f; do
+        [ -f "$lib_f" ] || continue
+        cp -f "$lib_f" "${LIB_DIR}/$(basename "$lib_f")"
+    done
 fi
 
 # ---------------------------------------------------------- stdlib cleanup ---
@@ -447,9 +462,11 @@ fi
 
 # -------------------------------------------------------------- verify -------
 if [ -x "${INSTALL_DIR}/spid3r" ]; then
+    VERSION_OUT="$("${INSTALL_DIR}/spid3r" --version 2>&1)" \
+        || die "installed binary failed to run (${INSTALL_DIR}/spid3r --version): ${VERSION_OUT}"
     say ""
     say "Spid3r installed successfully:"
-    "${INSTALL_DIR}/spid3r" --version || true
+    printf '%s\n' "$VERSION_OUT"
     # Default runtime configuration: a commented spid3r.ini the user can edit
     # (idempotent — an existing ini is never overwritten).
     "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
@@ -466,9 +483,9 @@ if [ "$path_added" -eq 1 ]; then
 else
     say "PATH already configured. Try:"
 fi
-say "    spid3r --help"
-say "    spid3r run hello.matrix"
-say "    spid3r control status    # runtime dashboard (config, agent, devices)"
+say "    spid3r --help              # or: sp --help"
+say "    spid3r run hello.matrix    # or: sp run hello.mt"
+say "    spid3r control status      # runtime dashboard (config, safety, logs)"
 
 # On GitHub Actions the PATH edits above only reach NEW shells; the current
 # job step (and often the whole job, if it uses a pre-set PATH) still cannot

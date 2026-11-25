@@ -26,7 +26,8 @@
       {
         "id": "spid3r",
         "extensions": [
-          ".matrix"
+          ".matrix",
+          ".mt"
         ],
         "aliases": [
           "Spid3r"

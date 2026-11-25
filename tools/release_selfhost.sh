@@ -417,7 +417,39 @@ cmd_build() {
   if [ -n "$stage0" ] && [ -x "$stage0" ]; then
     cp -f "$stage0" "$out_dir/_work/tar/spid3r${exe_suf}"
     tar_members+=("spid3r${exe_suf}")
+    if [ "$is_win" -eq 0 ]; then
+      ln -sf spid3r "$out_dir/_work/tar/sp"
+      tar_members+=("sp")
+    fi
   fi
+  # Bundle libLLVM shared library on Linux so the prebuilt tarball runs on
+  # clean Linux hosts without system libllvm23 installed ($ORIGIN:$ORIGIN/../lib).
+  case "$target" in
+    *linux*)
+      local llvm_so=""
+      if [ -n "$stage0" ] && [ -x "$stage0" ] && command -v ldd >/dev/null 2>&1; then
+        llvm_so="$(ldd "$stage0" 2>/dev/null | awk '/libLLVM/ && /=>/ { print $3; exit }')"
+      fi
+      if [ -z "$llvm_so" ] && command -v ldd >/dev/null 2>&1; then
+        llvm_so="$(ldd "$stage2_bin" 2>/dev/null | awk '/libLLVM/ && /=>/ { print $3; exit }')"
+      fi
+      if [ -n "$llvm_so" ] && [ -f "$llvm_so" ]; then
+        local llvm_soname
+        llvm_soname="$(basename "$llvm_so")"
+        if command -v readelf >/dev/null 2>&1; then
+          local son
+          son="$(readelf -d "$llvm_so" 2>/dev/null | awk -F'[][]' '/SONAME/ { print $2; exit }')"
+          if [ -n "$son" ]; then
+            llvm_soname="$son"
+          fi
+        fi
+        mkdir -p "$out_dir/_work/tar/lib"
+        cp -L -f "$llvm_so" "$out_dir/_work/tar/lib/$llvm_soname"
+        tar_members+=("lib")
+        echo "  Bundled Linux LLVM shared library: lib/$llvm_soname"
+      fi
+      ;;
+  esac
   local has_vsix=0
   if verify_formatter_vsix; then
     has_vsix=1
@@ -634,7 +666,12 @@ cmd_verify() {
     smoke_test_compiler_binary "$self_bin" "$out_dir/runtime" "unpacked $base_tar"
     if [ "$skip_budgets" -eq 0 ]; then
       check_size_budget "spid3r-self ($base_tar)" "$self_bin" "${SPID3R_MAX_SELF_BYTES:-7500000}"
-      check_size_budget "$base_tar" "$t" "${SPID3R_MAX_TAR_BYTES:-10000000}"
+      local max_tar="${SPID3R_MAX_TAR_BYTES:-10000000}"
+      if [ -d "$ext_tmp/lib" ] && [ -z "${SPID3R_MAX_TAR_BYTES:-}" ]; then
+        # Linux tarballs bundle libLLVM.so.23.1 so clean hosts need no system libllvm23.
+        max_tar=65000000
+      fi
+      check_size_budget "$base_tar" "$t" "$max_tar"
     fi
     rm -rf "$ext_tmp"
   done

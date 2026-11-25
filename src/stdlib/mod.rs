@@ -3486,7 +3486,7 @@ struct JsonParser<'a, 'c, 'p> {
 
 /// One shared entry point behind the `json_parse` builtin and the host-side
 /// `json_parse_text` (the LSP / agent wire path) — one parser, not two.
-fn json_parse_str(s: &str) -> Result<Value, String> {
+pub fn json_parse_str(s: &str) -> Result<Value, String> {
     JSON_STR_CACHE.with(|cache_cell| {
         let mut fallback = Vec::new();
         let mut guard = cache_cell.try_borrow_mut();
@@ -3747,11 +3747,15 @@ impl JsonParser<'_, '_, '_> {
         }
         self.pos += 1; // opening quote
         let start = self.pos;
-        let Some(rel) = swar::find_json_string_end(&self.b[start..]) else {
+        let Some(rel) = swar::find_json_escape_needed(&self.b[start..]) else {
             return Err("json_parse: unterminated string".to_string());
         };
         let hit = start + rel;
-        let is_close = self.b[hit] == b'"';
+        let byte = self.b[hit];
+        if byte < 0x20 {
+            return Err("json_parse: unescaped control character in string".to_string());
+        }
+        let is_close = byte == b'"';
         Ok((start, hit, is_close))
     }
 
@@ -3895,13 +3899,16 @@ impl JsonParser<'_, '_, '_> {
                         _ => return Err("json_parse: bad escape".to_string()),
                     }
                 }
+                Some(b) if b < 0x20 => {
+                    return Err("json_parse: unescaped control character in string".to_string());
+                }
                 Some(_) => {
                     // Raw UTF-8 run: copy bytes verbatim up to the next ASCII
-                    // structural byte (`"` or `\`). A multi-byte character is
-                    // never split — its continuation bytes are >= 0x80 and can
-                    // never equal an ASCII structural byte.
+                    // structural byte (`"`, `\`, or control char < 0x20). A
+                    // multi-byte character is never split — its continuation
+                    // bytes are >= 0x80 and can never equal an ASCII byte.
                     let start = self.pos;
-                    if let Some(rel) = swar::find_json_string_end(&self.b[start..]) {
+                    if let Some(rel) = swar::find_json_escape_needed(&self.b[start..]) {
                         self.pos = start + rel;
                     } else {
                         self.pos = self.b.len();
@@ -4416,6 +4423,9 @@ mod json_char_oracle {
                             }
                             _ => return Err("json_parse: bad escape".to_string()),
                         }
+                    }
+                    Some(c) if (c as u32) < 0x20 => {
+                        return Err("json_parse: unescaped control character in string".to_string());
                     }
                     Some(c) => {
                         out.push(c);
@@ -5235,6 +5245,7 @@ fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let text = want_str(&args[0], "parse_csv")?;
     let mut delimiter = ',';
     let mut has_header = true;
+    let mut infer_types = true;
     if args.len() == 2 && !matches!(args[1], Value::Null) {
         match &args[1] {
             Value::Map(m) => {
@@ -5251,6 +5262,11 @@ fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                         has_header = *b;
                     }
                 }
+                if let Some(i) = m.find(&MapKey::Str("infer_types".into())) {
+                    if let Value::Bool(b) = &m.entries[i].1 {
+                        infer_types = *b;
+                    }
+                }
             }
             other => {
                 return Err(format!(
@@ -5260,7 +5276,7 @@ fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             }
         }
     }
-    match csv::parse_csv_text(&text, delimiter, has_header) {
+    match csv::parse_csv_text_opts(&text, delimiter, has_header, infer_types) {
         Ok(v) => Ok(v),
         Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }

@@ -376,7 +376,13 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             Ok(Value::Set(new_ref(s)))
         }
         "tuple" => Ok(Value::Tuple(new_ref(args))),
-        "binary_tree" => Ok(Value::BinTree(new_ref(nodes::BinTreeData::new()))),
+        "binary_tree" => {
+            let mut tree = nodes::BinTreeData::new();
+            for a in args {
+                tree.insert(a)?;
+            }
+            Ok(Value::BinTree(new_ref(tree)))
+        }
         "bst" => Ok(Value::Bst(new_ref(nodes::BstData::new()))),
         "heap" => {
             let s = want_str(&one(name, &args)?, "heap")?;
@@ -1094,7 +1100,7 @@ pub fn call_method_host(
         }
         Value::Task(t) => task_method(t, name, &args),
         Value::Channel(c) => channel_method(c, name, args),
-        Value::MutexVal(m) => mutex_method(m, name, &args),
+        Value::MutexVal(m) => mutex_method(host, m, name, &args),
         Value::AtomicInt(a) => atomic_int_method(a, name, &args),
         Value::Database(d) => match DATABASE_METHOD_HOOK.get() {
             Some(f) => f(d, name, &args),
@@ -1810,7 +1816,12 @@ fn channel_method(c: &Arc<ChannelData>, name: &str, args: Vec<Value>) -> Result<
     }
 }
 
-fn mutex_method(m: &MutexData, name: &str, args: &[Value]) -> Result<Value, String> {
+fn mutex_method(
+    host: &mut dyn CallbackHost,
+    m: &Arc<MutexData>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
     match name {
         "lock" => {
             want(name, args, 0)?;
@@ -1820,6 +1831,19 @@ fn mutex_method(m: &MutexData, name: &str, args: &[Value]) -> Result<Value, Stri
             want(name, args, 0)?;
             m.unlock();
             Ok(Value::Null)
+        }
+        "set" | "store" => {
+            want(name, args, 1)?;
+            m.set(args[0].clone())?;
+            Ok(Value::Null)
+        }
+        "with" => {
+            want(name, args, 1)?;
+            let current = m.lock()?;
+            let _guard = crate::sched::MutexGuardToken::new(Arc::clone(m));
+            let next = host.call_callback(&args[0], vec![current])?;
+            m.set_locked(next.clone());
+            Ok(next)
         }
         _ => Err(unknown(name, "mutex")),
     }

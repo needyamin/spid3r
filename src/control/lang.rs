@@ -29,13 +29,40 @@ use super::ops::{field, jstr};
 /// this whitelist against `spid3r --help` so a new CLI command cannot ship
 /// without a panel decision.
 const ALLOWED: &[&str] = &[
-    "run", "check", "compile", "build", "test", "fmt", "doc", "disasm", "exec", "modules", "init",
-    "install", "pack", "unpack", "dist", "bench", "info", "neofetch", "version", "magic", "bundle",
+    "run",
+    "check",
+    "compile",
+    "build",
+    "test",
+    "fmt",
+    "doc",
+    "disasm",
+    "exec",
+    "modules",
+    "init",
+    "install",
+    "pack",
+    "unpack",
+    "dist",
+    "bench",
+    "info",
+    "neofetch",
+    "version",
+    "magic",
+    "bundle",
     // Package / registry one-shots and module tooling (parity with the CLI).
-    "add", "publish", "remove", "search", "verify", "tree", "help",
+    "add",
+    "publish",
+    "remove",
+    "search",
+    "verify",
+    "verify-runtime",
+    "tree",
+    "help",
     // Stage-0 oracle dumps (SH-5): deterministic captured-output one-shots,
     // same shape as `disasm`.
-    "tokens", "parse",
+    "tokens",
+    "parse",
 ];
 
 /// Commands that run interactively in their own console / window instead of
@@ -72,7 +99,7 @@ const MAX_OUTPUT: usize = 256 * 1024;
 /// Wall-clock limit for one toolchain action.
 const TIMEOUT: Duration = Duration::from_secs(120);
 /// Editable source types (the editor is for project files, not arbitrary I/O).
-const EDITABLE_EXT: &[&str] = &["matrix", "toml", "html", "md", "txt", "json"];
+const EDITABLE_EXT: &[&str] = &["matrix", "mt", "toml", "html", "md", "txt", "json"];
 
 /// Locate the `spid3r` toolchain binary. Inside `spid3r-control` the current
 /// exe is the PANEL, so spawning it would open another panel — look for the
@@ -88,13 +115,17 @@ pub fn toolchain_exe() -> PathBuf {
             .file_stem()
             .map(|s| s.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        if stem == "spid3r" {
+        if stem == "spid3r" || stem == "sp" {
             return me;
         }
         if let Some(dir) = me.parent() {
             let sib = dir.join(name);
             if sib.is_file() {
                 return sib;
+            }
+            let alt = dir.join(if cfg!(windows) { "sp.exe" } else { "sp" });
+            if alt.is_file() {
+                return alt;
             }
         }
     }
@@ -364,7 +395,7 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<String>) {
             }
         } else if matches!(
             p.extension().and_then(|x| x.to_str()),
-            Some("matrix") | Some("matrixc")
+            Some("matrix") | Some("mt") | Some("matrixc")
         ) {
             out.push(p.display().to_string());
         }

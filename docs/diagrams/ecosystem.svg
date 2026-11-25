@@ -10,7 +10,7 @@
 
 <rect x="32" y="100" width="120" height="64" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
 <text x="92" y="122" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" fill="#0F172A">your program</text>
-<text x="92" y="144" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">one .matrix entry</text>
+<text x="92" y="144" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#64748B">.matrix / .mt entry</text>
 
 <path d="M152 132 L186 132" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
 <path d="M186 44 L186 212" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
@@ -26,7 +26,7 @@
 
 <rect x="222" y="80" width="618" height="40" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
 <text x="238" y="100" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#0F766E">T1</text>
-<text x="272" y="100" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" fill="#0F172A">Project .matrix files</text>
+<text x="272" y="100" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" fill="#0F172A">Project .matrix / .mt files</text>
 <text x="824" y="100" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#0F766E">same trust as your own source</text>
 
 <rect x="222" y="136" width="618" height="40" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>

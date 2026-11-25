@@ -67,6 +67,9 @@ public fn gen(body) {
 
 /// The next value, or null at the end of the stream.
 public fn next(it) {
+    if type_of(it) != "map" or not it.has("closed") {
+        throw "gen.next() expects a generator, found " + type_of(it);
+    }
     if it["closed"] == true {
         return null;
     }
@@ -79,8 +82,15 @@ public fn next(it) {
     return v;
 }
 
-/// Every remaining value as a list.
+/// Every remaining value as a list. Also accepts a list directly (so
+/// `collect(take(g, n))` composes cleanly).
 public fn collect(it) {
+    if type_of(it) == "list" {
+        return it;
+    }
+    if type_of(it) != "map" or not it.has("closed") {
+        throw "gen.collect() expects a generator or list, found " + type_of(it);
+    }
     let out = [];
     while true {
         let v = next(it);

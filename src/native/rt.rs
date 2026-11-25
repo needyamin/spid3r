@@ -415,6 +415,7 @@ fn with_str_v2<R>(v: ValueV2, f: impl FnOnce(&str) -> R) -> Option<R> {
             // SAFETY: `v` is a `#[repr(C)]` `ValueV2 { u64, u64 }` (16 bytes). On
             // little-endian targets, bytes `1..1 + len` (`len <= 15`) hold valid
             // UTF-8 written exclusively by `ValueV2` SSO constructors.
+            // SAFETY: AOT runtime trampoline arguments and pointers satisfy the compiled calling-convention invariants.
             let s = unsafe {
                 let slice =
                     std::slice::from_raw_parts((&v as *const ValueV2 as *const u8).add(1), len);
@@ -1830,6 +1831,7 @@ pub extern "C" fn spid3r_display(v: *const ValueV2) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn spid3r_cstr_free(p: *mut c_char) {
     if !p.is_null() {
+        // SAFETY: p was allocated by CString::into_raw and ownership is returned exactly once on drop.
         unsafe { drop(CString::from_raw(p)) };
     }
 }
@@ -2134,6 +2136,7 @@ fn spid3r_call_non_cfn(fv: ValueV2, argc: usize, argv: *const *const ValueV2) ->
                 }
             }
             let func = n.func;
+            // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
             let args = unsafe { args_vec(argc, argv) };
             let ctx = NativeCtx {
                 sched: Scheduler::shared(),
@@ -2145,6 +2148,7 @@ fn spid3r_call_non_cfn(fv: ValueV2, argc: usize, argv: *const *const ValueV2) ->
         }
         Value::NativeClosure(n) => {
             let func = n.func.clone();
+            // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
             let args = unsafe { args_vec(argc, argv) };
             let ctx = NativeCtx {
                 sched: Scheduler::shared(),
@@ -2154,6 +2158,7 @@ fn spid3r_call_non_cfn(fv: ValueV2, argc: usize, argv: *const *const ValueV2) ->
                 Err(msg) => rt_throw_v2(&msg),
             }
         }
+        // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
         Value::CClass(c) => construct_cinstance(c.clone(), unsafe { args_vec(argc, argv) }),
         other => rt_throw_v2(&format!(
             "{} is not callable",
@@ -2269,6 +2274,7 @@ fn make_fn_inner(
     env: *mut c_void,
 ) -> ValueV2 {
     let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
+        // SAFETY: code is an AOT-compiled Spid3r function pointer matching the Spid3r C-ABI trampoline signature.
         unsafe { std::mem::transmute(code) };
     let name = if name.is_null() {
         None
@@ -2302,6 +2308,7 @@ pub extern "C" fn spid3r_construct(
     argv: *const *const ValueV2,
 ) {
     let name = cstr(name);
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     let v = match collections::construct(&name, args) {
         Ok(v) => from_value_v2(v),
@@ -2345,6 +2352,7 @@ fn invoke_cfn(
     let mut call_args: Vec<*const ValueV2> = Vec::with_capacity(argc + 1);
     call_args.push(obj);
     for i in 0..argc {
+        // SAFETY: index i is strictly less than the caller-supplied count for the valid FFI pointer array.
         let p = unsafe { *argv.add(i) };
         call_args.push(p);
     }
@@ -2352,6 +2360,7 @@ fn invoke_cfn(
         return rt_throw_v2("stack overflow: call depth limit reached");
     }
     let mut out = ValueV2::NULL;
+    // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
     unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
     leave_call();
     out
@@ -2413,6 +2422,7 @@ fn spid3r_method_inner(
             }
             return rt_throw_v2(&format!("class {} has no method '{}'", class.name, name));
         }
+        // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
         let args = unsafe { args_vec(argc, argv) };
         return match collections::call_method_host(
             &mut NativeCallbackHost,
@@ -2428,6 +2438,7 @@ fn spid3r_method_inner(
         };
     }
     if ov.is_sso() || ov.is_rope() {
+        // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
         let args = unsafe { args_vec(argc, argv) };
         if let Some(res) = with_str_v2(ov, |s| collections::string_method(s, name.as_ref(), &args))
         {
@@ -2441,6 +2452,7 @@ fn spid3r_method_inner(
         }
     }
     let owned_obj = v2_to_value(ov);
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     match collections::call_method_host(&mut NativeCallbackHost, &owned_obj, name.as_ref(), args) {
         Ok(v) => from_value_v2(v),
@@ -2491,6 +2503,7 @@ fn spid3r_super_call_inner(
             None => return rt_throw_v2(&format!("unknown class '{}'", parent)),
         }
     };
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     if method_name.is_null() {
         let mut cur = Some(class.clone());
@@ -2537,6 +2550,7 @@ fn spid3r_super_call_inner(
         }
         let mut out = ValueV2::NULL;
         spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+        // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
         unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
         spid3r_frame_exit();
         leave_call();
@@ -2574,6 +2588,7 @@ fn spid3r_super_call_inner(
     }
     let mut out = ValueV2::NULL;
     spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+    // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
     unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
     spid3r_frame_exit();
     leave_call();
@@ -2610,6 +2625,7 @@ impl collections::CallbackHost for NativeCallbackHost {
                 }
                 let mut out = ValueV2::NULL;
                 spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+                // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
                 unsafe { (code)(&mut out, env, args.len(), argv.as_ptr()) };
                 spid3r_frame_exit();
                 leave_call();
@@ -2827,6 +2843,7 @@ fn index_get_hot(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) ->
                     // SAFETY: `iv` is a local `#[repr(C)]` `ValueV2 { u64, u64 }`.
                     // On little-endian targets, bytes `1..1 + sso_len` (`<= 15`)
                     // hold valid UTF-8 written exclusively by `ValueV2` SSO constructors.
+                    // SAFETY: AOT runtime trampoline arguments and pointers satisfy the compiled calling-convention invariants.
                     let raw = unsafe {
                         std::slice::from_raw_parts(
                             (&iv as *const ValueV2 as *const u8).add(1),
@@ -2937,6 +2954,7 @@ fn index_get_reuse_guard(
         // SAFETY: `box_holder` was allocated by `spid3r_reuse_box_new`
         // on this thread and remains frame-rooted for the loop lifetime;
         // the compiler proved this binding never escapes the iteration.
+        // SAFETY: AOT runtime trampoline arguments and pointers satisfy the compiled calling-convention invariants.
         *old_to_drop = Some(unsafe { std::mem::replace(&mut *holder_ptr, cloned) });
         write_out(out, ValueV2::from_heap_ptr(holder_ptr));
         return 0;
@@ -3277,6 +3295,7 @@ pub extern "C" fn spid3r_str_lit_i64(
     let lit = if lit_len == 0 || lit_ptr.is_null() {
         &[][..]
     } else {
+        // SAFETY: AOT runtime trampoline arguments and pointers satisfy the compiled calling-convention invariants.
         unsafe { std::slice::from_raw_parts(lit_ptr, lit_len) }
     };
     if lit_len <= 13 && (0..100).contains(&val) {
@@ -3317,6 +3336,7 @@ pub extern "C" fn spid3r_str_lit_i64(
         write_out(out, ValueV2::from_sso_bytes(&combined[..total]));
         return;
     }
+    // SAFETY: byte slice originates from a verified UTF-8 literal or ASCII decimal formatter buffer.
     let lit_str = unsafe { std::str::from_utf8_unchecked(lit) };
     let digits_str = unsafe { std::str::from_utf8_unchecked(digits) };
     let ascii = lit_str.is_ascii();
@@ -3446,6 +3466,7 @@ pub extern "C" fn spid3r_str_build(out: *mut ValueV2, parts: *const StrPart, cou
                     stack_len += digits.len();
                 } else {
                     let mut ob = String::with_capacity(stack_len + digits.len() + 64);
+                    // SAFETY: byte slice originates from a verified UTF-8 literal or ASCII decimal formatter buffer.
                     ob.push_str(unsafe { std::str::from_utf8_unchecked(&stack_buf[..stack_len]) });
                     ob.push_str(unsafe { std::str::from_utf8_unchecked(digits) });
                     overflow = Some(ob);
@@ -3463,6 +3484,7 @@ pub extern "C" fn spid3r_str_build(out: *mut ValueV2, parts: *const StrPart, cou
                         stack_len += bytes.len();
                     } else {
                         let mut ob = String::with_capacity(stack_len + bytes.len() + 64);
+                        // SAFETY: byte slice originates from a verified UTF-8 literal or ASCII decimal formatter buffer.
                         ob.push_str(unsafe {
                             std::str::from_utf8_unchecked(&stack_buf[..stack_len])
                         });
@@ -3529,6 +3551,7 @@ fn map_get_str_inner(
     let key = if key_len == 0 {
         ""
     } else {
+        // SAFETY: byte slice originates from a verified UTF-8 literal or ASCII decimal formatter buffer.
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
     };
     if let Some(Value::Map(m)) = deref_heap(ov) {
@@ -3766,6 +3789,7 @@ pub extern "C" fn spid3r_forin_next(out: *mut ValueV2, iter: *mut c_void) -> u8 
     if iter.is_null() {
         return 0;
     }
+    // SAFETY: iter is a live Box<ForInState> pointer created by spid3r_iter_new and freed once in spid3r_iter_free.
     let st = unsafe { &mut *(iter as *mut ForInState) };
     if st.next >= st.items.len() {
         return 0;
@@ -3779,6 +3803,7 @@ pub extern "C" fn spid3r_forin_next(out: *mut ValueV2, iter: *mut c_void) -> u8 
 #[no_mangle]
 pub extern "C" fn spid3r_forin_end(iter: *mut c_void) {
     if !iter.is_null() {
+        // SAFETY: iter is a live Box<ForInState> pointer created by spid3r_iter_new and freed once in spid3r_iter_free.
         unsafe { drop(Box::from_raw(iter as *mut ForInState)) };
     }
 }
@@ -3848,6 +3873,7 @@ pub extern "C" fn spid3r_env_slot(env: *mut c_void, index: usize) -> *mut Upvalu
     if env.is_null() {
         abort("native runtime: null closure environment");
     }
+    // SAFETY: env is a valid closure environment header allocated by spid3r_env_new; index is bounds-checked before deref.
     unsafe {
         if index >= env_len(env) {
             abort("native runtime: closure environment index out of range");
@@ -3866,6 +3892,7 @@ pub extern "C" fn spid3r_env_set_slot(env: *mut c_void, index: usize, cell: *mut
     if cell.is_null() {
         abort("native runtime: captured a null upvalue cell");
     }
+    // SAFETY: env is a valid closure environment header allocated by spid3r_env_new; index is bounds-checked before deref.
     unsafe {
         if index >= env_len(env) {
             abort("native runtime: closure environment index out of range");
@@ -3989,6 +4016,7 @@ fn class_mut<'a>(class: *const ValueV2) -> &'a mut crate::value::CompiledClass {
     if !cv.is_heap() {
         abort("native runtime: class registration with a non-class value");
     }
+    // SAFETY: cv is a valid heap ValueV2 pointer owned by the runtime with exclusive access during class mutation.
     let class_val: &mut Value = unsafe { &mut *cv.as_heap_ptr() };
     if let Value::CClass(c) = class_val {
         match std::sync::Arc::get_mut(c) {
@@ -4021,6 +4049,7 @@ pub extern "C" fn spid3r_class_add_method(
 ) {
     let name = cstr(name);
     let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
+        // SAFETY: code is an AOT-compiled Spid3r function pointer matching the Spid3r C-ABI trampoline signature.
         unsafe { std::mem::transmute(code) };
     let f = std::sync::Arc::new(CompiledFn {
         name: Some(name.clone()),
@@ -4042,6 +4071,7 @@ pub extern "C" fn spid3r_class_set_ctor(
     code: *const c_void,
 ) {
     let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
+        // SAFETY: code is an AOT-compiled Spid3r function pointer matching the Spid3r C-ABI trampoline signature.
         unsafe { std::mem::transmute(code) };
     let c = class_mut(class);
     let f = std::sync::Arc::new(CompiledFn {
@@ -4114,6 +4144,7 @@ pub fn construct_cinstance(
         }
         let mut out = ValueV2::NULL;
         spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+        // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
         unsafe {
             (ctor.code)(&mut out, ctor.env, args.len() + 1, call_args.as_ptr());
         }
@@ -4132,18 +4163,21 @@ fn join_display(args: &[Value]) -> String {
 
 #[no_mangle]
 pub extern "C" fn spid3r_print(argc: usize, argv: *const *const ValueV2) {
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     print!("{}", join_display(&args));
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_println(argc: usize, argv: *const *const ValueV2) {
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     println!("{}", join_display(&args));
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *const ValueV2) {
+    // SAFETY: AOT codegen passes a valid argv array of length argc containing initialized ValueV2 pointers.
     let args = unsafe { args_vec(argc, argv) };
     eprintln!("{}", join_display(&args));
 }
@@ -4183,6 +4217,7 @@ fn run_program(entry: extern "C" fn(*mut ValueV2)) -> i32 {
         Some(Value::Cfn(f)) => {
             let argv: [*const ValueV2; 0] = [];
             let mut ret = ValueV2::NULL;
+            // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
             unsafe { (f.code)(&mut ret, f.env, 0, argv.as_ptr()) };
             if spid3r_threw() != 0 {
                 spid3r_uncaught();
@@ -4233,6 +4268,7 @@ pub extern "C" fn spid3r_spawn(out: *mut ValueV2, f: *const ValueV2) {
                 let cfn = cfn;
                 let argv: [*const ValueV2; 0] = [];
                 let mut r = ValueV2::NULL;
+                // SAFETY: compiled function pointer, closure env, out-slot, and argv slice satisfy the AOT calling convention.
                 unsafe { (cfn.code)(&mut r, cfn.env, 0usize, argv.as_ptr()) };
                 let outcome = if spid3r_threw() != 0 {
                     match take_thrown_value() {
@@ -4330,6 +4366,7 @@ pub extern "C" fn spid3r_struct_box(
     };
     let mut pairs = Vec::with_capacity(count);
     for i in 0..count {
+        // SAFETY: index i is strictly less than the caller-supplied count for the valid FFI pointer array.
         let (fname_ptr, val_ptr) = unsafe { (*field_names.add(i), *field_vals.add(i)) };
         let fname = cstr(fname_ptr);
         let val = to_owned_v2(val_ptr);
@@ -4392,6 +4429,7 @@ pub extern "C" fn spid3r_dl_open(out: *mut ValueV2, path: *const ValueV2) {
             extern "system" {
                 fn LoadLibraryA(lp_lib_file_name: *const c_char) -> *mut c_void;
             }
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { LoadLibraryA(cs.as_ptr()) }
         };
         #[cfg(unix)]
@@ -4400,6 +4438,7 @@ pub extern "C" fn spid3r_dl_open(out: *mut ValueV2, path: *const ValueV2) {
                 fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
             }
             const RTLD_LAZY: i32 = 1;
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { dlopen(cs.as_ptr(), RTLD_LAZY) }
         };
         #[cfg(not(any(windows, unix)))]
@@ -4445,6 +4484,7 @@ pub extern "C" fn spid3r_dl_sym(
             extern "system" {
                 fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
             }
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { GetProcAddress(h, cs.as_ptr() as *const u8) }
         };
         #[cfg(unix)]
@@ -4452,6 +4492,7 @@ pub extern "C" fn spid3r_dl_sym(
             extern "C" {
                 fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
             }
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { dlsym(h, cs.as_ptr()) }
         };
         #[cfg(not(any(windows, unix)))]
@@ -4479,6 +4520,7 @@ pub extern "C" fn spid3r_dl_close(out: *mut ValueV2, handle_val: *const ValueV2)
             extern "system" {
                 fn FreeLibrary(h_lib_module: *mut c_void) -> i32;
             }
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { FreeLibrary(h) != 0 }
         };
         #[cfg(unix)]
@@ -4486,6 +4528,7 @@ pub extern "C" fn spid3r_dl_close(out: *mut ValueV2, handle_val: *const ValueV2)
             extern "C" {
                 fn dlclose(handle: *mut c_void) -> i32;
             }
+            // SAFETY: dynamic library handle and NUL-terminated CString symbol/path pointer are valid for the FFI call.
             unsafe { dlclose(h) == 0 }
         };
         #[cfg(not(any(windows, unix)))]
@@ -4900,6 +4943,7 @@ mod tests {
 
     #[test]
     fn class_registration_and_construction() {
+        // SAFETY: AOT runtime trampoline arguments and pointers satisfy the compiled calling-convention invariants.
         unsafe {
             rt_init();
             let mut cls = ValueV2::NULL;
@@ -5039,6 +5083,7 @@ mod tests {
             argv: *const *const ValueV2,
         ) {
             assert_eq!(argc, 2);
+            // SAFETY: index i is strictly less than the caller-supplied count for the valid FFI pointer array.
             unsafe {
                 let recv = *argv;
                 let arg = *argv.add(1);

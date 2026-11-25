@@ -19,7 +19,9 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use super::NativeDef;
 use crate::value::collections;
@@ -51,10 +53,7 @@ fn with_cached_http_date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = super::datetime::unix_time().max(0) as u64;
     let slot = CACHE.get_or_init(|| Mutex::new((u64::MAX, String::with_capacity(32))));
     let mut guard = slot.lock().unwrap();
     if guard.0 != secs {
@@ -150,13 +149,16 @@ impl Drop for BufGuard<'_> {
 
 struct ListenerState {
     listener: Arc<TcpListener>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     nonblock_waiters: Mutex<usize>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct ListenerNonblockGuard<'a> {
     state: &'a ListenerState,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> ListenerNonblockGuard<'a> {
     fn acquire(state: &'a ListenerState, who: &str) -> Result<Self, String> {
         let mut g = state.nonblock_waiters.lock().unwrap();
@@ -171,6 +173,7 @@ impl<'a> ListenerNonblockGuard<'a> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ListenerNonblockGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut g) = self.state.nonblock_waiters.lock() {
@@ -284,6 +287,7 @@ impl ConnStream {
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
         match self {
             ConnStream::Plain(s) => s.set_nonblocking(nonblocking),
@@ -912,6 +916,7 @@ fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 /// Wait up to `wait_ms` for an incoming connection on `listener` via OS readiness
 /// while marking the thread as blocked for scheduler GC quiescence.
+#[cfg(not(target_arch = "wasm32"))]
 fn wait_listener_readable(listener: &TcpListener, wait_ms: i32) {
     let _blocked = crate::sched::enter_blocked();
     #[cfg(windows)]
@@ -922,6 +927,7 @@ fn wait_listener_readable(listener: &TcpListener, wait_ms: i32) {
             events: sys::POLLIN,
             revents: 0,
         };
+        // SAFETY: WSAPoll receives a valid mutable pointer and exact element count for the local/slice WSAPOLLFD array.
         let rc = unsafe { sys::WSAPoll(&mut pfd, 1, wait_ms) };
         if rc < 0 {
             std::thread::sleep(Duration::from_millis(1));
@@ -935,6 +941,7 @@ fn wait_listener_readable(listener: &TcpListener, wait_ms: i32) {
             events: sys::POLLIN,
             revents: 0,
         };
+        // SAFETY: poll receives a valid mutable pointer and exact element count for the local/slice pollfd array.
         let rc = unsafe { sys::poll(&mut pfd, 1, wait_ms) };
         if rc < 0 {
             std::thread::sleep(Duration::from_millis(1));
@@ -964,72 +971,80 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
     arity("tcp_accept_timeout", &args, 2)?;
     let id = want_int(&args[0], "tcp_accept_timeout")?;
     let timeout_ms = want_int(&args[1], "tcp_accept_timeout")?.max(0) as u64;
-    #[cfg(unix)]
-    if let Some(Sock::UdsListener(listener, _)) = lookup(id) {
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| io_msg("tcp_accept_timeout", &e))?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, timeout_ms);
+        Err("tcp_accept_timeout: networking is not available in WebAssembly".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        #[cfg(unix)]
+        if let Some(Sock::UdsListener(listener, _)) = lookup(id) {
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| io_msg("tcp_accept_timeout", &e))?;
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            let outcome: Result<Value, String> = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if lookup(id).is_none() {
+                            let _ = stream.shutdown(Shutdown::Both);
+                            break err("tcp_accept: listener closed");
+                        }
+                        let _ = stream.set_nonblocking(false);
+                        break ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_uds(
+                            stream,
+                        ))))));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if lookup(id).is_none() {
+                            break err("tcp_accept: listener closed");
+                        }
+                        if Instant::now() >= deadline {
+                            break Ok(Value::Null);
+                        }
+                        let _blocked = crate::sched::enter_blocked();
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
+                }
+            };
+            let _ = listener.set_nonblocking(false);
+            return outcome;
+        }
+        let state = get_listener_state(id, "tcp_accept_timeout")?;
+        let listener = &state.listener;
+        let _nb_guard = ListenerNonblockGuard::acquire(&state, "tcp_accept_timeout")?;
+
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let outcome: Result<Value, String> = loop {
+        loop {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    // Same closure check as the blocking form: `tcp_close` may have
+                    // removed the handle while we waited.
                     if lookup(id).is_none() {
                         let _ = stream.shutdown(Shutdown::Both);
-                        break err("tcp_accept: listener closed");
+                        return err("tcp_accept: listener closed");
                     }
                     let _ = stream.set_nonblocking(false);
-                    break ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_uds(
+                    let _ = stream.set_nodelay(true);
+                    return ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
                         stream,
                     ))))));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if lookup(id).is_none() {
-                        break err("tcp_accept: listener closed");
+                        return err("tcp_accept: listener closed");
                     }
-                    if Instant::now() >= deadline {
-                        break Ok(Value::Null);
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(Value::Null);
                     }
-                    let _blocked = crate::sched::enter_blocked();
-                    std::thread::sleep(Duration::from_millis(1));
+                    let rem_ms = deadline.duration_since(now).as_millis().clamp(1, 20) as i32;
+                    wait_listener_readable(listener, rem_ms);
                 }
-                Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
+                Err(e) => return err(io_msg("tcp_accept_timeout", &e)),
             }
-        };
-        let _ = listener.set_nonblocking(false);
-        return outcome;
-    }
-    let state = get_listener_state(id, "tcp_accept_timeout")?;
-    let listener = &state.listener;
-    let _nb_guard = ListenerNonblockGuard::acquire(&state, "tcp_accept_timeout")?;
-
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                // Same closure check as the blocking form: `tcp_close` may have
-                // removed the handle while we waited.
-                if lookup(id).is_none() {
-                    let _ = stream.shutdown(Shutdown::Both);
-                    return err("tcp_accept: listener closed");
-                }
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_nodelay(true);
-                return ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
-                    stream,
-                ))))));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if lookup(id).is_none() {
-                    return err("tcp_accept: listener closed");
-                }
-                let now = Instant::now();
-                if now >= deadline {
-                    return Ok(Value::Null);
-                }
-                let rem_ms = deadline.duration_since(now).as_millis().clamp(1, 20) as i32;
-                wait_listener_readable(listener, rem_ms);
-            }
-            Err(e) => return err(io_msg("tcp_accept_timeout", &e)),
         }
     }
 }
@@ -1727,63 +1742,72 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         socks.push((*id, sock));
     }
 
-    let mut readable: Vec<i64> = Vec::new();
-    let mut writable: Vec<i64> = Vec::new();
-
-    // Kernel readiness first: one blocking call, woken by the OS the moment a
-    // socket becomes ready. The probe loop below only runs when the platform
-    // call is unavailable or fails.
-    let mut used_kernel = false;
-    if let Some(results) = kernel_poll(&socks, timeout_ms as i32, check_writable) {
-        used_kernel = true;
-        for (id, r, w) in results {
-            if r {
-                readable.push(id);
-            }
-            if w {
-                writable.push(id);
-            }
-        }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (socks, timeout_ms, check_writable, &ids);
+        Err("tcp_poll: networking is not available in WebAssembly".to_string())
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut readable: Vec<i64> = Vec::new();
+        let mut writable: Vec<i64> = Vec::new();
 
-    if !used_kernel {
-        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
-        loop {
-            readable.clear();
-            for id in &ids {
-                if probe_readable(*id, WHO)? {
-                    readable.push(*id);
+        // Kernel readiness first: one blocking call, woken by the OS the moment a
+        // socket becomes ready. The probe loop below only runs when the platform
+        // call is unavailable or fails.
+        let mut used_kernel = false;
+        if let Some(results) = kernel_poll(&socks, timeout_ms as i32, check_writable) {
+            used_kernel = true;
+            for (id, r, w) in results {
+                if r {
+                    readable.push(id);
+                }
+                if w {
+                    writable.push(id);
                 }
             }
-            if !readable.is_empty() || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
         }
-        for id in &ids {
-            if lookup(*id).is_some() {
-                writable.push(*id);
+
+        if !used_kernel {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+            loop {
+                readable.clear();
+                for id in &ids {
+                    if probe_readable(*id, WHO)? {
+                        readable.push(*id);
+                    }
+                }
+                if !readable.is_empty() || Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            for id in &ids {
+                if lookup(*id).is_some() {
+                    writable.push(*id);
+                }
             }
         }
+        let readable_values: Vec<Value> = readable.into_iter().map(Value::Int).collect();
+        let writable_values: Vec<Value> = writable.into_iter().map(Value::Int).collect();
+        let readable_list = collections::construct("list", readable_values)?;
+        let writable_list = collections::construct("list", writable_values)?;
+        collections::construct(
+            "map",
+            vec![
+                Value::Str("readable".into()),
+                readable_list,
+                Value::Str("writable".into()),
+                writable_list,
+            ],
+        )
     }
-    let readable_values: Vec<Value> = readable.into_iter().map(Value::Int).collect();
-    let writable_values: Vec<Value> = writable.into_iter().map(Value::Int).collect();
-    let readable_list = collections::construct("list", readable_values)?;
-    let writable_list = collections::construct("list", writable_values)?;
-    collections::construct(
-        "map",
-        vec![
-            Value::Str("readable".into()),
-            readable_list,
-            Value::Str("writable".into()),
-            writable_list,
-        ],
-    )
     .and_then(ok)
 }
 
 /// Is there data to read on this connection? Reads ahead into the pending
 /// buffer so the bytes are not lost.
+#[cfg(not(target_arch = "wasm32"))]
 fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
     let sock = lookup(id).ok_or_else(|| format!("{}: handle {} is not open", who, id))?;
     match sock {
@@ -2596,6 +2620,7 @@ fn sock_raw_fd(sock: &Sock) -> i32 {
 /// socket readiness (`POLLIN` != decrypted application bytes ready, and bytes
 /// already buffered inside `TlsStream` are invisible to kernel readiness).
 #[cfg(any(unix, windows))]
+#[cfg(not(target_arch = "wasm32"))]
 fn kernel_poll(
     socks: &[(i64, Sock)],
     timeout_ms: i32,
@@ -2621,10 +2646,12 @@ fn kernel_poll(
         let _blocked = crate::sched::enter_blocked();
         #[cfg(windows)]
         {
+            // SAFETY: WSAPoll receives a valid mutable pointer and exact element count for the local/slice WSAPOLLFD array.
             unsafe { sys::WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) }
         }
         #[cfg(unix)]
         {
+            // SAFETY: poll receives a valid mutable pointer and exact element count for the fds pollfd slice.
             unsafe { sys::poll(fds.as_mut_ptr(), fds.len() as sys::Nfds, timeout_ms) }
         }
     };
@@ -2653,6 +2680,7 @@ fn kernel_poll(
 /// returning `None` sends `tcp_poll` down the portable probe loop, which is
 /// what the wasm build has always used.
 #[cfg(not(any(unix, windows)))]
+#[cfg(not(target_arch = "wasm32"))]
 fn kernel_poll(
     _socks: &[(i64, Sock)],
     _timeout_ms: i32,

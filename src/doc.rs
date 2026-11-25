@@ -736,7 +736,10 @@ fn walk_matrix_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Diagnostic>
         }
         if path.is_dir() {
             walk_matrix_dir(&path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("matrix") {
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("matrix") | Some("mt")
+        ) {
             out.push(path);
         }
     }

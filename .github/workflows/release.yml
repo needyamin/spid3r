@@ -115,6 +115,34 @@ jobs:
           fi
           cp release-out/spid3r-*.tar.gz release-out/spid3r-*.tar.gz.sha256 .
 
+      - name: Clean Ubuntu 24.04 smoke test (no system libllvm23)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          docker run --rm \
+            -v "$PWD:/work:ro" \
+            ubuntu:24.04 \
+            bash -eu -c '
+              # 1. Direct tarball extraction ($ORIGIN/lib)
+              mkdir -p /tmp/sp-direct
+              tar -xzf /work/spid3r-${{ matrix.target }}.tar.gz -C /tmp/sp-direct
+              /tmp/sp-direct/spid3r --version
+              /tmp/sp-direct/sp --version
+              printf "fn main() -> int { println(\"ok\"); return 0; }\n" > /tmp/hello.mt
+              test "$(/tmp/sp-direct/sp run /tmp/hello.mt)" = "ok"
+              # 2. install.sh bin/ + lib/ layout ($ORIGIN/../lib)
+              mkdir -p /tmp/sp-test/bin /tmp/sp-test/lib
+              tar -xzf /work/spid3r-${{ matrix.target }}.tar.gz -C /tmp/sp-test/bin
+              if [ -d /tmp/sp-test/bin/lib ]; then
+                mv /tmp/sp-test/bin/lib/* /tmp/sp-test/lib/
+                rmdir /tmp/sp-test/bin/lib
+              fi
+              /tmp/sp-test/bin/spid3r --version
+              /tmp/sp-test/bin/sp --version
+              test "$(/tmp/sp-test/bin/sp run /tmp/hello.mt)" = "ok"
+            '
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:

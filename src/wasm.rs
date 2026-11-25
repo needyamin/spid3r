@@ -518,3 +518,19 @@ pub unsafe extern "C" fn spid3r_wasm_session_eval(
 pub extern "C" fn spid3r_wasm_session_reset() -> *mut u8 {
     alloc_payload(spid3r_session_reset_json())
 }
+
+/// Seed the wall-clock epoch time (milliseconds since 1970-01-01T00:00:00Z,
+/// e.g. JavaScript `Date.now()`) for `unix_time()` and `unix_ms()` in WASM.
+#[no_mangle]
+pub extern "C" fn spid3r_wasm_set_epoch_ms(ms: f64) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if ms.is_finite() {
+            crate::stdlib::datetime::set_wasm_epoch_ms(ms as i64);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = ms;
+    }
+}

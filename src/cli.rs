@@ -22,11 +22,20 @@ pub const EXIT_USAGE: i32 = 2;
 /// A `.matrixc` file that could not be loaded (corrupt or malformed).
 pub const EXIT_BYTECODE: i32 = 4;
 
+/// Return true when `p` has a recognized Spid3r source extension (`.matrix` or `.mt`).
+#[inline]
+fn is_source_path(p: &Path) -> bool {
+    matches!(
+        p.extension().and_then(|x| x.to_str()),
+        Some("matrix") | Some("mt")
+    )
+}
+
 const HELP: &str = "\
-spid3r - the Spid3r language toolchain
+spid3r (alias: sp) - the Spid3r language toolchain (.matrix / .mt)
 
 USAGE:
-    spid3r <command> [options]
+    spid3r <command> [options]   (or: sp <command> [options])
 
 COMMANDS:
     run [--engine tree|vm] [--prof] [--coverage] [--no-opt] [--budget N]
@@ -103,6 +112,9 @@ COMMANDS:
     tree                                   Print the dependency tree
     verify                                 Re-hash vendor/ against spider.lock;
                                            exit 1 on drift, naming the package
+    verify-runtime [PATH]                  Verify the AOT runtime staticlib
+                                           against its SHA-256 pin / manifest
+                                           (exit 4 on mismatch or missing pin)
     search <query> [--local]               Find packages in the local registry and
                                            vendor/ (no network in v1)
     publish --to-dir <dir>                 Write <dir>/<name>/<version>/ with a
@@ -145,9 +157,10 @@ EXIT CODES:
     1                                      Program error (compile, runtime, or
                                            broken SPID3R_INI configuration pin)
     2                                      Usage or build-driver error
-                                           (`error[usage]`)
+                                           (`error[usage]`: unknown command,
+                                           invalid flags, or missing input file)
     4                                      Invalid, corrupt, or tampered `.matrixc`
-                                           bytecode / artifact
+                                           bytecode / runtime artifact
 ";
 
 // pub fn version_text() -> String {
@@ -264,6 +277,16 @@ pub fn run(args: Vec<String>) -> i32 {
     // host with STATUS_STACK_OVERFLOW and no diagnostic. Run every subcommand
     // on a dedicated big-stack worker thread so the worst case is a clean
     // error, and join it so exit codes and panics behave exactly as before.
+    // `gui` (and `control`) must keep the OS main thread available for
+    // `tao::EventLoop` (macOS AppKit and Linux GTK panic if EventLoop is built
+    // on a worker thread). `cmd_gui` still runs parse/check/tree Phase 1 on a
+    // 512 MiB worker thread and joins before opening the window on main.
+    if matches!(cmd.as_str(), "gui" | "control") {
+        let log_cmd = cmd.clone();
+        let outcome = dispatch(cmd, rest, json);
+        crate::sched::shutdown();
+        return outcome_code(outcome, json, &log_cmd);
+    }
     let cmd_for_thread = cmd.clone();
     let rest_clone = rest.clone();
     let spawned = std::thread::Builder::new()
@@ -436,6 +459,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "init" => cmd_init(&rest),
         "modules" => cmd_modules(&rest),
         "verify" => cmd_verify(&rest),
+        "verify-runtime" => cmd_verify_runtime(&rest),
         "tree" => cmd_tree(&rest),
         "add" => cmd_add(&rest),
         "remove" => cmd_remove(&rest),
@@ -634,15 +658,30 @@ OPTIONS:
 spid3r gui - Run a program in a GUI webview window
 
 USAGE:
-    spid3r gui <file.matrix> [options] [args...]
+    spid3r gui <file.matrix|file.mt> [options] [args...]
     spid3r gui <file.matrixc> [options] [args...]
     spid3r gui --payload <app.exe> [options] [args...]
 
 OPTIONS:
     --html <path>          Load an existing HTML page into the webview window.
-                           With --payload: a payload entry name, or a file on disk
+                           With an embedded --payload: selects an embedded
+                           payload entry name only (disk paths apply only to
+                           unembedded loose-file launchers)
     --payload <exe>        Run the program embedded in <exe> by `spid3r build
                            --embed`, serving its assets from memory
+    --icon <path>          Window & taskbar icon (.ico or .png; disk path or
+                           embedded payload entry; defaults to embedded app icon)
+    --width <px>           Initial window width in logical pixels (default 920)
+    --height <px>          Initial window height in logical pixels (default 640)
+    --min-size <WxH>       Minimum window size in logical pixels (default 320x200)
+    --maximized            Open the window maximized
+    --fullscreen           Open the window in borderless fullscreen
+    --theme <mode>         Window titlebar theme: light, dark, or system
+    --bg-color <#hex>      Webview background color (#RGB, #RRGGBB, #RRGGBBAA)
+    --devtools             Enable WebView DevTools (F12 / Inspect) in release builds
+    --clipboard            Enable WebView clipboard auto-permission (default on)
+    --no-clipboard         Disable WebView clipboard auto-permission
+    --zoom                 Enable Ctrl+Plus/Minus webview zoom hotkeys
     --engine <tree|vm>     Engine to run the program on. `vm` is required for
                            .matrixc bytecode and runs the same engine as
                            `spid3r exec`
@@ -776,6 +815,18 @@ NOTES:
     Unknown options are usage errors (exit 2).
     config init refuses to overwrite an existing file unless --force is given.
     config init --help prints this help; it does not write a file.
+"),
+        "verify-runtime" => Some("\
+spid3r verify-runtime - Verify the AOT runtime staticlib against its SHA-256 pin
+
+USAGE:
+    spid3r verify-runtime [<dir_or_manifest_or_staticlib>]
+
+OPTIONS:
+    -h, --help             Print help information
+
+Exits 0 when verified, 2 on missing path or usage error, and 4 on checksum
+mismatch, conflicting pins, or missing SHA-256 pin.
 "),
         "init" => Some("\
 spid3r init - Initialize a new Spid3r project
@@ -958,6 +1009,18 @@ fn reject_gui_source(path: &str, src: &str, file: Arc<str>) -> Result<(), Diagno
         "gui_on",
         "gui_emit",
         "gui_title",
+        "gui_icon",
+        "gui_size",
+        "gui_min_size",
+        "gui_maximize",
+        "gui_fullscreen",
+        "gui_resizable",
+        "gui_decorations",
+        "gui_theme",
+        "gui_bg_color",
+        "gui_devtools",
+        "gui_cancel_close",
+        "gui_close",
     ];
     let Ok(tokens) = crate::lexer::Lexer::new(src, file).tokenize() else {
         return Ok(()); // lex errors are reported by the normal front end
@@ -996,6 +1059,12 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
         if cand_matrix.is_file() {
             found_dir = Some(dir.to_path_buf());
             found_target = Some(cand_matrix);
+            break;
+        }
+        let cand_mt = dir.join("magic.mt");
+        if cand_mt.is_file() {
+            found_dir = Some(dir.to_path_buf());
+            found_target = Some(cand_mt);
             break;
         }
         current = dir.parent();
@@ -1708,7 +1777,7 @@ fn collect_matrix_files_recursive(dir: &Path, out: &mut Vec<String>) -> Result<(
     for p in paths {
         if p.is_dir() {
             collect_matrix_files_recursive(&p, out)?;
-        } else if p.is_file() && p.extension().is_some_and(|x| x == "matrix") {
+        } else if p.is_file() && is_source_path(&p) {
             out.push(p.to_string_lossy().to_string());
         }
     }
@@ -2176,10 +2245,13 @@ fn cmd_disasm(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
-/// Default `.matrixc` output path: replace a trailing `.matrix` with
+/// Default `.matrixc` output path: replace a trailing `.matrix` or `.mt` with
 /// `.matrixc`, otherwise append `.matrixc`.
 fn default_matrixc(file: &str) -> String {
-    if let Some(stripped) = file.strip_suffix(".matrix") {
+    if let Some(stripped) = file
+        .strip_suffix(".matrix")
+        .or_else(|| file.strip_suffix(".mt"))
+    {
         format!("{}.matrixc", stripped)
     } else {
         format!("{}.matrixc", file)
@@ -2368,7 +2440,7 @@ fn cmd_test(args: &[String]) -> Result<i32, Diagnostic> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&root)
         .map_err(|e| usage(&format!("cannot read examples/: {}", e)))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
+        .filter(|p| is_source_path(p))
         .collect();
     files.sort();
     files.retain(|p| test_selected(&opts, p));
@@ -2477,7 +2549,7 @@ fn project_test_in(dir: &Path, opts: &TestOpts) -> Result<(usize, usize), Diagno
     let mut files: Vec<PathBuf> = std::fs::read_dir(&tests)
         .map_err(|e| usage(&format!("cannot read tests/: {}", e)))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
+        .filter(|p| is_source_path(p))
         .collect();
     files.sort();
     files.retain(|p| test_selected(opts, p));
@@ -2714,6 +2786,386 @@ fn cmd_verify(args: &[String]) -> Result<i32, Diagnostic> {
         report.checked
     );
     Ok(EXIT_USER_ERROR)
+}
+
+fn norm_hex64(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(t.to_ascii_lowercase())
+}
+
+fn parse_sha256_sidecar(path: &Path, expected_name: &str) -> Result<String, i32> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "error[corrupt]: cannot read runtime checksum file '{}'",
+                path.display()
+            );
+            return Err(EXIT_BYTECODE);
+        }
+    };
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let mut parts = line.split_whitespace();
+    let Some(hex) = parts.next().and_then(norm_hex64) else {
+        eprintln!(
+            "error[corrupt]: invalid SHA-256 digest in '{}'",
+            path.display()
+        );
+        return Err(EXIT_BYTECODE);
+    };
+    if let Some(fname) = parts.next() {
+        let fname = fname.trim_start_matches('*');
+        let base = Path::new(fname)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fname);
+        if !base.is_empty() && base != expected_name {
+            eprintln!(
+                "error[corrupt]: checksum file '{}' names '{}' instead of '{}'",
+                path.display(),
+                base,
+                expected_name
+            );
+            return Err(EXIT_BYTECODE);
+        }
+    }
+    Ok(hex)
+}
+
+struct RuntimeManifestInfo {
+    staticlib_name: String,
+    sha256: String,
+    version: String,
+    git_commit: String,
+    llvm_version: String,
+}
+
+fn load_runtime_manifest(path: &Path) -> Result<RuntimeManifestInfo, i32> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "error[corrupt]: cannot read runtime manifest '{}'",
+                path.display()
+            );
+            return Err(EXIT_BYTECODE);
+        }
+    };
+    let val = match crate::stdlib::json_parse_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "error[corrupt]: invalid JSON in runtime manifest '{}': {}",
+                path.display(),
+                e
+            );
+            return Err(EXIT_BYTECODE);
+        }
+    };
+    let crate::value::Value::Map(m) = val else {
+        eprintln!(
+            "error[corrupt]: runtime manifest '{}' must be a JSON object",
+            path.display()
+        );
+        return Err(EXIT_BYTECODE);
+    };
+    let get_str = |map: &crate::value::collections::MapData, key: &str| -> Option<String> {
+        let idx = map.find(&crate::value::MapKey::Str(key.into()))?;
+        match &map.entries[idx].1 {
+            crate::value::Value::Str(s) => Some(s.to_string()),
+            _ => None,
+        }
+    };
+    let guard = m.lock().unwrap();
+    let staticlib_name = get_str(&guard, "staticlib_name").unwrap_or_default();
+    let sha_raw = get_str(&guard, "sha256").unwrap_or_default();
+    let version = get_str(&guard, "version").unwrap_or_default();
+    let (git_commit, llvm_version) = match guard
+        .find(&crate::value::MapKey::Str("provenance".into()))
+        .map(|i| &guard.entries[i].1)
+    {
+        Some(crate::value::Value::Map(pm)) => {
+            let pg = pm.lock().unwrap();
+            (
+                get_str(&pg, "git_commit").unwrap_or_default(),
+                get_str(&pg, "llvm_version").unwrap_or_default(),
+            )
+        }
+        _ => (String::new(), String::new()),
+    };
+    let Some(sha256) = norm_hex64(&sha_raw) else {
+        eprintln!(
+            "error[corrupt]: runtime manifest '{}' has invalid sha256",
+            path.display()
+        );
+        return Err(EXIT_BYTECODE);
+    };
+    if staticlib_name.is_empty() {
+        eprintln!(
+            "error[corrupt]: runtime manifest '{}' is missing staticlib_name",
+            path.display()
+        );
+        return Err(EXIT_BYTECODE);
+    }
+    Ok(RuntimeManifestInfo {
+        staticlib_name,
+        sha256,
+        version,
+        git_commit,
+        llvm_version,
+    })
+}
+
+fn find_default_runtime_staticlib() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SPID3R_RUNTIME_LIB") {
+        let pb = PathBuf::from(p.trim());
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &["spid3r_lang.lib", "libspid3r_lang.a"]
+    } else {
+        &["libspid3r_lang.a", "spid3r_lang.lib"]
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for n in names {
+                let cand = dir.join(n);
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    for rel in ["target/release", "target/debug"] {
+        for n in names {
+            let cand = Path::new(rel).join(n);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// `spid3r verify-runtime [<dir_or_manifest_or_staticlib>]`: verify the AOT
+/// runtime staticlib against its SHA-256 manifest/sidecar/env pin.
+fn cmd_verify_runtime(args: &[String]) -> Result<i32, Diagnostic> {
+    if args.len() > 1 {
+        eprintln!("usage: spid3r verify-runtime [<dir_or_manifest_or_staticlib>]");
+        return Ok(EXIT_USAGE);
+    }
+    let mut explicit_manifest: Option<PathBuf> = None;
+    let mut explicit_lib: Option<PathBuf> = None;
+    if let Some(target) = args.first() {
+        let p = Path::new(target);
+        if p.is_dir() {
+            explicit_manifest = Some(p.join("runtime-manifest.json"));
+        } else if target.ends_with(".json") {
+            explicit_manifest = Some(p.to_path_buf());
+        } else if p.is_file() {
+            explicit_lib = Some(p.to_path_buf());
+        } else {
+            eprintln!(
+                "error[usage]: runtime artifact path not found: '{}'",
+                target
+            );
+            return Ok(EXIT_USAGE);
+        }
+    } else if let Ok(env_m) = std::env::var("SPID3R_RUNTIME_MANIFEST") {
+        let trimmed = env_m.trim();
+        if !trimmed.is_empty() {
+            explicit_manifest = Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let mut manifest_info: Option<RuntimeManifestInfo> = None;
+    let mut expected_hex: Option<String> = None;
+    let sl_path: PathBuf;
+
+    if let Some(mpath) = explicit_manifest {
+        if !mpath.is_file() {
+            eprintln!(
+                "error[usage]: runtime manifest '{}' was not found",
+                mpath.display()
+            );
+            return Ok(EXIT_USAGE);
+        }
+        let info = match load_runtime_manifest(&mpath) {
+            Ok(i) => i,
+            Err(code) => return Ok(code),
+        };
+        let lib_path = if let Some(el) = explicit_lib {
+            el
+        } else if let Ok(env_lib) = std::env::var("SPID3R_RUNTIME_LIB") {
+            let t = env_lib.trim();
+            if !t.is_empty() {
+                PathBuf::from(t)
+            } else {
+                mpath
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(&info.staticlib_name)
+            }
+        } else {
+            mpath
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .join(&info.staticlib_name)
+        };
+        if !lib_path.is_file() {
+            eprintln!(
+                "error[usage]: pinned runtime staticlib '{}' was not found",
+                lib_path.display()
+            );
+            return Ok(EXIT_USAGE);
+        }
+        let lib_base = lib_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if lib_base != info.staticlib_name {
+            eprintln!(
+                "error[corrupt]: runtime staticlib filename '{}' does not match manifest '{}'",
+                lib_base, info.staticlib_name
+            );
+            return Ok(EXIT_BYTECODE);
+        }
+        expected_hex = Some(info.sha256.clone());
+        manifest_info = Some(info);
+        sl_path = lib_path;
+    } else {
+        let Some(found) = explicit_lib.or_else(find_default_runtime_staticlib) else {
+            eprintln!("error[build]: the runtime staticlib (spid3r_lang.lib) was not found");
+            return Ok(EXIT_USER_ERROR);
+        };
+        if !found.is_file() {
+            eprintln!("error[build]: the runtime staticlib (spid3r_lang.lib) was not found");
+            return Ok(EXIT_USER_ERROR);
+        }
+        let sbase = found.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let sdir = found
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let sidecar_m = PathBuf::from(format!("{}.manifest.json", found.display()));
+        let dir_m = sdir.join("runtime-manifest.json");
+        if sidecar_m.is_file() {
+            let info = match load_runtime_manifest(&sidecar_m) {
+                Ok(i) => i,
+                Err(code) => return Ok(code),
+            };
+            if info.staticlib_name != sbase {
+                eprintln!(
+                    "error[corrupt]: sidecar manifest '{}' names '{}' instead of '{}'",
+                    sidecar_m.display(),
+                    info.staticlib_name,
+                    sbase
+                );
+                return Ok(EXIT_BYTECODE);
+            }
+            expected_hex = Some(info.sha256.clone());
+            manifest_info = Some(info);
+        } else if dir_m.is_file() {
+            let info = match load_runtime_manifest(&dir_m) {
+                Ok(i) => i,
+                Err(code) => return Ok(code),
+            };
+            if info.staticlib_name == sbase {
+                expected_hex = Some(info.sha256.clone());
+                manifest_info = Some(info);
+            }
+        }
+        sl_path = found;
+    }
+
+    let sl_base = sl_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let sha_sidecar = PathBuf::from(format!("{}.sha256", sl_path.display()));
+    if sha_sidecar.is_file() {
+        let sidecar_hex = match parse_sha256_sidecar(&sha_sidecar, sl_base) {
+            Ok(h) => h,
+            Err(code) => return Ok(code),
+        };
+        if let Some(ref exp) = expected_hex {
+            if exp != &sidecar_hex {
+                eprintln!(
+                    "error[corrupt]: runtime checksum pin conflict between manifest and '{}'",
+                    sha_sidecar.display()
+                );
+                return Ok(EXIT_BYTECODE);
+            }
+        }
+        expected_hex = Some(sidecar_hex);
+    }
+
+    if let Ok(env_sha) = std::env::var("SPID3R_RUNTIME_SHA256") {
+        let es = env_sha.trim();
+        if !es.is_empty() {
+            let Some(norm_env) = norm_hex64(es) else {
+                eprintln!("error[corrupt]: invalid SPID3R_RUNTIME_SHA256 (expected 64 hex chars)");
+                return Ok(EXIT_BYTECODE);
+            };
+            if let Some(ref exp) = expected_hex {
+                if exp != &norm_env {
+                    eprintln!(
+                        "error[corrupt]: runtime checksum pin conflict with SPID3R_RUNTIME_SHA256"
+                    );
+                    return Ok(EXIT_BYTECODE);
+                }
+            }
+            expected_hex = Some(norm_env);
+        }
+    }
+
+    let Some(expected) = expected_hex else {
+        eprintln!(
+            "error[corrupt]: runtime staticlib '{}' has no SHA-256 pin to verify",
+            sl_path.display()
+        );
+        return Ok(EXIT_BYTECODE);
+    };
+
+    let bytes = match std::fs::read(&sl_path) {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!(
+                "error[corrupt]: cannot read runtime staticlib '{}' for integrity check",
+                sl_path.display()
+            );
+            return Ok(EXIT_BYTECODE);
+        }
+    };
+    let actual = crate::pkg::sha256_hex(&bytes);
+    if actual != expected {
+        eprintln!(
+            "error[corrupt]: runtime staticlib integrity check failed for '{}': expected {}, got {}",
+            sl_path.display(),
+            expected,
+            actual
+        );
+        return Ok(EXIT_BYTECODE);
+    }
+
+    if let Some(m) = manifest_info {
+        println!(
+            "verified runtime staticlib: {} (sha256={}, version={}, commit={}, llvm={})",
+            sl_path.display(),
+            actual,
+            m.version,
+            m.git_commit,
+            m.llvm_version
+        );
+    } else {
+        println!(
+            "verified runtime staticlib: {} (sha256={})",
+            sl_path.display(),
+            actual
+        );
+    }
+    Ok(EXIT_OK)
 }
 
 /// `spidr tree`: the declared dependency tree.
@@ -3398,7 +3850,7 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
                 let mut found: Vec<String> = std::fs::read_dir(&d)
                     .map_err(|e| usage(&format!("cannot read {}/: {}", dir, e)))?
                     .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
+                    .filter(|p| is_source_path(p))
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
                 found.sort();
@@ -3421,7 +3873,7 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
             let mut found: Vec<String> = std::fs::read_dir(path)
                 .map_err(|e| usage(&format!("cannot read '{}': {}", arg, e)))?
                 .filter_map(|entry| entry.ok().map(|e| e.path()))
-                .filter(|p| p.is_file() && p.extension().map(|x| x == "matrix").unwrap_or(false))
+                .filter(|p| p.is_file() && is_source_path(p))
                 .map(|p| p.to_string_lossy().to_string())
                 .collect();
             found.sort();
@@ -3630,7 +4082,7 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         let mut found: Vec<String> = std::fs::read_dir(&dir)
             .map_err(|e| usage(&format!("cannot read benchmarks/: {}", e)))?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
+            .filter(|p| is_source_path(p))
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         found.sort();

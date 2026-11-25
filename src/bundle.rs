@@ -447,6 +447,18 @@ fn uses_gui_natives(program: &crate::ast::Program) -> bool {
         "gui_on",
         "gui_emit",
         "gui_title",
+        "gui_icon",
+        "gui_size",
+        "gui_min_size",
+        "gui_maximize",
+        "gui_fullscreen",
+        "gui_resizable",
+        "gui_decorations",
+        "gui_theme",
+        "gui_bg_color",
+        "gui_devtools",
+        "gui_cancel_close",
+        "gui_close",
     ];
     fn check_expr(e: &crate::ast::Expr) -> bool {
         match e {

@@ -8,8 +8,8 @@
 </defs>
 <rect x="0" y="0" width="880" height="400" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
-<rect x="380" y="34" width="120" height="44" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
-<text x="440" y="56" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#0F172A">app.matrix</text>
+<rect x="360" y="34" width="160" height="44" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="440" y="56" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#0F172A">app.matrix / .mt</text>
 
 <path d="M440 78 L440 94" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#a)"/>
 

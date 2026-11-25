@@ -30,6 +30,65 @@ pub struct HandlerEntry {
     pub span: Option<Span>,
 }
 
+/// Native window theme override for `gui_theme(...)` / `--theme`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowTheme {
+    Light,
+    Dark,
+    System,
+}
+
+/// Window/webview state commands queued by `gui_*` builtins.
+///
+/// Commands pushed during Phase 1 (before the window opens) are applied to
+/// `WindowBuilder` / `WebViewBuilder` (eliminating dark-mode startup flash and
+/// initial resize flicker); commands pushed in Phase 2 apply live via the
+/// event loop.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WindowCommand {
+    Icon(String),
+    Size(f64, f64),
+    MinSize(f64, f64),
+    Maximized(bool),
+    Fullscreen(bool),
+    Resizable(bool),
+    Decorations(bool),
+    Theme(WindowTheme),
+    BgColor(u8, u8, u8, u8),
+    DevTools(bool),
+    Close,
+}
+
+/// Parse a `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA` hex color string.
+pub fn parse_hex_color(s: &str) -> Result<(u8, u8, u8, u8), String> {
+    let hex = s.trim().strip_prefix('#').unwrap_or(s.trim());
+    let dup = |b: u8| -> Result<u8, String> {
+        let v = (b as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("invalid hex color '{}'", s))? as u8;
+        Ok((v << 4) | v)
+    };
+    let pair = |slice: &str| -> Result<u8, String> {
+        u8::from_str_radix(slice, 16).map_err(|_| format!("invalid hex color '{}'", s))
+    };
+    let b = hex.as_bytes();
+    match b.len() {
+        3 => Ok((dup(b[0])?, dup(b[1])?, dup(b[2])?, 255)),
+        4 => Ok((dup(b[0])?, dup(b[1])?, dup(b[2])?, dup(b[3])?)),
+        6 => Ok((pair(&hex[0..2])?, pair(&hex[2..4])?, pair(&hex[4..6])?, 255)),
+        8 => Ok((
+            pair(&hex[0..2])?,
+            pair(&hex[2..4])?,
+            pair(&hex[4..6])?,
+            pair(&hex[6..8])?,
+        )),
+        _ => Err(format!(
+            "invalid hex color '{}' (expected #RGB, #RRGGBB, or #RRGGBBAA)",
+            s
+        )),
+    }
+}
+
 /// The process-global bridge. Guarded by a mutex because the webview IPC
 /// callback, background `spawn` threads, and the window's event loop all touch
 /// it (potentially from different OS threads).
@@ -44,6 +103,10 @@ struct Bridge {
     handlers: Vec<(String, HandlerEntry)>,
     /// Window title requested by `gui_title`.
     title: Option<String>,
+    /// Window/webview configuration & runtime commands.
+    window_cmds: VecDeque<WindowCommand>,
+    /// Set by `gui_cancel_close()` during a `before_close` / `close` handler.
+    close_cancelled: bool,
     /// Callback that nudges the active window event loop when worker threads
     /// queue JS, events, or title updates.
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -58,6 +121,8 @@ impl Bridge {
             inbound: VecDeque::new(),
             handlers: Vec::new(),
             title: None,
+            window_cmds: VecDeque::new(),
+            close_cancelled: false,
             waker: None,
             closed: false,
         }
@@ -82,6 +147,8 @@ pub fn reset() {
     b.inbound.clear();
     b.handlers.clear();
     b.title = None;
+    b.window_cmds.clear();
+    b.close_cancelled = false;
     b.waker = None;
     b.closed = false;
 }
@@ -200,6 +267,60 @@ pub fn take_title() -> Option<String> {
     lock().title.take()
 }
 
+/// Queue a window/webview command (size, min-size, icon, theme, bg-color, etc.).
+pub fn push_window_cmd(cmd: WindowCommand) {
+    let waker = {
+        let mut b = lock();
+        if b.closed {
+            return;
+        }
+        b.window_cmds.push_back(cmd);
+        b.waker.clone()
+    };
+    if let Some(w) = waker {
+        w();
+    }
+}
+
+/// Take all queued window/webview commands, in FIFO order.
+pub fn take_window_cmds() -> Vec<WindowCommand> {
+    std::mem::take(&mut lock().window_cmds)
+        .into_iter()
+        .collect()
+}
+
+/// Return true if a `gui_on` handler is registered for `event`.
+pub fn has_handler(event: &str) -> bool {
+    lock().handlers.iter().any(|(name, _)| name == event)
+}
+
+/// Look up the registered handler entry for `event`, if any.
+pub fn get_handler_entry(event: &str) -> Option<HandlerEntry> {
+    lock()
+        .handlers
+        .iter()
+        .find(|(name, _)| name == event)
+        .map(|(_, entry)| entry.clone())
+}
+
+/// Mark the current window close request as cancelled (`gui_cancel_close()`).
+pub fn cancel_close() {
+    lock().close_cancelled = true;
+}
+
+/// Reset and return whether a `before_close` / `close` handler called `gui_cancel_close()`.
+pub fn take_close_cancelled() -> bool {
+    let mut b = lock();
+    let v = b.close_cancelled;
+    b.close_cancelled = false;
+    v
+}
+
+/// Clear any stale close-cancellation flag before dispatching `before_close`.
+pub fn reset_close_cancelled() {
+    lock().close_cancelled = false;
+}
+
 // ---------------------------------------------------------------------------
 // minimal JSON string helpers
 //
@@ -293,11 +414,29 @@ fn read_json_string_with_end(json: &str, start: usize) -> Option<(String, usize)
                     b'u' => {
                         let hex = json.get(i + 1..i + 5)?;
                         let code = u32::from_str_radix(hex, 16).ok()?;
-                        // surrogates: decode as a lone replacement char; the
-                        // bridge only ever carries BMP-escaped text from
-                        // JSON.stringify of ordinary strings
-                        out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                        i += 4;
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            // RFC 8259 §7: combine UTF-16 high+low surrogate pair.
+                            let combined = (|| -> Option<char> {
+                                if json.get(i + 5..i + 7)? != "\\u" {
+                                    return None;
+                                }
+                                let lo = u32::from_str_radix(json.get(i + 7..i + 11)?, 16).ok()?;
+                                if !(0xDC00..=0xDFFF).contains(&lo) {
+                                    return None;
+                                }
+                                char::from_u32(0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00))
+                            })();
+                            if let Some(ch) = combined {
+                                out.push(ch);
+                                i += 10;
+                            } else {
+                                out.push('\u{fffd}');
+                                i += 4;
+                            }
+                        } else {
+                            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                            i += 4;
+                        }
                     }
                     _ => return None,
                 }
