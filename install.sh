@@ -404,15 +404,19 @@ if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ]; then
     chmod +x "$SELF_SRC"
     mv -f "$SELF_SRC" "${INSTALL_DIR}/spid3r-self"
 fi
-# Install any bundled shared libraries (e.g. libLLVM.so.23.1 on Linux) into
-# the $ORIGIN/../lib directory searched by spid3r and spid3r-self RPATH.
-LIB_DIR="$(dirname "$INSTALL_DIR")/lib"
-BUNDLED_LIBS="$(find "$TMPDIR_DL" -type f \( -name 'libLLVM*.so*' -o -name 'libLLVM*.dylib' \) 2>/dev/null || true)"
+# Install any bundled shared libraries (e.g. libLLVM.so.23.1 and its bundled
+# transitive deps on Linux) into the $ORIGIN-relative lib directory searched
+# by spid3r and spid3r-self DT_RPATH ($ORIGIN:$ORIGIN/lib:$ORIGIN/../lib).
+case "$(basename "$INSTALL_DIR")" in
+    bin) LIB_DIR="$(dirname "$INSTALL_DIR")/lib" ;;
+    *)   LIB_DIR="${INSTALL_DIR}/lib" ;;
+esac
+BUNDLED_LIBS="$(find "$TMPDIR_DL" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) 2>/dev/null || true)"
 if [ -n "$BUNDLED_LIBS" ]; then
     mkdir -p "$LIB_DIR"
     printf '%s\n' "$BUNDLED_LIBS" | while IFS= read -r lib_f; do
-        [ -f "$lib_f" ] || continue
-        cp -f "$lib_f" "${LIB_DIR}/$(basename "$lib_f")"
+        [ -e "$lib_f" ] || continue
+        cp -L -f "$lib_f" "${LIB_DIR}/$(basename "$lib_f")"
     done
 fi
 
@@ -464,6 +468,10 @@ fi
 if [ -x "${INSTALL_DIR}/spid3r" ]; then
     VERSION_OUT="$("${INSTALL_DIR}/spid3r" --version 2>&1)" \
         || die "installed binary failed to run (${INSTALL_DIR}/spid3r --version): ${VERSION_OUT}"
+    if [ -x "${INSTALL_DIR}/spid3r-self" ]; then
+        SELF_OUT="$("${INSTALL_DIR}/spid3r-self" --version 2>&1)" \
+            || die "installed selfhost binary failed to run (${INSTALL_DIR}/spid3r-self --version): ${SELF_OUT}"
+    fi
     say ""
     say "Spid3r installed successfully:"
     printf '%s\n' "$VERSION_OUT"

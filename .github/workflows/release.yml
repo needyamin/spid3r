@@ -129,6 +129,7 @@ jobs:
               tar -xzf /work/spid3r-${{ matrix.target }}.tar.gz -C /tmp/sp-direct
               /tmp/sp-direct/spid3r --version
               /tmp/sp-direct/sp --version
+              /tmp/sp-direct/spid3r-self --version
               printf "fn main() -> int { println(\"ok\"); return 0; }\n" > /tmp/hello.mt
               test "$(/tmp/sp-direct/sp run /tmp/hello.mt)" = "ok"
               # 2. install.sh bin/ + lib/ layout ($ORIGIN/../lib)
@@ -140,6 +141,7 @@ jobs:
               fi
               /tmp/sp-test/bin/spid3r --version
               /tmp/sp-test/bin/sp --version
+              /tmp/sp-test/bin/spid3r-self --version
               test "$(/tmp/sp-test/bin/sp run /tmp/hello.mt)" = "ok"
             '
 

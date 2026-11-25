@@ -1,6 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// Serialize process-global `SPID3R_INI` mutation (`embedded_engine_*`) against
+/// child-process environment snapshots in `run_in` on Windows.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_spid3r")
@@ -8,17 +13,24 @@ fn bin() -> &'static str {
 
 fn scratch(tag: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let dir = std::env::temp_dir().join(format!(
-        "spid3r_phase5_{}_{}_{}",
+        "spid3r_phase5_{}_{}_{}_{}",
         tag,
         std::process::id(),
+        nanos,
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch directory");
     dir
 }
 
 fn run_in(dir: &Path, ini: &Path, args: &[&str]) -> Output {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     Command::new(bin())
         .args(args)
         .current_dir(dir)
@@ -121,6 +133,7 @@ fn control_config_validate_returns_nonzero_for_invalid_config() {
 
 #[test]
 fn embedded_engine_refuses_execution_under_a_broken_pin() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = scratch("embed-pin");
     let missing = dir.join("missing.ini");
     let previous = std::env::var_os("SPID3R_INI");

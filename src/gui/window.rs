@@ -840,9 +840,9 @@ impl StaticSite {
         None
     }
 
-    /// The URL the webview navigates to. `wry` rewrites `spid3r://...` to
-    /// `http://spid3r.app/...` for WebView2, so the page origin always parses
-    /// as an `http::Uri`.
+    /// The URL the webview navigates to. On Windows with `with_https_scheme(true)`,
+    /// `wry` rewrites `spid3r://...` to `https://spid3r.app/...` for WebView2, so
+    /// the page origin always parses as an `http::Uri` and is a secure context.
     fn page_url(&self) -> String {
         match &self.entry {
             Some(entry) => format!("spid3r://app/{}", encode_url_path(entry)),

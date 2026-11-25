@@ -10,7 +10,6 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | Variable | Default | Effect |
 |---|---|---|
 | `SPID3R_PATH` | — | Env alias of `modules.path` (canonical INI key): extra module search directories, `;`-separated. Searched after the importing file's directory and before `./stdlib`. |
-| `SPID3R_PLUGINS` | — | Env alias of `modules.plugins` (canonical INI key): plugin search path. |
 | `SPID3R_MAX_WORKERS` | `256` | Env alias of `spid3r.max_workers` (canonical INI key): ceiling for the grow-on-demand task pool. At the ceiling a stall is reported on stderr instead of hanging. |
 | `SPID3R_QUEUE_CAP` | `65536` | Env alias of `spid3r.queue_cap` (canonical INI key): bound on the shared ready queue. A producer that fills it parks until a worker drains one job. |
 | `SPID3R_DEADLOCK_ABORT` | on | When no task can ever wake a wait, abort with a diagnostic (Go's "all goroutines are asleep"). `0` downgrades it to a warning for hosts that supervise their own waits. |

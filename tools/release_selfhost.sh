@@ -445,6 +445,43 @@ cmd_build() {
         fi
         mkdir -p "$out_dir/_work/tar/lib"
         cp -L -f "$llvm_so" "$out_dir/_work/tar/lib/$llvm_soname"
+        # Also bundle non-base direct & transitive shared libs of spid3r,
+        # spid3r-self, and libLLVM.so.* (e.g. libz3, libxml2, libedit, libffi)
+        # so clean minimal Ubuntu 24.04 containers without apt packages can
+        # resolve every dependency via DT_RPATH.
+        if command -v ldd >/dev/null 2>&1; then
+          local dep_queue=("$out_dir/_work/tar/lib/$llvm_soname")
+          if [ -n "$stage0" ] && [ -x "$stage0" ]; then
+            dep_queue+=("$stage0")
+          fi
+          if [ -x "$stage2_bin" ]; then
+            dep_queue+=("$stage2_bin")
+          fi
+          local q_idx=0
+          while [ "$q_idx" -lt "${#dep_queue[@]}" ]; do
+            local cur_so="${dep_queue[$q_idx]}"
+            q_idx=$((q_idx + 1))
+            while IFS=$'\t' read -r needed_name dep_path; do
+              [ -n "$dep_path" ] && [ -f "$dep_path" ] || continue
+              local dep_name="${needed_name:-$(basename "$dep_path")}"
+              if command -v readelf >/dev/null 2>&1; then
+                local dson
+                dson="$(readelf -d "$dep_path" 2>/dev/null | awk -F'[][]' '/SONAME/ { print $2; exit }')"
+                [ -n "$dson" ] && dep_name="$dson"
+              fi
+              case "$dep_name" in
+                linux-vdso*|ld-linux*|libc.so*|libm.so*|libdl.so*|librt.so*|libpthread.so*|libresolv.so*|libgcc_s.so*|libstdc++.so*|libz.so*|libtinfo.so*|libzstd.so*)
+                  continue
+                  ;;
+              esac
+              if [ ! -f "$out_dir/_work/tar/lib/$dep_name" ]; then
+                cp -L -f "$dep_path" "$out_dir/_work/tar/lib/$dep_name"
+                dep_queue+=("$out_dir/_work/tar/lib/$dep_name")
+                echo "  Bundled Linux transitive shared library: lib/$dep_name"
+              fi
+            done < <(ldd "$cur_so" 2>/dev/null | awk '/=>/ && $3 ~ /^\// { printf "%s\t%s\n", $1, $3 }')
+          done
+        fi
         tar_members+=("lib")
         echo "  Bundled Linux LLVM shared library: lib/$llvm_soname"
       fi
@@ -668,8 +705,9 @@ cmd_verify() {
       check_size_budget "spid3r-self ($base_tar)" "$self_bin" "${SPID3R_MAX_SELF_BYTES:-7500000}"
       local max_tar="${SPID3R_MAX_TAR_BYTES:-10000000}"
       if [ -d "$ext_tmp/lib" ] && [ -z "${SPID3R_MAX_TAR_BYTES:-}" ]; then
-        # Linux tarballs bundle libLLVM.so.23.1 so clean hosts need no system libllvm23.
-        max_tar=65000000
+        # Linux tarballs bundle libLLVM.so.23.1 and its non-base transitive
+        # deps (e.g. libz3, libxml2/libicu) so clean hosts need no system libllvm23.
+        max_tar=95000000
       fi
       check_size_budget "$base_tar" "$t" "$max_tar"
     fi

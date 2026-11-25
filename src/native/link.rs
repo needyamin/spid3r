@@ -1969,6 +1969,16 @@ fn link_plain(
     }
     // the staticlib also contains the compiler's inkwell bindings; the LLVM
     // shared library resolves them (dead-stripped away in the output).
+    if cfg!(target_os = "linux") {
+        let old_dtags = "-Wl,--disable-new-dtags".to_string();
+        if !args.contains(&old_dtags) {
+            args.push(old_dtags);
+        }
+        let origin_rpath = "-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib".to_string();
+        if !args.contains(&origin_rpath) {
+            args.push(origin_rpath);
+        }
+    }
     if let Some(dir) = find_llvm_lib_dir() {
         let flag = format!("-L{}", dir.display());
         if !args.contains(&flag) {

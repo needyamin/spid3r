@@ -114,9 +114,9 @@ Window lifecycle events dispatched to `gui_on(...)` when registered:
 `theme_changed` (`{"theme":"dark"|"light"}`), and `file_drop` / `drop`
 (`{"paths":[...],"x":X,"y":Y}`).
 
-All five take strings except `gui_on`'s handler, which must be a function
-(wrong types and arities are clean errors, not panics). There is no DOM
-binding layer: the program speaks JavaScript, exactly like a web app would.
+All GUI natives validate argument types and arities cleanly (wrong types and
+arities are runtime errors, not panics). There is no DOM binding layer: the
+program speaks JavaScript, exactly like a web app would.
 
 ## Dry-run mode
 

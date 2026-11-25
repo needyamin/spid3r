@@ -418,6 +418,10 @@ fn link_unix(obj_path, out_path, staticlib_path, triple, opt) {
         }
     }
     if not is_macos {
+        let old_dtags = "-Wl,--disable-new-dtags";
+        if not link_contains_str(args, old_dtags) {
+            args.push(old_dtags);
+        }
         let origin_rpath = "-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib";
         if not link_contains_str(args, origin_rpath) {
             args.push(origin_rpath);

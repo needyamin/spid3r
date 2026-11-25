@@ -139,9 +139,9 @@ docs/SECURITY.md) does not apply to an AOT binary: a compiled executable links
 its C libraries directly and runs with the full authority of its user. Within
 the interpreter and VM, `extern fn` — including the new `ptr`/`usize` forms —
 is rejected outright with `error[usage]`, so the sandboxed engines never gain a
-pointer path they cannot gate. Untrusted third-party code belongs in a WASM
-plugin (`kind = "wasm"`): it has no imports, so it has no ambient authority to
-abuse.
+pointer path they cannot gate. Untrusted third-party code should run in a
+separate OS-isolated process (containers, seccomp, job objects) or as a pure
+`.matrix` script under `Engine::deny_all()` with a tight execution budget.
 
 ## Register-Class POD Structs & Varargs (R9.1)
 

@@ -628,7 +628,10 @@ fn emit_unix_llvm_link(libdir: &str) {
     if target_os == "linux" {
         // Search beside the binary, in ./lib (direct tarball extract), and in
         // ../lib (install.sh bin/ + lib/ layout) so release tarballs that bundle
-        // libLLVM.so.23.1 run on clean hosts with no system libllvm23.
+        // libLLVM.so.23.1 (and any non-base transitive shared libs) run on clean
+        // hosts with no system libllvm23. --disable-new-dtags emits DT_RPATH so
+        // transitive DT_NEEDED dependencies of libLLVM also search lib/.
+        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib");
     }
     let dir = PathBuf::from(libdir);
