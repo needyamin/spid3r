@@ -629,19 +629,20 @@ pub fn run() -> Result<(), String> {
     let event_loop = EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let mut wb = tao::window::WindowBuilder::new()
+    let wb = tao::window::WindowBuilder::new()
         .with_title("Spid3r Control Panel")
         .with_inner_size(tao::dpi::LogicalSize::new(1080.0, 720.0))
         .with_min_inner_size(tao::dpi::LogicalSize::new(680.0, 500.0));
     #[cfg(target_os = "windows")]
-    {
+    let wb = {
         use tao::platform::windows::{IconExtWindows, WindowBuilderExtWindows};
         if let Ok(icon) = tao::window::Icon::from_resource(1, None) {
-            wb = wb
-                .with_window_icon(Some(icon.clone()))
-                .with_taskbar_icon(Some(icon));
+            wb.with_window_icon(Some(icon.clone()))
+                .with_taskbar_icon(Some(icon))
+        } else {
+            wb
         }
-    }
+    };
     let window = wb
         .build(&event_loop)
         .map_err(|e| format!("cannot open the control panel window: {e}"))?;

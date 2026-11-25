@@ -2,7 +2,6 @@ selfhost/corpus/examples/bst.matrix
 selfhost/corpus/examples/channel.matrix
 selfhost/corpus/examples/class.matrix
 selfhost/corpus/examples/conditions.matrix
-selfhost/corpus/examples/data_science_pipeline.matrix
 selfhost/corpus/examples/error_handling.matrix
 selfhost/corpus/examples/functions.matrix
 selfhost/corpus/examples/graph.matrix

@@ -232,12 +232,17 @@ pub fn open(
     if let Some(t) = opts.theme.and_then(to_tao_theme) {
         wb = wb.with_theme(Some(t));
     }
-    if let Some(ref ic) = initial_icon {
-        wb = wb.with_window_icon(Some(ic.clone()));
+    if let Some(ic) = initial_icon {
         #[cfg(target_os = "windows")]
         {
             use tao::platform::windows::WindowBuilderExtWindows;
-            wb = wb.with_taskbar_icon(Some(ic.clone()));
+            wb = wb
+                .with_window_icon(Some(ic.clone()))
+                .with_taskbar_icon(Some(ic));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            wb = wb.with_window_icon(Some(ic));
         }
     }
     let window = wb
@@ -516,11 +521,15 @@ fn apply_live_cmds(
         match cmd {
             bridge::WindowCommand::Icon(path) => {
                 if let Some(ic) = resolve_window_icon(Some(&path), site) {
-                    window.set_window_icon(Some(ic.clone()));
                     #[cfg(target_os = "windows")]
                     {
                         use tao::platform::windows::WindowExtWindows;
+                        window.set_window_icon(Some(ic.clone()));
                         window.set_taskbar_icon(Some(ic));
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        window.set_window_icon(Some(ic));
                     }
                 }
             }

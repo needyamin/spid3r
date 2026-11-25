@@ -467,7 +467,9 @@ cmd_build() {
               if command -v readelf >/dev/null 2>&1; then
                 local dson
                 dson="$(readelf -d "$dep_path" 2>/dev/null | awk -F'[][]' '/SONAME/ { print $2; exit }')"
-                [ -n "$dson" ] && dep_name="$dson"
+                if [ -n "$dson" ]; then
+                  dep_name="$dson"
+                fi
               fi
               case "$dep_name" in
                 linux-vdso*|ld-linux*|libc.so*|libm.so*|libdl.so*|librt.so*|libpthread.so*|libresolv.so*|libgcc_s.so*|libstdc++.so*|libz.so*|libtinfo.so*|libzstd.so*)

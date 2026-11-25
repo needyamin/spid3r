@@ -14,7 +14,7 @@ Frozen Stage-0 (Rust) vs selfhost (`spid3r-self` compiled via `stage0 build --re
 | File | Scope | Size | SHA-256 |
 | --- | --- | ---: | --- |
 | `lex_workload.matrix` | 16x concatenated positive corpus | 1,016,880 B | `5bf8459cbced9ec13dc91f75e1dacc8c989c37a6612d77d29578b6d769800f80` |
-| `parse_check_list.txt` | 121 positive corpus programs | 6,129 B | `290b762dea2109daf541ac616b177e25f1c94ecde3784b93145b2b124ae543e0` |
+| `parse_check_list.txt` | 120 positive corpus programs | 6,075 B | `1d002f2e10def0536b9f9b3ecd3ea46929d156e65c87246c4c13d043a0fcacb4` |
 | `selfcompile_modules.txt` | 17 transitive `selfhost/` modules (`main.matrix`) | 392 B (584,703 B src) | `fe0b6844ff22e9422c85af9342ecbdf7c369148f5b065ed98b8ebf4994019717` |
 | `corpus_build_list.txt` | 6 standalone examples (`class`, `functions`, `hello`, `higher_order`, `loops`, `map`) | 237 B | `c2b62b25d7c6356a994c6c77e9bec70b55776ad2282dab9fe1660ec9211ca4d` |
 
