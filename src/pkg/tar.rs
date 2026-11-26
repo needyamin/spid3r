@@ -222,9 +222,15 @@ pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
 
         match typeflag {
             b'0' | 0 => {}
-            b'5' | b'x' | b'g' => {
+            b'5' => {
                 pending_long_name = None;
                 continue;
+            }
+            b'x' | b'g' => {
+                return Err(format!(
+                    "tar: entry '{}' uses unsupported PAX extended header (only portable ustar archives are accepted)",
+                    raw_name
+                ));
             }
             other => {
                 return Err(format!(
@@ -267,7 +273,11 @@ pub fn extract_tar_checked(data: &[u8], dest: &Path) -> Result<Vec<String>, Stri
     let mut extracted = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
         let rel = validate_archive_path(&name)?;
-        let fold = name.to_ascii_lowercase();
+        let fold: String = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("/");
         if !seen_lower.insert(fold) {
             return Err(format!(
                 "tar: refusing duplicate/case-colliding entry '{}'",

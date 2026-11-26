@@ -229,7 +229,8 @@ Function ${UN}ForceDeletePath
   Pop $1
 FunctionEnd
 
-Function ${UN}SafeAddToPath
+Function ${UN}SafeAddDirToPath
+  Exch $R0 ; directory to add
   Push $0
   Push $1
   Push $2
@@ -240,7 +241,7 @@ Function ${UN}SafeAddToPath
     Goto ${UN}add_path_ps
   ${EndIf}
   ${If} $0 == ""
-    WriteRegExpandStr HKCU "Environment" "Path" "$INSTDIR"
+    WriteRegExpandStr HKCU "Environment" "Path" "$R0"
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
     Goto ${UN}add_path_done
   ${EndIf}
@@ -248,7 +249,7 @@ Function ${UN}SafeAddToPath
   ${If} $2 >= 1000
     Goto ${UN}add_path_ps
   ${EndIf}
-  ${WordAdd} "$0" ";" "E+$INSTDIR" $1
+  ${WordAdd} "$0" ";" "E+$R0" $1
   ${If} $0 != $1
     WriteRegExpandStr HKCU "Environment" "Path" "$1"
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
@@ -256,7 +257,7 @@ Function ${UN}SafeAddToPath
   Goto ${UN}add_path_done
 
 ${UN}add_path_ps:
-  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$INSTDIR")'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$R0")'
   nsExec::ExecToLog /TIMEOUT=15000 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:SPID3R_PATH_DIR.TrimEnd([char]92); $$cur = [Environment]::GetEnvironmentVariable('Path', 'User'); $$parts = @(); if ($$cur) { $$parts = $$cur -split ';' | Where-Object { $$_ -ne '' -and $$_.TrimEnd([char]92) -ine $$d } }; $$parts += $$d; [Environment]::SetEnvironmentVariable('Path', ($$parts -join ';'), 'User')"`
   Pop $1
   System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", p 0)'
@@ -265,9 +266,11 @@ ${UN}add_path_done:
   Pop $2
   Pop $1
   Pop $0
+  Pop $R0
 FunctionEnd
 
-Function ${UN}SafeRemoveFromPath
+Function ${UN}SafeRemoveDirFromPath
+  Exch $R0 ; directory to remove
   Push $0
   Push $1
   Push $2
@@ -283,8 +286,8 @@ Function ${UN}SafeRemoveFromPath
   ${If} $2 >= 1000
     Goto ${UN}rem_path_ps
   ${EndIf}
-  ${WordAdd} "$0" ";" "E-$INSTDIR" $1
-  ${WordAdd} "$1" ";" "E-$INSTDIR\" $2
+  ${WordAdd} "$0" ";" "E-$R0" $1
+  ${WordAdd} "$1" ";" "E-$R0\" $2
   ${If} $0 != $2
     WriteRegExpandStr HKCU "Environment" "Path" "$2"
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
@@ -292,7 +295,7 @@ Function ${UN}SafeRemoveFromPath
   Goto ${UN}rem_path_done
 
 ${UN}rem_path_ps:
-  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$INSTDIR")'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$R0")'
   nsExec::ExecToLog /TIMEOUT=15000 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:SPID3R_PATH_DIR.TrimEnd([char]92); $$cur = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($$cur) { $$parts = $$cur -split ';' | Where-Object { $$_ -ne '' -and $$_.TrimEnd([char]92) -ine $$d }; [Environment]::SetEnvironmentVariable('Path', ($$parts -join ';'), 'User') }"`
   Pop $1
   System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", p 0)'
@@ -301,6 +304,21 @@ ${UN}rem_path_done:
   Pop $2
   Pop $1
   Pop $0
+  Pop $R0
+FunctionEnd
+
+Function ${UN}SafeAddToPath
+  Push "$INSTDIR"
+  Call ${UN}SafeAddDirToPath
+  Push "$LOCALAPPDATA\Spid3r\bin"
+  Call ${UN}SafeAddDirToPath
+FunctionEnd
+
+Function ${UN}SafeRemoveFromPath
+  Push "$INSTDIR"
+  Call ${UN}SafeRemoveDirFromPath
+  Push "$LOCALAPPDATA\Spid3r\bin"
+  Call ${UN}SafeRemoveDirFromPath
 FunctionEnd
 !macroend
 
@@ -402,7 +420,7 @@ Section "Spid3r compiler & runtime (required)" SecCore
 
   ; --- Start Menu shortcuts ---
   CreateDirectory "$SMPROGRAMS\Spid3r"
-  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;%PATH%$\" & spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;$LOCALAPPDATA\Spid3r\bin;%PATH%$\" & spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
 !ifdef CONTROL_EXE
   CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Control Panel.lnk" "$INSTDIR\spid3r-control.exe" "" "$INSTDIR\spid3r.ico" 0
 !endif
@@ -552,7 +570,7 @@ SectionEnd
 ; only meant stale docs on disk and 100+ extra files to uninstall.
 
 Section /o "Desktop shortcuts" SecDesktop
-  CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;%PATH%$\" & spid3r version"' "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;$LOCALAPPDATA\Spid3r\bin;%PATH%$\" & spid3r version"' "$INSTDIR\spid3r.ico" 0
 !if ${WITH_GUI} == 1
 !if /FileExists "${CALCULATOR_EXE}"
   CreateShortCut "$DESKTOP\Spid3r Calculator.lnk" "$INSTDIR\calculator.exe" "" "$INSTDIR\spid3r.ico" 0
@@ -721,7 +739,7 @@ LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: spid3r, sp, yamc
 !else
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: spid3r, sp, yamc, yamcvm, spvm, and spkg zero-dependency core binaries."
 !endif
-LangString DESC_SecPath ${LANG_ENGLISH} "Adds $INSTDIR to your current user PATH so spid3r, sp, yamc, yamcvm, spvm, and spkg work directly in new cmd and PowerShell windows."
+LangString DESC_SecPath ${LANG_ENGLISH} "Adds $INSTDIR and $LOCALAPPDATA\Spid3r\bin to your current user PATH so spid3r, spkg, and installed CLI tools work directly in new cmd and PowerShell windows."
 LangString DESC_SecDesktop ${LANG_ENGLISH} "Creates convenient shortcuts on your desktop for quick terminal access and the standalone calculator."
 LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix and .mt source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
 !ifdef HAVE_FORMATTER_VSIX

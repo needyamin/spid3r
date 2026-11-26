@@ -605,3 +605,86 @@ fn broken_spid3r_ini_refuses_execution_across_component_clis() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn spkg_tool_install_shim_executes_via_spid3r_runner() {
+    let dir = scratch_dir("spkg_tool_shim");
+    let pkg_dir = dir.join("sayhi");
+    let state = dir.join("state");
+    let ini = dir.join("empty.ini");
+    std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(&ini, "").unwrap();
+    std::fs::write(
+        pkg_dir.join("spider.toml"),
+        "[package]\nname = \"sayhi\"\nversion = \"0.1.0\"\nentry = \"src/cli.matrix\"\n\n[bin]\nsayhi = \"src/cli.matrix\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg_dir.join("src/cli.matrix"),
+        "fn main() {\n    let a = args();\n    let who = if a.len() > 0 { a[0] } else { \"none\" };\n    println(\"hi \" + who);\n    return 0;\n}\n",
+    )
+    .unwrap();
+
+    // Ensure sibling spid3r binary is materialized for Cargo test runner too.
+    let _spid3r = spid3r_bin();
+    let spkg = spkg_bin();
+    let inst = Command::new(&spkg)
+        .args([
+            "tool",
+            "install",
+            "sayhi",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+        ])
+        .env("SPID3R_STATE_DIR", &state)
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    assert!(
+        inst.status.success(),
+        "spkg tool install failed: out={} err={}",
+        String::from_utf8_lossy(&inst.stdout),
+        String::from_utf8_lossy(&inst.stderr)
+    );
+
+    let shim = if cfg!(windows) {
+        state.join("bin").join("sayhi.cmd")
+    } else {
+        state.join("bin").join("sayhi")
+    };
+    assert!(shim.is_file(), "missing shim {}", shim.display());
+    let run = Command::new(&shim)
+        .arg("world")
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "shim failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "hi world");
+
+    let run_help = Command::new(&shim)
+        .arg("--help")
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    assert!(run_help.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run_help.stdout).trim(),
+        "hi --help"
+    );
+
+    let un = Command::new(&spkg)
+        .args(["tool", "uninstall", "sayhi"])
+        .env("SPID3R_STATE_DIR", &state)
+        .env("SPID3R_INI", &ini)
+        .output()
+        .unwrap();
+    assert!(un.status.success());
+    assert!(!shim.exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

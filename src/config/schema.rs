@@ -755,13 +755,20 @@ pub fn validate_extra(dotted: &str, raw: &str) -> Result<(), String> {
         }
         "packages.trust_pk" => {
             let trimmed = raw.trim();
-            if trimmed.is_empty()
-                || (trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()))
-            {
+            if trimmed.is_empty() {
+                return Ok(());
+            }
+            let parts: Vec<&str> = trimmed.split(',').collect();
+            let valid = !parts.is_empty()
+                && parts.iter().all(|part| {
+                    let k = part.trim();
+                    k.len() == 64 && k.chars().all(|c| c.is_ascii_hexdigit())
+                });
+            if valid {
                 Ok(())
             } else {
                 Err(format!(
-                    "packages.trust_pk must be a 64-character hex Ed25519 public key, found {:?}",
+                    "packages.trust_pk must be one or more comma-separated 64-character hex Ed25519 public keys, found {:?}",
                     raw
                 ))
             }
@@ -1251,5 +1258,17 @@ mod tests {
         let mut notes: Vec<String> = Vec::new();
         normalize_lists(&mut values, &mut notes);
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn validate_extra_allows_comma_separated_trust_pk_keys() {
+        let k1 = "a".repeat(64);
+        let k2 = "b".repeat(64);
+        assert!(validate_extra("packages.trust_pk", "").is_ok());
+        assert!(validate_extra("packages.trust_pk", &k1).is_ok());
+        assert!(validate_extra("packages.trust_pk", &format!("{}, {}", k1, k2)).is_ok());
+        assert!(validate_extra("packages.trust_pk", "deadbeef").is_err());
+        assert!(validate_extra("packages.trust_pk", &format!("{},", k1)).is_err());
+        assert!(validate_extra("packages.trust_pk", &format!("{}, zzzz", k1)).is_err());
     }
 }

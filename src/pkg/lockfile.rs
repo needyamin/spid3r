@@ -79,8 +79,16 @@ pub fn read_lock(root: &Path) -> Result<Vec<LockEntry>, String> {
             continue;
         };
         let value_trimmed = value.trim();
-        let parsed_str = super::manifest::parse_string(value_trimmed)
-            .unwrap_or_else(|| value_trimmed.trim_matches('"').to_string());
+        let parsed_str = if value_trimmed.starts_with('"') {
+            super::manifest::parse_string(value_trimmed).ok_or_else(|| {
+                format!(
+                    "spider.lock: malformed quoted value for key '{}'",
+                    key.trim()
+                )
+            })?
+        } else {
+            value_trimmed.to_string()
+        };
         match key.trim() {
             "name" => entry.name = parsed_str,
             "version" => entry.version = parsed_str,

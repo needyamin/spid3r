@@ -780,9 +780,36 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
             .parent()
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         for (src_lib, fname) in &runtime_ffi_copies {
+            if fname.is_empty()
+                || fname == "."
+                || fname == ".."
+                || fname.contains('/')
+                || fname.contains('\\')
+                || fname.contains(':')
+            {
+                return Err(Diagnostic::new(
+                    Phase::Build,
+                    format!("refusing unsafe runtime library filename '{}'", fname),
+                ));
+            }
             let dst = out_dir.join(fname);
-            let tmp = out_dir.join(format!(".tmp_{}_{}", fname, std::process::id()));
+            if let Ok(dmeta) = std::fs::symlink_metadata(&dst) {
+                if dmeta.file_type().is_symlink() {
+                    return Err(Diagnostic::new(
+                        Phase::Build,
+                        format!(
+                            "refusing to overwrite symlinked runtime library '{}'",
+                            dst.display()
+                        ),
+                    ));
+                }
+            }
+            let tmp = out_dir.join(format!(".tmp_{}_{}_{}", fname, std::process::id(), nanos));
             std::fs::copy(src_lib, &tmp).map_err(|e| {
                 Diagnostic::new(
                     Phase::Build,

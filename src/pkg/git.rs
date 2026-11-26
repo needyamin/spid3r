@@ -85,6 +85,11 @@ pub fn validate_git_url(name: &str, url: &str) -> Result<(), String> {
     }
 }
 
+/// Return true when `s` is a valid lowercase/uppercase 40-char hex Git commit hash.
+pub fn is_valid_git_commit(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Clone (or fetch) a Git dependency into `<root>/.spid3r/git/<name>` with
 /// symlinks, fsmonitor, hooks, and submodules disabled (audit S6).
 pub fn fetch_git(
@@ -96,6 +101,14 @@ pub fn fetch_git(
 ) -> Result<(PathBuf, String), String> {
     valid_pkg_name(name)?;
     validate_git_url(name, url)?;
+    if let Some(commit) = locked {
+        if !is_valid_git_commit(commit) {
+            return Err(format!(
+                "git dependency '{}': invalid locked commit hash '{}'",
+                name, commit
+            ));
+        }
+    }
     if let Some(r) = rev {
         let safe = !r.is_empty()
             && !r.starts_with('-')
@@ -126,7 +139,15 @@ pub fn fetch_git(
         ])?;
     }
     if let Some(commit) = locked {
-        run_git(&["-C", &path_str(&dir), "checkout", "--quiet", commit]).map_err(|e| {
+        run_git(&[
+            "-C",
+            &path_str(&dir),
+            "checkout",
+            "--detach",
+            "--quiet",
+            commit,
+        ])
+        .map_err(|e| {
             format!(
                 "git dependency '{}': the commit {} recorded in spider.lock is not \
                  available ({}). If upstream rewrote its history, run \
@@ -135,7 +156,14 @@ pub fn fetch_git(
             )
         })?;
     } else if let Some(rev) = rev {
-        run_git(&["-C", &path_str(&dir), "checkout", "--quiet", rev])?;
+        run_git(&[
+            "-C",
+            &path_str(&dir),
+            "checkout",
+            "--detach",
+            "--quiet",
+            rev,
+        ])?;
     } else {
         let target = remote_default_branch(&dir)
             .map(|b| format!("origin/{}", b))
@@ -156,7 +184,7 @@ pub fn fetch_git(
     let out = run_git(&["-C", &path_str(&dir), "rev-parse", "HEAD"])?;
     let head = out.trim().to_ascii_lowercase();
     if let Some(commit) = locked {
-        if head != commit {
+        if !head.eq_ignore_ascii_case(commit) {
             return Err(format!(
                 "git dependency '{}': checked out {} but spider.lock pins {}; refusing to \
                  vendor a different tree (run `spkg install --update` to re-resolve)",
@@ -165,6 +193,45 @@ pub fn fetch_git(
         }
     }
     Ok((dir, head))
+}
+
+/// Verify an existing cached Git checkout in `--offline` mode matches the locked
+/// commit pin (when present) and return its normalized 40-hex `HEAD` hash.
+pub fn verify_offline_checkout(
+    name: &str,
+    dir: &Path,
+    locked: Option<&str>,
+) -> Result<String, String> {
+    if !dir.join(".git").exists() {
+        return Err(format!(
+            "offline mode: cached git dependency '{}' at {} is not a git repository",
+            name,
+            dir.display()
+        ));
+    }
+    let out = run_git(&["-C", &path_str(dir), "rev-parse", "HEAD"])?;
+    let head = out.trim().to_ascii_lowercase();
+    if !is_valid_git_commit(&head) {
+        return Err(format!(
+            "offline mode: git dependency '{}' has invalid HEAD '{}'",
+            name, head
+        ));
+    }
+    if let Some(commit) = locked {
+        if !is_valid_git_commit(commit) {
+            return Err(format!(
+                "git dependency '{}': invalid locked commit hash '{}'",
+                name, commit
+            ));
+        }
+        if !head.eq_ignore_ascii_case(commit) {
+            return Err(format!(
+                "offline mode: cached git dependency '{}' is at {}, but spider.lock pins {} — run `spkg install` online",
+                name, head, commit
+            ));
+        }
+    }
+    Ok(head)
 }
 
 /// Resolve locked Git commit from `locked` map when the URL matches.
@@ -222,4 +289,34 @@ fn run_git(args: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_rejects_invalid_locked_commit_and_offline_mismatch() {
+        let dir = std::env::temp_dir().join(format!("spid3r_git_sec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(is_valid_git_commit(&"a".repeat(40)));
+        assert!(!is_valid_git_commit("--upload-pack=evil"));
+        assert!(!is_valid_git_commit("abc"));
+
+        let err = fetch_git(
+            &dir,
+            "dep",
+            "https://example.com/repo.git",
+            None,
+            Some("--upload-pack=evil"),
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid locked commit hash"), "{err}");
+
+        let off_err = verify_offline_checkout("dep", &dir, Some(&"a".repeat(40))).unwrap_err();
+        assert!(off_err.contains("offline mode"), "{off_err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -62,12 +62,26 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
             continue;
         };
         report.checked += 1;
-        if !dir.is_dir() {
+        let dmeta = match std::fs::symlink_metadata(&dir) {
+            Ok(m) => m,
+            Err(_) => {
+                report.issues.push(VerifyIssue {
+                    name: entry.name.clone(),
+                    kind: "missing",
+                    detail: format!(
+                        "vendored at vendor/{} but the directory is missing — run `spkg install`",
+                        entry.name
+                    ),
+                });
+                continue;
+            }
+        };
+        if dmeta.file_type().is_symlink() || !dmeta.is_dir() {
             report.issues.push(VerifyIssue {
                 name: entry.name.clone(),
-                kind: "missing",
+                kind: "hash",
                 detail: format!(
-                    "vendored at vendor/{} but the directory is missing — run `spkg install`",
+                    "vendor/{} is a symlink or non-directory — refusing to trust unverified files",
                     entry.name
                 ),
             });
@@ -128,17 +142,36 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
         }
         if let Some(expected_msha) = entry.manifest_sha256.as_deref() {
             let snap_manifest = dir.join(".spid3r-manifest.toml");
-            if snap_manifest.is_file() {
-                let raw_manifest = std::fs::read(&snap_manifest)
-                    .map_err(|e| format!("cannot read {}: {}", snap_manifest.display(), e))?;
-                let computed = manifest_and_tree_digest(&raw_manifest, &actual);
-                if computed != expected_msha {
+            match std::fs::symlink_metadata(&snap_manifest) {
+                Ok(m) if m.file_type().is_symlink() => {
                     report.issues.push(VerifyIssue {
                         name: entry.name.clone(),
-                        kind: "hash",
+                        kind: "manifest-hash",
+                        detail: format!("vendor/{}/.spid3r-manifest.toml is a symlink", entry.name),
+                    });
+                }
+                Ok(m) if m.is_file() => {
+                    let raw_manifest = std::fs::read(&snap_manifest)
+                        .map_err(|e| format!("cannot read {}: {}", snap_manifest.display(), e))?;
+                    let computed = manifest_and_tree_digest(&raw_manifest, &actual);
+                    if computed != expected_msha {
+                        report.issues.push(VerifyIssue {
+                            name: entry.name.clone(),
+                            kind: "manifest-hash",
+                            detail: format!(
+                                "vendor/{} manifest.sha256 mismatch (expected {}, computed {})",
+                                entry.name, expected_msha, computed
+                            ),
+                        });
+                    }
+                }
+                _ => {
+                    report.issues.push(VerifyIssue {
+                        name: entry.name.clone(),
+                        kind: "manifest-missing",
                         detail: format!(
-                            "vendor/{} manifest.sha256 mismatch (expected {}, computed {})",
-                            entry.name, expected_msha, computed
+                            "vendor/{} is missing .spid3r-manifest.toml required by spider.lock",
+                            entry.name
                         ),
                     });
                 }
@@ -344,6 +377,19 @@ pub fn add_dependency(
     value: &str,
     version: Option<&str>,
 ) -> Result<bool, String> {
+    upsert_dependency(root, name, value, version, false)
+}
+
+/// Declare or update a dependency in `spider.toml` `[dependencies]`.
+/// When `replace_existing` is true and `[dependencies]` already declares `name`
+/// with a different spec, replaces that line cleanly.
+pub fn upsert_dependency(
+    root: &Path,
+    name: &str,
+    value: &str,
+    version: Option<&str>,
+    replace_existing: bool,
+) -> Result<bool, String> {
     valid_pkg_name(name)?;
     let path = root.join("spider.toml");
     let text = std::fs::read_to_string(&path)
@@ -366,7 +412,7 @@ pub fn add_dependency(
         }
     }
 
-    let updated = insert_into_dependencies(&text, name, &entry)?;
+    let updated = insert_into_dependencies(&text, name, &entry, replace_existing)?;
     if updated == text {
         return Ok(false);
     }
@@ -375,7 +421,12 @@ pub fn add_dependency(
     Ok(true)
 }
 
-fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String, String> {
+fn insert_into_dependencies(
+    text: &str,
+    name: &str,
+    line: &str,
+    replace_existing: bool,
+) -> Result<String, String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut section: Option<(usize, usize)> = None;
     for (i, raw) in lines.iter().enumerate() {
@@ -391,8 +442,7 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
             }
         }
     }
-    if let Some((_, _end)) = section {
-        let start = section.unwrap().0;
+    if let Some((start, _end)) = section {
         let mut stop = lines.len();
         for (i, raw) in lines.iter().enumerate().skip(start + 1) {
             if raw.trim().starts_with('[') {
@@ -400,10 +450,15 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
                 break;
             }
         }
-        for raw in lines.iter().take(stop).skip(start + 1) {
+        for (idx, raw) in lines.iter().enumerate().take(stop).skip(start + 1) {
             let t = raw.trim();
             if let Some((k, _)) = t.split_once('=') {
                 if k.trim() == name {
+                    if replace_existing && t != line.trim() {
+                        let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+                        out[idx] = line.to_string();
+                        return Ok(out.join("\n") + "\n");
+                    }
                     return Ok(text.to_string());
                 }
             }
@@ -422,7 +477,8 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
     Ok(out)
 }
 
-/// Remove `[dependencies]` declaration for `name` from `spider.toml`.
+/// Remove declaration for `name` from `spider.toml` across `[dependencies]`,
+/// `[dev-dependencies]`, and `[optional-dependencies.*]`.
 pub fn remove_dependency(root: &Path, name: &str) -> Result<bool, String> {
     let path = root.join("spider.toml");
     let text = std::fs::read_to_string(&path)
@@ -439,7 +495,10 @@ pub fn remove_dependency(root: &Path, name: &str) -> Result<bool, String> {
                 continue;
             }
         }
-        if section == "dependencies" && !removed {
+        let in_dep_section = section == "dependencies"
+            || section == "dev-dependencies"
+            || section.starts_with("optional-dependencies.");
+        if in_dep_section {
             if let Some((k, _)) = t.split_once('=') {
                 if k.trim() == name {
                     removed = true;
@@ -537,6 +596,15 @@ pub fn publish_to_dir_with_target(
             .map_err(|e| format!("cannot write registry.pub: {}", e))?;
 
         let hash = if adding_wheel_to_existing {
+            let existing_manifest = std::fs::read(dest.join("spider.toml"))
+                .map_err(|e| format!("existing release lacks spider.toml: {}", e))?;
+            if existing_manifest != manifest_bytes {
+                return Err(format!(
+                    "cannot add wheel to existing {}@{}: local spider.toml differs from published release",
+                    manifest.name(),
+                    version
+                ));
+            }
             let existing_sha = std::fs::read_to_string(dest.join("sha256.txt"))
                 .map_err(|e| format!("existing release lacks sha256.txt: {}", e))?
                 .trim()
@@ -673,23 +741,49 @@ pub fn publish_to_dir_with_target(
             );
             std::fs::write(&desc_path, desc_body)
                 .map_err(|e| format!("cannot write registry.toml: {}", e))?;
+        } else {
+            let existing_desc = std::fs::read_to_string(&desc_path)
+                .map_err(|e| format!("cannot read registry.toml: {}", e))?;
+            let parsed_desc = registry::parse_registry_descriptor(&existing_desc);
+            if parsed_desc.public_key.as_deref() != Some(pk_hex.as_str()) {
+                let mut replaced = false;
+                let mut lines: Vec<String> = existing_desc
+                    .lines()
+                    .map(|raw| {
+                        if let Some((k, _)) = raw.split_once('=') {
+                            if k.trim() == "public_key" {
+                                replaced = true;
+                                return format!("public_key = \"{}\"", pk_hex);
+                            }
+                        }
+                        raw.to_string()
+                    })
+                    .collect();
+                if !replaced {
+                    lines.push(format!("public_key = \"{}\"", pk_hex));
+                }
+                std::fs::write(&desc_path, lines.join("\n") + "\n")
+                    .map_err(|e| format!("cannot update registry.toml: {}", e))?;
+            }
         }
-        if let Ok(desc_bytes) = std::fs::read(&desc_path) {
-            let dsig = super::ed25519::sign(&sk, &desc_bytes)?;
-            let _ = std::fs::write(
-                dir.join("registry.toml.sig"),
-                format!("{}\n", super::sha256::hex_encode(&dsig)),
-            );
-        }
+        let desc_bytes = std::fs::read(&desc_path)
+            .map_err(|e| format!("cannot read registry.toml for signing: {}", e))?;
+        let dsig = super::ed25519::sign(&sk, &desc_bytes)?;
+        std::fs::write(
+            dir.join("registry.toml.sig"),
+            format!("{}\n", super::sha256::hex_encode(&dsig)),
+        )
+        .map_err(|e| format!("cannot write registry.toml.sig: {}", e))?;
 
         write_registry_catalog(dir)?;
-        if let Ok(cat_bytes) = std::fs::read(dir.join("catalog.txt")) {
-            let csig = super::ed25519::sign(&sk, &cat_bytes)?;
-            let _ = std::fs::write(
-                dir.join("catalog.txt.sig"),
-                format!("{}\n", super::sha256::hex_encode(&csig)),
-            );
-        }
+        let cat_bytes = std::fs::read(dir.join("catalog.txt"))
+            .map_err(|e| format!("cannot read catalog.txt for signing: {}", e))?;
+        let csig = super::ed25519::sign(&sk, &cat_bytes)?;
+        std::fs::write(
+            dir.join("catalog.txt.sig"),
+            format!("{}\n", super::sha256::hex_encode(&csig)),
+        )
+        .map_err(|e| format!("cannot write catalog.txt.sig: {}", e))?;
         Ok(hash)
     })();
 
@@ -854,6 +948,19 @@ fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), St
         crate::stdlib::entropy::fill_random(&mut seed)?;
         std::fs::write(&key_path, format!("{}\n", super::sha256::hex_encode(&seed)))
             .map_err(|e| format!("cannot write {}: {}", key_path.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&key_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&key_path, perms);
+            }
+        }
+        eprintln!(
+            "note: generated signing key at {}; keep private keys outside git/cloud folders and prefer SPID3R_SIGN_KEY",
+            key_path.display()
+        );
         seed
     };
     Ok(super::ed25519::keypair_from_seed(&seed))
@@ -1022,12 +1129,29 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledPkgInfo>, String> {
     let vendor_root = root.join("vendor");
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
+        valid_pkg_name(&e.name)?;
         let dir = vendor_root.join(&e.name);
-        let vendored = dir.is_dir();
+        let vendored = std::fs::symlink_metadata(&dir)
+            .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
         let verified = if !vendored {
             false
         } else if let Some(ref sha) = e.sha256 {
-            let src_ok = vendor_src_hash(&dir).is_ok_and(|(_, h)| h == *sha);
+            let src_res = vendor_src_hash(&dir);
+            let (src_ok, actual_src) = match src_res {
+                Ok((_, h)) => (h == *sha, Some(h)),
+                Err(_) => (false, None),
+            };
+            let manifest_ok = match (e.manifest_sha256.as_deref(), actual_src.as_deref()) {
+                (Some(exp_msha), Some(asrc)) => {
+                    let snap = dir.join(".spid3r-manifest.toml");
+                    std::fs::symlink_metadata(&snap)
+                        .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
+                        && std::fs::read(&snap)
+                            .is_ok_and(|raw| manifest_and_tree_digest(&raw, asrc) == exp_msha)
+                }
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
             let native_ok = match e.native_sha256.as_deref() {
                 Some(nsha) => {
                     let tgt = e
@@ -1039,7 +1163,7 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledPkgInfo>, String> {
                 }
                 None => true,
             };
-            src_ok && native_ok
+            src_ok && manifest_ok && native_ok
         } else {
             !e.source.starts_with("registry+")
         };
@@ -1257,7 +1381,10 @@ pub fn cache_prune() -> Result<(usize, u64), String> {
         .filter_map(|e| e.ok())
     {
         let p = entry.path();
-        if !p.is_dir() {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
             continue;
         }
         let bytes = dir_size_bytes(&p);

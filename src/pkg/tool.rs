@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::lockfile::read_lock;
 use super::manifest::{parse_manifest, toml_escape_string, valid_pkg_name, validate_bin_entry};
-use super::resolver::{install_opts, InstallOptions};
+use super::resolver::{install_opts, latest_registry_version_opts, InstallOptions};
 
 #[derive(Debug, Clone)]
 pub struct ToolInstallReport {
@@ -62,20 +62,84 @@ fn compile_tool_entry(
     Ok(())
 }
 
-fn write_shim(bin_dir: &Path, bin_name: &str, matrixc_path: &Path) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| {
+fn resolve_exec_runner() -> PathBuf {
+    let fallback = || {
         PathBuf::from(if cfg!(windows) {
             "spid3r.exe"
         } else {
             "spid3r"
         })
-    });
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return fallback();
+    };
+    let is_runner = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|stem| matches!(stem.to_ascii_lowercase().as_str(), "spid3r" | "sp" | "spvm"));
+    if is_runner {
+        return exe;
+    }
+    if let Some(parent) = exe.parent() {
+        let candidates: &[&str] = if cfg!(windows) {
+            &["spid3r.exe", "spvm.exe", "sp.exe"]
+        } else {
+            &["spid3r", "spvm", "sp"]
+        };
+        for cand in candidates {
+            let p = parent.join(cand);
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    fallback()
+}
+
+fn validate_shim_path(p: &Path, label: &str) -> Result<String, String> {
+    let raw = p
+        .to_str()
+        .ok_or_else(|| format!("{}: path contains non-UTF-8 characters", label))?;
+    if raw.contains('\0') || raw.contains('\r') || raw.contains('\n') {
+        return Err(format!(
+            "{}: path contains forbidden control characters",
+            label
+        ));
+    }
+    if cfg!(windows) && raw.contains('"') {
+        return Err(format!("{}: Windows path cannot contain '\"'", label));
+    }
+    Ok(raw.to_string())
+}
+
+fn escape_cmd_quoted(s: &str) -> String {
+    s.replace('%', "%%")
+}
+
+fn posix_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn write_shim(bin_dir: &Path, bin_name: &str, matrixc_path: &Path) -> Result<PathBuf, String> {
+    let exe = resolve_exec_runner();
+    let exe_str = validate_shim_path(&exe, "runner executable")?;
+    let mc_str = validate_shim_path(matrixc_path, "compiled bytecode")?;
     if cfg!(windows) {
         let shim = bin_dir.join(format!("{}.cmd", bin_name));
         let body = format!(
-            "@echo off\r\n\"{}\" exec \"{}\" -- %*\r\n",
-            exe.display(),
-            matrixc_path.display()
+            "@echo off\r\nsetlocal disabledelayedexpansion\r\n\"{}\" exec \"{}\" -- %*\r\nexit /b %ERRORLEVEL%\r\n",
+            escape_cmd_quoted(&exe_str),
+            escape_cmd_quoted(&mc_str)
         );
         std::fs::write(&shim, body)
             .map_err(|e| format!("cannot write {}: {}", shim.display(), e))?;
@@ -83,9 +147,9 @@ fn write_shim(bin_dir: &Path, bin_name: &str, matrixc_path: &Path) -> Result<Pat
     } else {
         let shim = bin_dir.join(bin_name);
         let body = format!(
-            "#!/bin/sh\nexec \"{}\" exec \"{}\" -- \"$@\"\n",
-            exe.display(),
-            matrixc_path.display()
+            "#!/bin/sh\nexec {} exec {} -- \"$@\"\n",
+            posix_single_quote(&exe_str),
+            posix_single_quote(&mc_str)
         );
         std::fs::write(&shim, body)
             .map_err(|e| format!("cannot write {}: {}", shim.display(), e))?;
@@ -101,6 +165,19 @@ fn write_shim(bin_dir: &Path, bin_name: &str, matrixc_path: &Path) -> Result<Pat
         }
         Ok(shim)
     }
+}
+
+fn write_tool_meta(tool_dir: &Path, meta: &InstalledTool) -> Result<(), String> {
+    std::fs::write(
+        tool_dir.join("tool.toml"),
+        format!(
+            "name = \"{}\"\nversion = \"{}\"\nbins = \"{}\"\n",
+            toml_escape_string(&meta.package),
+            toml_escape_string(&meta.version),
+            toml_escape_string(&meta.bins.join(","))
+        ),
+    )
+    .map_err(|e| format!("cannot write tool.toml: {}", e))
 }
 
 fn read_tool_meta(tool_dir: &Path) -> Option<InstalledTool> {
@@ -148,6 +225,19 @@ pub fn tool_install(
     rev: Option<&str>,
     force: bool,
 ) -> Result<ToolInstallReport, String> {
+    tool_install_opts(name, version_constraint, path, git, rev, force, false)
+}
+
+/// Install a global CLI tool with optional `--offline` cache resolution.
+pub fn tool_install_opts(
+    name: &str,
+    version_constraint: Option<&str>,
+    path: Option<&str>,
+    git: Option<&str>,
+    rev: Option<&str>,
+    force: bool,
+    offline: bool,
+) -> Result<ToolInstallReport, String> {
     valid_pkg_name(name)?;
     let tools = tools_root();
     let bin_dir = tool_bin_dir();
@@ -163,6 +253,13 @@ pub fn tool_install(
             name
         ));
     }
+    let old_bins = if final_dir.exists() {
+        read_tool_meta(&final_dir)
+            .map(|m| m.bins)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let pid = std::process::id();
     let stage_dir = tools.join(format!(".tmp_{}_{}", name, pid));
@@ -201,7 +298,7 @@ pub fn tool_install(
                 format!("{} = {{ version = \"{}\" }}", name, toml_escape_string(v))
             }
             (None, None, None) => {
-                let top = super::latest_registry_version(name, None)?;
+                let top = latest_registry_version_opts(&stage_dir, name, None, offline)?;
                 format!("{} = {{ version = \"^{}\" }}", name, top)
             }
             _ => return Err("--path and --git are mutually exclusive".to_string()),
@@ -220,7 +317,13 @@ pub fn tool_install(
         )
         .map_err(|e| format!("cannot write staging entry: {}", e))?;
 
-        install_opts(&stage_dir, &InstallOptions::default())?;
+        install_opts(
+            &stage_dir,
+            &InstallOptions {
+                offline,
+                ..InstallOptions::default()
+            },
+        )?;
 
         let lock = read_lock(&stage_dir)?;
         let installed_ver = lock
@@ -233,6 +336,17 @@ pub fn tool_install(
         let snap_manifest = std::fs::read_to_string(vendor_pkg.join(".spid3r-manifest.toml"))
             .map_err(|_| format!("installed package '{}' has no manifest snapshot", name))?;
         let pkg_manifest = parse_manifest(&snap_manifest)?;
+        if !pkg_manifest.ffi.libs.is_empty()
+            || !pkg_manifest.ffi.bundled.is_empty()
+            || !pkg_manifest.ffi.runtime_libs.is_empty()
+            || lock.iter().any(|e| !e.ffi_libs.is_empty())
+        {
+            return Err(format!(
+                "tool '{}' (or a dependency) declares native [ffi] libraries, which cannot run on \
+                 the spvm bytecode VM — build a native executable with `spid3r build` / `yamc` instead",
+                name
+            ));
+        }
         if pkg_manifest.bins.is_empty() {
             return Err(format!(
                 "package '{}' declares no [bin] executables in spider.toml",
@@ -281,16 +395,14 @@ pub fn tool_install(
             installed_bins.push(bin_name.clone());
         }
 
-        std::fs::write(
-            stage_dir.join("tool.toml"),
-            format!(
-                "name = \"{}\"\nversion = \"{}\"\nbins = \"{}\"\n",
-                toml_escape_string(name),
-                toml_escape_string(&installed_ver),
-                toml_escape_string(&installed_bins.join(","))
-            ),
-        )
-        .map_err(|e| format!("cannot write tool.toml: {}", e))?;
+        write_tool_meta(
+            &stage_dir,
+            &InstalledTool {
+                package: name.to_string(),
+                version: installed_ver.clone(),
+                bins: installed_bins.clone(),
+            },
+        )?;
 
         let had_final = final_dir.exists();
         if had_final {
@@ -305,6 +417,41 @@ pub fn tool_install(
         }
         if backup_dir.exists() {
             let _ = std::fs::remove_dir_all(&backup_dir);
+        }
+
+        for old_b in &old_bins {
+            if !installed_bins.contains(old_b) {
+                let old_shim = if cfg!(windows) {
+                    bin_dir.join(format!("{}.cmd", old_b))
+                } else {
+                    bin_dir.join(old_b)
+                };
+                if old_shim.is_file() {
+                    let _ = std::fs::remove_file(&old_shim);
+                }
+            }
+        }
+
+        if force {
+            if let Ok(rd) = std::fs::read_dir(&tools) {
+                for entry in rd.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    if !p.is_dir() {
+                        continue;
+                    }
+                    let dname = entry.file_name().to_string_lossy().to_string();
+                    if dname == name || dname.starts_with(".tmp_") || dname.starts_with(".old_") {
+                        continue;
+                    }
+                    if let Some(mut other_meta) = read_tool_meta(&p) {
+                        let before = other_meta.bins.len();
+                        other_meta.bins.retain(|b| !installed_bins.contains(b));
+                        if other_meta.bins.len() != before {
+                            let _ = write_tool_meta(&p, &other_meta);
+                        }
+                    }
+                }
+            }
         }
 
         for bin_name in &installed_bins {
@@ -379,4 +526,26 @@ pub fn tool_uninstall(name: &str) -> Result<Vec<String>, String> {
     std::fs::remove_dir_all(&tool_dir)
         .map_err(|e| format!("cannot remove {}: {}", tool_dir.display(), e))?;
     Ok(removed_bins)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shim_escaping_blocks_injection_vectors() {
+        assert_eq!(
+            posix_single_quote("/tmp/a'b$(id)`whoami`"),
+            "'/tmp/a'\\''b$(id)`whoami`'"
+        );
+        assert_eq!(
+            escape_cmd_quoted(r"C:\Users\%PATH%\spid3r.exe"),
+            r"C:\Users\%%PATH%%\spid3r.exe"
+        );
+        assert!(validate_shim_path(Path::new("/tmp/bad\nline"), "test").is_err());
+        assert!(validate_shim_path(Path::new("/tmp/bad\0nul"), "test").is_err());
+        if cfg!(windows) {
+            assert!(validate_shim_path(Path::new("C:\\bad\"quote\\x.exe"), "test").is_err());
+        }
+    }
 }

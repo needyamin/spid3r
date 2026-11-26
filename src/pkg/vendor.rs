@@ -312,9 +312,36 @@ pub fn vendor_dep_checked(
             );
         }
 
-        // Verify full manifest + src/ digest when present (audit S2).
+        // Reject symlinked metadata files before reading them.
+        for meta_name in ["sha256.txt", "manifest.sha256", "spider.toml"] {
+            let p = dep_dir.join(meta_name);
+            if let Ok(m) = std::fs::symlink_metadata(&p) {
+                if m.file_type().is_symlink() {
+                    return Err(format!(
+                        "registry dependency '{}': refusing symlinked {}",
+                        name,
+                        p.display()
+                    ));
+                }
+            }
+        }
+
+        // Verify full manifest + src/ digest when present, and REQUIRE both
+        // manifest.sha256 and manifest.sha256.sig when packages.trust_pk is configured (audit C2).
         let msha_path = dep_dir.join("manifest.sha256");
-        if let Ok(raw_msha_bytes) = std::fs::read(&msha_path) {
+        let raw_msha_bytes = match std::fs::read(&msha_path) {
+            Ok(b) => Some(b),
+            Err(e) if !pks.is_empty() => {
+                return Err(format!(
+                    "registry dependency '{}': missing {} required by packages.trust_pk ({})",
+                    name,
+                    msha_path.display(),
+                    e
+                ));
+            }
+            Err(_) => None,
+        };
+        if let Some(raw_msha_bytes) = raw_msha_bytes {
             let msha_declared = String::from_utf8_lossy(&raw_msha_bytes).trim().to_string();
             let manifest_bytes = std::fs::read(dep_dir.join("spider.toml")).map_err(|e| {
                 format!(
@@ -331,14 +358,20 @@ pub fn vendor_dep_checked(
             }
             if !pks.is_empty() {
                 let msig_path = dep_dir.join("manifest.sha256.sig");
-                if let Ok(msig_text) = std::fs::read_to_string(&msig_path) {
-                    verify_ed25519_against_any(
-                        &pks,
-                        &raw_msha_bytes,
-                        &msig_text,
-                        &format!("registry dependency '{}' ({})", name, msig_path.display()),
-                    )?;
-                }
+                let msig_text = std::fs::read_to_string(&msig_path).map_err(|e| {
+                    format!(
+                        "registry dependency '{}': missing {} required by packages.trust_pk ({})",
+                        name,
+                        msig_path.display(),
+                        e
+                    )
+                })?;
+                verify_ed25519_against_any(
+                    &pks,
+                    &raw_msha_bytes,
+                    &msig_text,
+                    &format!("registry dependency '{}' ({})", name, msig_path.display()),
+                )?;
             }
             manifest_sha_out = Some(msha_declared);
         }
@@ -402,7 +435,20 @@ pub fn vendor_dep_checked(
                 )?;
             }
             let wmsha_path = dep_dir.join(format!("manifest-{}.sha256", triple));
-            if let Ok(raw_wmsha) = std::fs::read(&wmsha_path) {
+            let raw_wmsha_opt = match std::fs::read(&wmsha_path) {
+                Ok(b) => Some(b),
+                Err(e) if !pks.is_empty() => {
+                    return Err(format!(
+                        "registry wheel '{}@{}': missing {} required by packages.trust_pk ({})",
+                        name,
+                        triple,
+                        wmsha_path.display(),
+                        e
+                    ));
+                }
+                Err(_) => None,
+            };
+            if let Some(raw_wmsha) = raw_wmsha_opt {
                 let declared_wmsha = String::from_utf8_lossy(&raw_wmsha).trim().to_string();
                 let manifest_bytes = std::fs::read(dep_dir.join("spider.toml")).map_err(|e| {
                     format!(
@@ -420,19 +466,26 @@ pub fn vendor_dep_checked(
                 }
                 if !pks.is_empty() {
                     let wmsig_path = dep_dir.join(format!("manifest-{}.sha256.sig", triple));
-                    if let Ok(wmsig) = std::fs::read_to_string(&wmsig_path) {
-                        verify_ed25519_against_any(
-                            &pks,
-                            &raw_wmsha,
-                            &wmsig,
-                            &format!(
-                                "registry wheel '{}@{}' ({})",
-                                name,
-                                triple,
-                                wmsig_path.display()
-                            ),
-                        )?;
-                    }
+                    let wmsig = std::fs::read_to_string(&wmsig_path).map_err(|e| {
+                        format!(
+                            "registry wheel '{}@{}': missing {} required by packages.trust_pk ({})",
+                            name,
+                            triple,
+                            wmsig_path.display(),
+                            e
+                        )
+                    })?;
+                    verify_ed25519_against_any(
+                        &pks,
+                        &raw_wmsha,
+                        &wmsig,
+                        &format!(
+                            "registry wheel '{}@{}' ({})",
+                            name,
+                            triple,
+                            wmsig_path.display()
+                        ),
+                    )?;
                 }
             }
         }

@@ -4,11 +4,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use super::hash::{manifest_and_tree_digest, vendor_src_hash};
 use super::lockfile::{read_lock, LockEntry};
-use super::manifest::{parse_manifest, Manifest};
+use super::manifest::{parse_manifest, valid_pkg_name, Manifest};
 use super::ops::verify;
 use super::registry::{
-    fetch_remote_advisories, fetch_remote_yanked, is_remote_url, registry_endpoints,
+    fetch_remote_advisories, fetch_remote_yanked, is_remote_url, parse_advisories,
+    registry_endpoints,
 };
 use super::semver::{Constraint, Version};
 use super::vendor::configured_trust_pks;
@@ -37,7 +39,7 @@ impl AuditReport {
     }
 }
 
-fn json_escape(s: &str) -> String {
+pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
@@ -95,7 +97,9 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
     report.checked = vreport.checked;
     for issue in vreport.issues {
         let sev = match issue.kind {
-            "hash" | "native-hash" | "unverified" => "critical",
+            "hash" | "native-hash" | "manifest-missing" | "manifest-hash" | "unverified" => {
+                "critical"
+            }
             "missing" | "native-missing" | "files" | "unlocked" => "high",
             _ => "high",
         };
@@ -116,8 +120,73 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
         .filter(|e| is_remote_url(e))
         .cloned()
         .collect();
+    let local_eps: Vec<String> = endpoints
+        .iter()
+        .filter(|e| !is_remote_url(e))
+        .cloned()
+        .collect();
+    let vendor_root = root.join("vendor");
 
     for entry in &entries {
+        if valid_pkg_name(&entry.name).is_ok() {
+            let vdir = vendor_root.join(&entry.name);
+            let snap = vdir.join(".spid3r-manifest.toml");
+            match std::fs::symlink_metadata(&snap) {
+                Ok(m) if m.file_type().is_symlink() => {
+                    report.findings.push(AuditFinding {
+                        severity: "critical",
+                        package: entry.name.clone(),
+                        kind: "manifest-hash",
+                        detail: "vendored .spid3r-manifest.toml is a symlink".to_string(),
+                    });
+                }
+                Ok(m) if m.is_file() => {
+                    if let Ok(raw_bytes) = std::fs::read(&snap) {
+                        if let Some(ref exp_msha) = entry.manifest_sha256 {
+                            if let Ok((_, actual_src)) = vendor_src_hash(&vdir) {
+                                let computed = manifest_and_tree_digest(&raw_bytes, &actual_src);
+                                if computed != *exp_msha {
+                                    report.findings.push(AuditFinding {
+                                        severity: "critical",
+                                        package: entry.name.clone(),
+                                        kind: "manifest-hash",
+                                        detail: format!(
+                                            "vendored .spid3r-manifest.toml mismatch (expected {}, computed {})",
+                                            exp_msha, computed
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        if let Ok(m) = parse_manifest(&String::from_utf8_lossy(&raw_bytes)) {
+                            let mut actual_ffi = m.ffi.libs.clone();
+                            actual_ffi.extend(m.ffi.bundled.iter().cloned());
+                            actual_ffi.extend(m.ffi.runtime_libs.iter().cloned());
+                            if actual_ffi != entry.ffi_libs {
+                                report.findings.push(AuditFinding {
+                                    severity: "critical",
+                                    package: entry.name.clone(),
+                                    kind: "ffi-drift",
+                                    detail: format!(
+                                        "vendored .spid3r-manifest.toml [ffi] ({:?}) differs from spider.lock ({:?})",
+                                        actual_ffi, entry.ffi_libs
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+                _ if entry.manifest_sha256.is_some() || !entry.ffi_libs.is_empty() => {
+                    report.findings.push(AuditFinding {
+                        severity: "critical",
+                        package: entry.name.clone(),
+                        kind: "manifest-missing",
+                        detail: "missing .spid3r-manifest.toml in vendor/".to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
         if entry.source.starts_with("registry+") {
             if entry.manifest_sha256.is_none() {
                 report.findings.push(AuditFinding {
@@ -184,7 +253,9 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
         }
     }
 
-    if !offline && !remote_eps.is_empty() {
+    // Local directory registries: check <ep>/<pkg>/yanked.txt and <ep>/advisories.txt.
+    for ep in &local_eps {
+        let reg_path = Path::new(ep);
         for entry in &entries {
             if !entry.source.starts_with("registry+") {
                 continue;
@@ -192,26 +263,36 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
             let Ok(locked_v) = Version::parse(&entry.version) else {
                 continue;
             };
-            for ep in &remote_eps {
-                if let Ok(yanked) = fetch_remote_yanked(ep, None, &entry.name) {
-                    if yanked.contains(&locked_v) {
-                        report.findings.push(AuditFinding {
-                            severity: "medium",
-                            package: entry.name.clone(),
-                            kind: "yanked",
-                            detail: format!(
-                                "{}@{} has been yanked upstream",
-                                entry.name, entry.version
-                            ),
-                        });
-                        break;
+            let yanked_path = reg_path.join(&entry.name).join("yanked.txt");
+            if let Ok(ytext) = std::fs::read_to_string(&yanked_path) {
+                let mut is_yanked = false;
+                for line in ytext.lines() {
+                    let t = line.trim();
+                    if !t.is_empty() && !t.starts_with('#') {
+                        if let Ok(v) = Version::parse(t) {
+                            if v == locked_v {
+                                is_yanked = true;
+                                break;
+                            }
+                        }
                     }
+                }
+                if is_yanked {
+                    report.findings.push(AuditFinding {
+                        severity: "medium",
+                        package: entry.name.clone(),
+                        kind: "yanked",
+                        detail: format!(
+                            "{}@{} has been yanked in local registry {}",
+                            entry.name, entry.version, ep
+                        ),
+                    });
                 }
             }
         }
-
-        if let Ok(advisories) = fetch_remote_advisories(&remote_eps) {
-            for adv in advisories {
+        let adv_path = reg_path.join("advisories.txt");
+        if let Ok(adv_text) = std::fs::read_to_string(&adv_path) {
+            for adv in parse_advisories(&adv_text) {
                 let Ok(constraint) = Constraint::parse(&adv.constraint) else {
                     continue;
                 };
@@ -238,6 +319,97 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
                         }
                     }
                 }
+            }
+        }
+    }
+
+    if !offline && !remote_eps.is_empty() {
+        for entry in &entries {
+            if !entry.source.starts_with("registry+") {
+                continue;
+            }
+            let Ok(locked_v) = Version::parse(&entry.version) else {
+                continue;
+            };
+            for ep in &remote_eps {
+                match fetch_remote_yanked(ep, None, &entry.name) {
+                    Ok(yanked) => {
+                        if yanked.contains(&locked_v) {
+                            report.findings.push(AuditFinding {
+                                severity: "medium",
+                                package: entry.name.clone(),
+                                kind: "yanked",
+                                detail: format!(
+                                    "{}@{} has been yanked upstream",
+                                    entry.name, entry.version
+                                ),
+                            });
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let is_sig = e.contains("signature")
+                            || e.contains("Ed25519")
+                            || e.contains("trust_pk");
+                        report.findings.push(AuditFinding {
+                            severity: if is_sig { "critical" } else { "medium" },
+                            package: entry.name.clone(),
+                            kind: if is_sig {
+                                "signature"
+                            } else {
+                                "registry-unreachable"
+                            },
+                            detail: e,
+                        });
+                    }
+                }
+            }
+        }
+
+        match fetch_remote_advisories(&remote_eps) {
+            Ok(advisories) => {
+                for adv in advisories {
+                    let Ok(constraint) = Constraint::parse(&adv.constraint) else {
+                        continue;
+                    };
+                    for entry in &entries {
+                        if entry.name != adv.package {
+                            continue;
+                        }
+                        if let Ok(v) = Version::parse(&entry.version) {
+                            if constraint.matches(&v) {
+                                let sev = match adv.severity.as_str() {
+                                    "critical" => "critical",
+                                    "high" => "high",
+                                    _ => "medium",
+                                };
+                                report.findings.push(AuditFinding {
+                                    severity: sev,
+                                    package: entry.name.clone(),
+                                    kind: "advisory",
+                                    detail: format!(
+                                        "{} ({}): {} [{}]",
+                                        adv.id, adv.constraint, adv.summary, entry.version
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let is_sig =
+                    e.contains("signature") || e.contains("Ed25519") || e.contains("trust_pk");
+                report.findings.push(AuditFinding {
+                    severity: if is_sig { "critical" } else { "medium" },
+                    package: "<registry>".to_string(),
+                    kind: if is_sig {
+                        "signature"
+                    } else {
+                        "registry-unreachable"
+                    },
+                    detail: e,
+                });
             }
         }
     }

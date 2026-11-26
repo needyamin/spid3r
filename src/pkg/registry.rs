@@ -19,6 +19,7 @@ use super::vendor::{configured_trust_pks, verify_ed25519_against_any};
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_MIGRATION_HOPS: usize = 2;
+const MAX_METADATA_BYTES: usize = 4 * 1024 * 1024;
 
 type FetchResponse = (u16, Vec<(String, String)>, Vec<u8>);
 
@@ -134,11 +135,33 @@ fn url_origin(url: &str) -> Option<String> {
     let scheme = url[..idx].to_ascii_lowercase();
     let rest = &url[idx + 3..];
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = rest[..end].to_ascii_lowercase();
+    let mut authority = rest[..end].to_ascii_lowercase();
     if authority.is_empty() {
         return None;
     }
+    if scheme == "https" {
+        if let Some(stripped) = authority.strip_suffix(":443") {
+            authority = stripped.to_string();
+        }
+    } else if scheme == "http" {
+        if let Some(stripped) = authority.strip_suffix(":80") {
+            authority = stripped.to_string();
+        }
+    }
     Some(format!("{}://{}", scheme, authority))
+}
+
+fn fetch_registry_metadata_bytes(url: &str) -> Result<FetchResponse, String> {
+    let resp = fetch_registry_bytes(url)?;
+    if resp.2.len() > MAX_METADATA_BYTES {
+        return Err(format!(
+            "registry: metadata response from '{}' exceeds {} byte cap ({} bytes)",
+            url,
+            MAX_METADATA_BYTES,
+            resp.2.len()
+        ));
+    }
+    Ok(resp)
 }
 
 /// Fetch raw HTTP(S) bytes from a registry URL, sending `User-Agent: spkg/...`
@@ -197,11 +220,33 @@ fn verify_optional_metadata_sig(url: &str, body: &[u8], label: &str) -> Result<(
         return Ok(());
     }
     let sig_url = format!("{}.sig", url);
-    if let Ok((200, _, sig_bytes)) = fetch_registry_bytes(&sig_url) {
-        let sig_str = String::from_utf8_lossy(&sig_bytes);
-        verify_ed25519_against_any(&pks, body, &sig_str, label)?;
+    let (status, _, sig_bytes) = fetch_registry_metadata_bytes(&sig_url).map_err(|e| {
+        format!(
+            "{}: failed to fetch required signature {} ({})",
+            label, sig_url, e
+        )
+    })?;
+    if status != 200 {
+        return Err(format!(
+            "{}: missing required signature {} (HTTP {}, enforced by packages.trust_pk)",
+            label, sig_url, status
+        ));
     }
+    let sig_str = String::from_utf8_lossy(&sig_bytes);
+    verify_ed25519_against_any(&pks, body, &sig_str, &format!("{} ({})", label, sig_url))?;
     Ok(())
+}
+
+/// Record effective `moved_to` target under the original endpoint's cache root
+/// so `--offline` lookups still find migrated cached packages.
+pub fn record_migration_cache(project_root: &Path, initial_ep: &str, effective_ep: &str) {
+    let orig = initial_ep.trim().trim_end_matches('/');
+    let eff = effective_ep.trim().trim_end_matches('/');
+    if orig.is_empty() || eff.is_empty() || orig == eff {
+        return;
+    }
+    let cache_root = registry_cache_root(project_root, orig);
+    let _ = std::fs::write(cache_root.join(".migrated_to"), format!("{}\n", eff));
 }
 
 fn resolve_redirect_url(current: &str, location: &str) -> Result<String, String> {
@@ -311,18 +356,38 @@ pub fn resolve_migrated_base(initial_url: &str) -> Result<(String, Vec<String>),
     let mut extra_mirrors: Vec<String> = Vec::new();
     for _hop in 0..MAX_MIGRATION_HOPS {
         let desc_url = format!("{}/registry.toml", current);
-        let Ok((200, _, bytes)) = fetch_registry_bytes(&desc_url) else {
-            break;
+        let (status, _, bytes) = match fetch_registry_metadata_bytes(&desc_url) {
+            Ok(resp) => resp,
+            Err(_) => break,
         };
+        if status == 404 {
+            break;
+        }
+        if status != 200 {
+            return Err(format!(
+                "registry '{}': unexpected HTTP {} fetching {}",
+                current, status, desc_url
+            ));
+        }
         verify_optional_metadata_sig(
             &desc_url,
             &bytes,
             &format!("registry descriptor '{}'", desc_url),
         )?;
         let desc = parse_registry_descriptor(&String::from_utf8_lossy(&bytes));
+        let cur_is_https = current.to_ascii_lowercase().starts_with("https://");
         for m in desc.mirrors {
-            if is_remote_url(&m) && !extra_mirrors.contains(&m) {
-                extra_mirrors.push(m);
+            let trimmed = m.trim().trim_end_matches('/').to_string();
+            if is_remote_url(&trimmed) {
+                if cur_is_https && trimmed.to_ascii_lowercase().starts_with("http://") {
+                    return Err(format!(
+                        "registry '{}': refusing insecure http:// mirror '{}' advertised by HTTPS registry.toml",
+                        current, trimmed
+                    ));
+                }
+                if !extra_mirrors.contains(&trimmed) {
+                    extra_mirrors.push(trimmed);
+                }
             }
         }
         let Some(next_raw) = desc.moved_to else {
@@ -335,9 +400,7 @@ pub fn resolve_migrated_base(initial_url: &str) -> Result<(String, Vec<String>),
                 current, next
             ));
         }
-        if current.to_ascii_lowercase().starts_with("https://")
-            && next.to_ascii_lowercase().starts_with("http://")
-        {
+        if cur_is_https && next.to_ascii_lowercase().starts_with("http://") {
             return Err(format!(
                 "registry '{}': refusing insecure HTTPS -> HTTP migration moved_to '{}'",
                 current, next
@@ -398,7 +461,7 @@ pub fn fetch_remote_versions(
     valid_pkg_name(name)?;
     let base = build_registry_base(registry_url, sub_registry)?;
     let index_url = format!("{}/{}/index.txt", base, name);
-    let (status, _, index_bytes) = fetch_registry_bytes(&index_url).map_err(|e| {
+    let (status, _, index_bytes) = fetch_registry_metadata_bytes(&index_url).map_err(|e| {
         format!(
             "registry: cannot reach remote registry '{}' ({}): {}",
             base, index_url, e
@@ -456,9 +519,14 @@ pub fn fetch_remote_yanked(
     valid_pkg_name(name)?;
     let base = build_registry_base(registry_url, sub_registry)?;
     let url = format!("{}/{}/yanked.txt", base, name);
-    let Ok((200, _, bytes)) = fetch_registry_bytes(&url) else {
+    let (status, _, bytes) = fetch_registry_metadata_bytes(&url)
+        .map_err(|e| format!("yanked list '{}' ({}): {}", name, url, e))?;
+    if status == 404 {
         return Ok(BTreeSet::new());
-    };
+    }
+    if status != 200 {
+        return Err(format!("yanked list '{}' ({}): HTTP {}", name, url, status));
+    }
     verify_optional_metadata_sig(&url, &bytes, &format!("yanked list '{}' ({})", name, url))?;
     let mut yanked = BTreeSet::new();
     for line in String::from_utf8_lossy(&bytes).lines() {
@@ -503,16 +571,17 @@ pub fn fetch_remote_advisories(endpoints: &[String]) -> Result<Vec<Advisory>, St
         if !is_remote_url(ep) {
             continue;
         }
-        let Ok((effective, _)) = resolve_migrated_base(ep) else {
-            continue;
-        };
-        let Ok(base) = build_registry_base(&effective, None) else {
-            continue;
-        };
+        let (effective, _) = resolve_migrated_base(ep)?;
+        let base = build_registry_base(&effective, None)?;
         let url = format!("{}/advisories.txt", base);
-        let Ok((200, _, bytes)) = fetch_registry_bytes(&url) else {
+        let (status, _, bytes) = fetch_registry_metadata_bytes(&url)
+            .map_err(|e| format!("advisories ({}): {}", url, e))?;
+        if status == 404 {
             continue;
-        };
+        }
+        if status != 200 {
+            return Err(format!("advisories ({}): HTTP {}", url, status));
+        }
         verify_optional_metadata_sig(&url, &bytes, &format!("advisories ({})", url))?;
         all.extend(parse_advisories(&String::from_utf8_lossy(&bytes)));
     }
@@ -527,10 +596,21 @@ pub fn fetch_cached_versions(
     name: &str,
 ) -> Result<(PathBuf, Vec<Version>), String> {
     valid_pkg_name(name)?;
+    let mut candidate_dirs: Vec<PathBuf> = Vec::new();
     for ep in endpoints {
-        let cache_pkg_dir = if is_remote_url(ep) {
+        if is_remote_url(ep) {
             let base = build_registry_base(ep, sub_registry)?;
-            registry_cache_root(project_root, &base).join(name)
+            candidate_dirs.push(registry_cache_root(project_root, &base).join(name));
+            let orig_root = registry_cache_root(project_root, ep.trim().trim_end_matches('/'));
+            if let Ok(migrated) = std::fs::read_to_string(orig_root.join(".migrated_to")) {
+                let mig = migrated.trim();
+                if !mig.is_empty() && is_remote_url(mig) {
+                    if let Ok(mig_base) = build_registry_base(mig, sub_registry) {
+                        candidate_dirs
+                            .push(registry_cache_root(project_root, &mig_base).join(name));
+                    }
+                }
+            }
         } else {
             let base = match sub_registry {
                 Some(sub) => {
@@ -539,8 +619,10 @@ pub fn fetch_cached_versions(
                 }
                 None => PathBuf::from(ep),
             };
-            base.join(name)
-        };
+            candidate_dirs.push(base.join(name));
+        }
+    }
+    for cache_pkg_dir in candidate_dirs {
         if !cache_pkg_dir.is_dir() {
             continue;
         }
@@ -578,7 +660,7 @@ pub fn search_remote_catalog(
     let (effective, _) = resolve_migrated_base(registry_url)?;
     let base = build_registry_base(&effective, None)?;
     let catalog_url = format!("{}/catalog.txt", base);
-    let (status, _, bytes) = fetch_registry_bytes(&catalog_url).map_err(|e| {
+    let (status, _, bytes) = fetch_registry_metadata_bytes(&catalog_url).map_err(|e| {
         format!(
             "registry: cannot reach remote catalog '{}' ({}): {}",
             base, catalog_url, e
@@ -593,6 +675,11 @@ pub fn search_remote_catalog(
             catalog_url, status
         ));
     }
+    verify_optional_metadata_sig(
+        &catalog_url,
+        &bytes,
+        &format!("registry catalog '{}'", catalog_url),
+    )?;
 
     let trimmed_q = query.trim();
     let needle = if trimmed_q == "*" {
@@ -677,6 +764,46 @@ pub fn search_remote_across_mirrors(
     Ok(Vec::new())
 }
 
+fn cached_version_usable(ver_dir: &Path, require_sigs: bool) -> bool {
+    if !ver_dir.is_dir() {
+        return false;
+    }
+    let sha_p = ver_dir.join("sha256.txt");
+    let toml_p = ver_dir.join("spider.toml");
+    if !sha_p.is_file() || !toml_p.is_file() {
+        return false;
+    }
+    let Ok(sha_txt) = std::fs::read_to_string(&sha_p) else {
+        return false;
+    };
+    let trimmed = sha_txt.trim();
+    if trimmed.is_empty() || tree_hash(ver_dir).ok().as_deref() != Some(trimmed) {
+        return false;
+    }
+    if require_sigs {
+        if !ver_dir.join("sha256.txt.sig").is_file()
+            || !ver_dir.join("manifest.sha256").is_file()
+            || !ver_dir.join("manifest.sha256.sig").is_file()
+        {
+            return false;
+        }
+        let triple = host_target_triple();
+        let wsha = ver_dir.join(format!("sha256-{}.txt", triple));
+        if wsha.is_file()
+            && (!ver_dir.join(format!("sha256-{}.txt.sig", triple)).is_file()
+                || !ver_dir
+                    .join(format!("manifest-{}.sha256", triple))
+                    .is_file()
+                || !ver_dir
+                    .join(format!("manifest-{}.sha256.sig", triple))
+                    .is_file())
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Lazily fetch, verify (Ed25519 BEFORE extracting tarball!), and cache a single
 /// resolved version `<name>/<ver>/` (fixes B1 & S2). Returns the cached `<name>/<ver>/` directory.
 pub fn fetch_remote_version(
@@ -698,13 +825,14 @@ pub fn fetch_remote_version(
     let pub_cache_path = cache_root.join("registry.pub");
     if update || !pub_cache_path.is_file() {
         let pub_url = format!("{}/registry.pub", base);
-        if let Ok((200, _, pub_bytes)) = fetch_registry_bytes(&pub_url) {
+        if let Ok((200, _, pub_bytes)) = fetch_registry_metadata_bytes(&pub_url) {
             let _ = std::fs::write(&pub_cache_path, &pub_bytes);
         }
     }
 
     let ver_dir = pkg_cache_dir.join(ver);
-    if !update && ver_dir.join("sha256.txt").is_file() && ver_dir.join("spider.toml").is_file() {
+    let require_sigs = !configured_trust_pks()?.is_empty();
+    if !update && cached_version_usable(&ver_dir, require_sigs) {
         return Ok(ver_dir);
     }
 
@@ -766,7 +894,7 @@ fn fetch_and_verify_version(
     // Fetch detached Ed25519 signature over exact ASCII sha256.txt bytes AND
     // verify BEFORE downloading or extracting package.tar (audit S2).
     let sig_url = format!("{}/{}/{}/sha256.txt.sig", base_url, name, ver);
-    let sig_bytes_opt = match fetch_registry_bytes(&sig_url) {
+    let sig_bytes_opt = match fetch_registry_metadata_bytes(&sig_url) {
         Ok((200, _, bytes)) => Some(bytes),
         _ => None,
     };
@@ -788,15 +916,15 @@ fn fetch_and_verify_version(
         )?;
     }
 
-    // Optional manifest.sha256 + manifest.sha256.sig binding spider.toml + src/.
+    // manifest.sha256 + manifest.sha256.sig binding spider.toml + src/ (required when trust_pk is set).
     let msha_url = format!("{}/{}/{}/manifest.sha256", base_url, name, ver);
-    let msha_bytes_opt = match fetch_registry_bytes(&msha_url) {
+    let msha_bytes_opt = match fetch_registry_metadata_bytes(&msha_url) {
         Ok((200, _, bytes)) => Some(bytes),
         _ => None,
     };
+    let msig_url = format!("{}/{}/{}/manifest.sha256.sig", base_url, name, ver);
     let msig_bytes_opt = if msha_bytes_opt.is_some() {
-        let msig_url = format!("{}/{}/{}/manifest.sha256.sig", base_url, name, ver);
-        match fetch_registry_bytes(&msig_url) {
+        match fetch_registry_metadata_bytes(&msig_url) {
             Ok((200, _, bytes)) => Some(bytes),
             _ => None,
         }
@@ -805,14 +933,24 @@ fn fetch_and_verify_version(
     };
 
     if !pks.is_empty() {
-        if let (Some(msha_bytes), Some(msig_bytes)) = (&msha_bytes_opt, &msig_bytes_opt) {
-            verify_ed25519_against_any(
-                &pks,
-                msha_bytes,
-                &String::from_utf8_lossy(msig_bytes),
-                &format!("registry dependency '{}' manifest.sha256.sig", name),
-            )?;
-        }
+        let msha_bytes = msha_bytes_opt.as_ref().ok_or_else(|| {
+            format!(
+                "registry dependency '{}': missing {} required by packages.trust_pk",
+                name, msha_url
+            )
+        })?;
+        let msig_bytes = msig_bytes_opt.as_ref().ok_or_else(|| {
+            format!(
+                "registry dependency '{}': missing {} required by packages.trust_pk",
+                name, msig_url
+            )
+        })?;
+        verify_ed25519_against_any(
+            &pks,
+            msha_bytes,
+            &String::from_utf8_lossy(msig_bytes),
+            &format!("registry dependency '{}' ({})", name, msig_url),
+        )?;
     }
 
     struct WheelBundle {
@@ -826,7 +964,7 @@ fn fetch_and_verify_version(
     // when published, seamlessly falling back to universal `package.tar`.
     let triple = host_target_triple();
     let wsha_url = format!("{}/{}/{}/sha256-{}.txt", base_url, name, ver, triple);
-    let wheel_probe = fetch_registry_bytes(&wsha_url);
+    let wheel_probe = fetch_registry_metadata_bytes(&wsha_url);
     let mut wheel_bundle: Option<WheelBundle> = None;
     let (tar_bytes, is_wheel) = if let Ok((200, _, wsha_bytes)) = wheel_probe {
         let wsha_text = String::from_utf8_lossy(&wsha_bytes).trim().to_string();
@@ -837,7 +975,7 @@ fn fetch_and_verify_version(
             ));
         }
         let wsig_url = format!("{}/{}/{}/sha256-{}.txt.sig", base_url, name, ver, triple);
-        let wsig_bytes_opt = match fetch_registry_bytes(&wsig_url) {
+        let wsig_bytes_opt = match fetch_registry_metadata_bytes(&wsig_url) {
             Ok((200, _, b)) => Some(b),
             _ => None,
         };
@@ -856,17 +994,23 @@ fn fetch_and_verify_version(
             )?;
         }
         let wmsha_url = format!("{}/{}/{}/manifest-{}.sha256", base_url, name, ver, triple);
-        let wmsha_pair = if let Ok((200, _, wmsha_bytes)) = fetch_registry_bytes(&wmsha_url) {
-            let wmsig_url = format!(
-                "{}/{}/{}/manifest-{}.sha256.sig",
-                base_url, name, ver, triple
-            );
-            let wmsig = match fetch_registry_bytes(&wmsig_url) {
-                Ok((200, _, b)) => Some(b),
-                _ => None,
-            };
-            if !pks.is_empty() {
-                if let Some(ref sig_b) = wmsig {
+        let wmsig_url = format!(
+            "{}/{}/{}/manifest-{}.sha256.sig",
+            base_url, name, ver, triple
+        );
+        let wmsha_pair = match fetch_registry_metadata_bytes(&wmsha_url) {
+            Ok((200, _, wmsha_bytes)) => {
+                let wmsig = match fetch_registry_metadata_bytes(&wmsig_url) {
+                    Ok((200, _, b)) => Some(b),
+                    _ => None,
+                };
+                if !pks.is_empty() {
+                    let sig_b = wmsig.as_ref().ok_or_else(|| {
+                        format!(
+                            "registry wheel '{}@{}': missing {} required by packages.trust_pk",
+                            name, triple, wmsig_url
+                        )
+                    })?;
                     verify_ed25519_against_any(
                         &pks,
                         &wmsha_bytes,
@@ -874,10 +1018,17 @@ fn fetch_and_verify_version(
                         &format!("registry wheel '{}@{}' ({})", name, triple, wmsig_url),
                     )?;
                 }
+                Some((wmsha_bytes, wmsig))
             }
-            Some((wmsha_bytes, wmsig))
-        } else {
-            None
+            _ => {
+                if !pks.is_empty() {
+                    return Err(format!(
+                        "registry wheel '{}@{}': missing {} required by packages.trust_pk",
+                        name, triple, wmsha_url
+                    ));
+                }
+                None
+            }
         };
         let wtar_url = format!("{}/{}/{}/package-{}.tar", base_url, name, ver, triple);
         let (wtar_status, _, wtar_bytes) = fetch_registry_bytes(&wtar_url).map_err(|e| {
@@ -1134,7 +1285,15 @@ mod tests {
 
         assert_eq!(
             url_origin("https://Pkg.Example.com:443/a/b").as_deref(),
-            Some("https://pkg.example.com:443")
+            Some("https://pkg.example.com")
+        );
+        assert_eq!(
+            url_origin("http://Pkg.Example.com:80/a/b").as_deref(),
+            Some("http://pkg.example.com")
+        );
+        assert_eq!(
+            url_origin("https://Pkg.Example.com:8443/a/b").as_deref(),
+            Some("https://pkg.example.com:8443")
         );
         let advs = parse_advisories("# comment\nmathlib\t<1.2.0\thigh\tSPK-2026-001\tBuffer bug\n");
         assert_eq!(advs.len(), 1);

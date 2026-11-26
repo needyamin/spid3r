@@ -52,9 +52,37 @@ struct ResolvedPkg {
     child_deps: Vec<Dependency>,
 }
 
-/// Resolve the highest published `Version` of `name` across configured local
-/// directories or remote mirrors.
+/// Resolve the highest published non-yanked `Version` of `name` across
+/// configured local directories or remote mirrors.
 pub fn latest_registry_version(name: &str, registry: Option<&str>) -> Result<Version, String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    latest_registry_version_opts(&cwd, name, registry, false)
+}
+
+fn read_local_yanked(pkg_dir: &Path) -> BTreeSet<Version> {
+    let mut yanked = BTreeSet::new();
+    let yanked_file = pkg_dir.join("yanked.txt");
+    if let Ok(ytext) = std::fs::read_to_string(&yanked_file) {
+        for line in ytext.lines() {
+            let t = line.trim();
+            if !t.is_empty() && !t.starts_with('#') {
+                if let Ok(v) = Version::parse(t) {
+                    yanked.insert(v);
+                }
+            }
+        }
+    }
+    yanked
+}
+
+/// Resolve the highest published non-yanked `Version` of `name`, supporting
+/// `--offline` cached lookup when `offline == true`.
+pub fn latest_registry_version_opts(
+    project_root: &Path,
+    name: &str,
+    registry: Option<&str>,
+    offline: bool,
+) -> Result<Version, String> {
     valid_pkg_name(name)?;
     let endpoints = registry::registry_endpoints();
     if endpoints.is_empty() {
@@ -65,13 +93,33 @@ pub fn latest_registry_version(name: &str, registry: Option<&str>) -> Result<Ver
         ));
     }
 
+    if offline {
+        let (_cache_dir, vers) =
+            registry::fetch_cached_versions(project_root, &endpoints, registry, name)?;
+        return vers.into_iter().max().ok_or_else(|| {
+            format!(
+                "offline mode: no cached versions found for '{}' in cache/local registry",
+                name
+            )
+        });
+    }
+
     let mut best: Option<Version> = None;
     let mut last_err: Option<String> = None;
+    let mut all_yanked = false;
     for ep in &endpoints {
         if registry::is_remote_url(ep) {
             match registry::fetch_versions_across_mirrors(std::slice::from_ref(ep), registry, name)
             {
-                Ok((_, vers)) => {
+                Ok((eff, mut vers)) => {
+                    registry::record_migration_cache(project_root, ep, &eff);
+                    let yanked = registry::fetch_remote_yanked(&eff, registry, name)?;
+                    let had_any = !vers.is_empty();
+                    vers.retain(|v| !yanked.contains(v));
+                    if had_any && vers.is_empty() {
+                        all_yanked = true;
+                        continue;
+                    }
                     if let Some(top) = vers.into_iter().max() {
                         if best.as_ref().is_none_or(|b| top > *b) {
                             best = Some(top);
@@ -98,6 +146,9 @@ pub fn latest_registry_version(name: &str, registry: Option<&str>) -> Result<Ver
                 ));
                 continue;
             }
+            let yanked = read_local_yanked(&pkg_dir);
+            let mut found_any = false;
+            let mut non_yanked = false;
             if let Ok(rd) = std::fs::read_dir(&pkg_dir) {
                 for entry in rd.filter_map(|e| e.ok()) {
                     if !entry.path().is_dir() {
@@ -106,12 +157,20 @@ pub fn latest_registry_version(name: &str, registry: Option<&str>) -> Result<Ver
                     let fname = entry.file_name();
                     if let Some(dirname) = fname.to_str() {
                         if let Ok(v) = Version::parse(dirname) {
+                            found_any = true;
+                            if yanked.contains(&v) {
+                                continue;
+                            }
+                            non_yanked = true;
                             if best.as_ref().is_none_or(|b| v > *b) {
                                 best = Some(v);
                             }
                         }
                     }
                 }
+            }
+            if found_any && !non_yanked {
+                all_yanked = true;
             }
             if best.is_some() {
                 break;
@@ -120,7 +179,13 @@ pub fn latest_registry_version(name: &str, registry: Option<&str>) -> Result<Ver
     }
 
     best.ok_or_else(|| {
-        last_err.unwrap_or_else(|| format!("registry: no versions found for '{}'", name))
+        if let Some(e) = last_err {
+            e
+        } else if all_yanked {
+            format!("registry: all published versions of '{}' are yanked", name)
+        } else {
+            format!("registry: no versions found for '{}'", name)
+        }
     })
 }
 
@@ -175,8 +240,8 @@ fn resolve_registry_version_dir(
                     continue;
                 }
             };
-            let yanked =
-                registry::fetch_remote_yanked(&effective_url, registry, name).unwrap_or_default();
+            registry::record_migration_cache(project_root, ep, &effective_url);
+            let yanked = registry::fetch_remote_yanked(&effective_url, registry, name)?;
             let chosen = pick_matching_version_with_yank(
                 name,
                 &available,
@@ -353,6 +418,7 @@ fn resolve_source(
                 git::locked_commit(locked_sources, name, url)
             };
             if opts.offline {
+                git::validate_git_url(name, url)?;
                 let cached = root.join(".spid3r").join("git").join(name);
                 if !cached.is_dir() {
                     return Err(format!(
@@ -362,14 +428,8 @@ fn resolve_source(
                         cached.display()
                     ));
                 }
-                let origin = match pin {
-                    Some(c) => format!("git+{}#{}", url, c),
-                    None => locked_sources
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| format!("git+{}", url)),
-                };
-                return Ok((cached, origin));
+                let head = git::verify_offline_checkout(name, &cached, pin.as_deref())?;
+                return Ok((cached, format!("git+{}#{}", url, head)));
             }
             let (dir, commit) = git::fetch_git(root, name, url, rev.as_deref(), pin.as_deref())?;
             Ok((dir, format!("git+{}#{}", url, commit)))
@@ -499,6 +559,95 @@ fn collect_root_deps(
     Ok(deps)
 }
 
+fn precheck_frozen_source(
+    res: &ResolvedPkg,
+    used_by: Option<&str>,
+    locked: &[LockEntry],
+) -> Result<(), String> {
+    let Some(l) = locked
+        .iter()
+        .find(|e| e.name == res.name && e.used_by.as_deref() == used_by)
+    else {
+        return Err(format!(
+            "frozen lockfile: package '{}' is missing from spider.lock — run `spkg install` without --frozen",
+            res.name
+        ));
+    };
+    if l.version != res.version || l.source != res.origin {
+        return Err(format!(
+            "frozen lockfile: package '{}' changed ({}@{} vs {}@{}) — run `spkg install` without --frozen",
+            res.name, l.version, l.source, res.version, res.origin
+        ));
+    }
+    let src_dir = res.dep_dir.join("src");
+    let src_files = super::hash::collect_regular_files(&src_dir)?;
+    let src_sha = super::hash::hash_files(&src_dir, &src_files)?;
+    if let Some(exp_files) = l.files {
+        if src_files.len() != exp_files {
+            return Err(format!(
+                "frozen lockfile: package '{}' file count changed ({} vs {}) — run `spkg install` without --frozen",
+                res.name, src_files.len(), exp_files
+            ));
+        }
+    }
+    if let Some(ref exp_sha) = l.sha256 {
+        if src_sha != *exp_sha {
+            return Err(format!(
+                "frozen lockfile: package '{}' sha256 changed (locked {}, resolved {}) — run `spkg install` without --frozen",
+                res.name, exp_sha, src_sha
+            ));
+        }
+    }
+    if let Some(ref exp_msha) = l.manifest_sha256 {
+        if res.is_registry {
+            let msha_raw =
+                std::fs::read_to_string(res.dep_dir.join("manifest.sha256")).map_err(|_| {
+                    format!(
+                        "frozen lockfile: package '{}' lacks manifest.sha256 matching spider.lock",
+                        res.name
+                    )
+                })?;
+            if msha_raw.trim() != exp_msha {
+                return Err(format!(
+                    "frozen lockfile: package '{}' manifest-sha256 changed (locked {}, resolved {})",
+                    res.name, exp_msha, msha_raw.trim()
+                ));
+            }
+        }
+    }
+    let triple = super::manifest::host_target_triple();
+    let native_dir = res.dep_dir.join("native").join(triple);
+    let actual_target = native_dir.is_dir().then(|| triple.to_string());
+    if l.target != actual_target {
+        return Err(format!(
+            "frozen lockfile: package '{}' wheel target changed ({:?} vs {:?})",
+            res.name, l.target, actual_target
+        ));
+    }
+    if native_dir.is_dir() {
+        let actual_native = super::hash::native_tree_hash(&native_dir)?;
+        if l.native_sha256.as_deref() != Some(actual_native.as_str()) {
+            return Err(format!(
+                "frozen lockfile: package '{}' native-sha256 changed ({:?} vs {})",
+                res.name, l.native_sha256, actual_native
+            ));
+        }
+    }
+    let mut actual_ffi = Vec::new();
+    if let Ok(Some(m)) = Manifest::load(&res.dep_dir) {
+        actual_ffi.extend(m.ffi.libs);
+        actual_ffi.extend(m.ffi.bundled);
+        actual_ffi.extend(m.ffi.runtime_libs);
+    }
+    if l.ffi_libs != actual_ffi {
+        return Err(format!(
+            "frozen lockfile: package '{}' ffi-libs changed ({:?} vs {:?})",
+            res.name, l.ffi_libs, actual_ffi
+        ));
+    }
+    Ok(())
+}
+
 fn verify_frozen_lock_matches(locked: &[LockEntry], planned: &[LockEntry]) -> Result<(), String> {
     if locked.len() != planned.len() {
         return Err(format!(
@@ -517,10 +666,18 @@ fn verify_frozen_lock_matches(locked: &[LockEntry], planned: &[LockEntry]) -> Re
                 p.name
             ));
         };
-        if l.version != p.version || l.source != p.source {
+        if l.version != p.version
+            || l.source != p.source
+            || l.files != p.files
+            || l.sha256 != p.sha256
+            || l.manifest_sha256 != p.manifest_sha256
+            || l.target != p.target
+            || l.native_sha256 != p.native_sha256
+            || l.ffi_libs != p.ffi_libs
+        {
             return Err(format!(
-                "frozen lockfile: package '{}' changed ({}@{} vs {}@{}) — run `spkg install` without --frozen",
-                p.name, l.version, l.source, p.version, p.source
+                "frozen lockfile: package '{}' drifted from spider.lock (version/source/checksum/FFI mismatch) — run `spkg install` without --frozen",
+                p.name
             ));
         }
     }
@@ -785,24 +942,22 @@ pub fn install_opts(root: &Path, opts: &InstallOptions) -> Result<InstallReport,
     }
 
     if opts.frozen {
-        let planned_entries: Vec<LockEntry> = order
-            .iter()
-            .filter(|pkg| seen.contains(*pkg))
-            .filter_map(|pkg| resolutions.get(pkg))
-            .map(|res| LockEntry {
-                name: res.name.clone(),
-                version: res.version.clone(),
-                source: res.origin.clone(),
-                files: None,
-                sha256: None,
-                manifest_sha256: None,
-                target: None,
-                native_sha256: None,
-                ffi_libs: Vec::new(),
-                used_by: None,
-            })
-            .collect();
-        verify_frozen_lock_matches(&lock_entries, &planned_entries)?;
+        let reachable_count = order.iter().filter(|pkg| seen.contains(*pkg)).count();
+        if lock_entries.len() != reachable_count {
+            return Err(format!(
+                "frozen lockfile: spider.lock has {} package(s), but spider.toml resolves {} — run `spkg install` without --frozen",
+                lock_entries.len(),
+                reachable_count
+            ));
+        }
+        for pkg in &order {
+            if !seen.contains(pkg) {
+                continue;
+            }
+            if let Some(res) = resolutions.get(pkg) {
+                precheck_frozen_source(res, None, &lock_entries)?;
+            }
+        }
     }
 
     // Phase 2: Atomic vendoring + orphan pruning + escaped lockfile write.
@@ -834,6 +989,7 @@ pub fn install_opts(root: &Path, opts: &InstallOptions) -> Result<InstallReport,
     prune_orphaned_vendor_dirs(root, &seen)?;
 
     if opts.frozen {
+        verify_frozen_lock_matches(&lock_entries, &final_entries)?;
         report.unchanged += 1;
         return Ok(report);
     }
@@ -891,11 +1047,12 @@ fn install_workspace(
                 member_dir.display()
             )
         })?;
-        member_roots.push((member.clone(), member_manifest.deps.clone()));
+        let member_deps = collect_root_deps(&member_manifest, opts)?;
+        member_roots.push((member.clone(), member_deps.clone()));
 
         let mut member_pkgs: Vec<String> = Vec::new();
         let mut queue: VecDeque<WsQueueItem> = VecDeque::new();
-        for dep in &member_manifest.deps {
+        for dep in &member_deps {
             queue.push_back(WsQueueItem {
                 dep: dep.clone(),
                 base_dir: member_dir.clone(),
@@ -1112,25 +1269,28 @@ fn install_workspace(
     }
 
     if opts.frozen {
-        let planned_entries: Vec<LockEntry> = member_blocks
+        let reachable_count = member_blocks
             .iter()
             .flat_map(|(_, _, pkgs)| pkgs.iter())
             .filter(|pkg| seen.contains(*pkg))
-            .filter_map(|pkg| resolutions.get(pkg))
-            .map(|res| LockEntry {
-                name: res.name.clone(),
-                version: res.version.clone(),
-                source: res.origin.clone(),
-                files: None,
-                sha256: None,
-                manifest_sha256: None,
-                target: None,
-                native_sha256: None,
-                ffi_libs: Vec::new(),
-                used_by: Some(res.used_by.clone()),
-            })
-            .collect();
-        verify_frozen_lock_matches(&lock_entries, &planned_entries)?;
+            .count();
+        if lock_entries.len() != reachable_count {
+            return Err(format!(
+                "frozen lockfile: spider.lock has {} package(s), but spider.toml resolves {} — run `spkg install` without --frozen",
+                lock_entries.len(),
+                reachable_count
+            ));
+        }
+        for (_, _, pkgs) in &member_blocks {
+            for pkg in pkgs {
+                if !seen.contains(pkg) {
+                    continue;
+                }
+                if let Some(res) = resolutions.get(pkg) {
+                    precheck_frozen_source(res, Some(res.used_by.as_str()), &lock_entries)?;
+                }
+            }
+        }
     }
 
     let mut report = InstallReport::default();
@@ -1166,6 +1326,7 @@ fn install_workspace(
     prune_orphaned_vendor_dirs(root, &seen)?;
 
     if opts.frozen {
+        verify_frozen_lock_matches(&lock_entries, &final_entries)?;
         report.unchanged += 1;
         return Ok(report);
     }

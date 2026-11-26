@@ -41,7 +41,8 @@ pub use manifest::{
     PackageInfo,
 };
 pub use resolver::{
-    install, install_opts, install_with, latest_registry_version, InstallOptions, InstallReport,
+    install, install_opts, install_with, latest_registry_version, latest_registry_version_opts,
+    InstallOptions, InstallReport,
 };
 pub use semver::{Constraint, Version};
 pub use tar::{pack, pack_entries, pack_for_target, pack_workspace, read_tar, unpack, write_tar};

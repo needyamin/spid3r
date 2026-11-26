@@ -9,11 +9,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::hash::{native_tree_hash, vendor_src_hash};
+use super::hash::{manifest_and_tree_digest, native_tree_hash, vendor_src_hash};
 use super::lockfile::{read_lock, LockEntry};
 use super::manifest::{
-    host_target_triple, parse_manifest, validate_ffi_lib_name, validate_native_rel_path, FfiConfig,
-    Manifest,
+    host_target_triple, parse_manifest, valid_pkg_name, validate_ffi_lib_name,
+    validate_native_rel_path, FfiConfig, Manifest,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -141,19 +141,35 @@ fn collect_ffi_from_base(
     Ok(())
 }
 
+fn collect_declared_ffi_list(ffi: &FfiConfig) -> Vec<String> {
+    let mut out = Vec::with_capacity(ffi.libs.len() + ffi.bundled.len() + ffi.runtime_libs.len());
+    out.extend(ffi.libs.iter().cloned());
+    out.extend(ffi.bundled.iter().cloned());
+    out.extend(ffi.runtime_libs.iter().cloned());
+    out
+}
+
 fn verify_vendor_ffi_entry(
     vendor_dir: &Path,
     entry: &LockEntry,
     triple: &str,
+    raw_manifest_bytes: &[u8],
+    dep_ffi: &FfiConfig,
 ) -> Result<(), String> {
-    if !vendor_dir.is_dir() {
-        return Err(format!(
+    let vmeta = std::fs::symlink_metadata(vendor_dir).map_err(|_| {
+        format!(
             "vendor/{} is missing (declared FFI in spider.lock) — run `spkg install`",
+            entry.name
+        )
+    })?;
+    if vmeta.file_type().is_symlink() || !vmeta.is_dir() {
+        return Err(format!(
+            "refusing auto-FFI link for symlinked or non-directory 'vendor/{}'",
             entry.name
         ));
     }
+    let (_count, actual_sha) = vendor_src_hash(vendor_dir)?;
     if let Some(expected_sha) = entry.sha256.as_deref() {
-        let (_count, actual_sha) = vendor_src_hash(vendor_dir)?;
         if actual_sha != expected_sha {
             return Err(format!(
                 "refusing auto-FFI link for tampered package 'vendor/{}': \
@@ -166,6 +182,26 @@ fn verify_vendor_ffi_entry(
             "refusing auto-FFI link for unverified registry package 'vendor/{}' \
              (missing sha256 in spider.lock)",
             entry.name
+        ));
+    }
+
+    if let Some(expected_msha) = entry.manifest_sha256.as_deref() {
+        let computed_msha = manifest_and_tree_digest(raw_manifest_bytes, &actual_sha);
+        if computed_msha != expected_msha {
+            return Err(format!(
+                "refusing auto-FFI link for tampered manifest in 'vendor/{}': \
+                 manifest-sha256 mismatch (expected {}, got {})",
+                entry.name, expected_msha, computed_msha
+            ));
+        }
+    }
+
+    let declared_ffi = collect_declared_ffi_list(dep_ffi);
+    if declared_ffi != entry.ffi_libs {
+        return Err(format!(
+            "refusing auto-FFI link for tampered manifest in 'vendor/{}': \
+             .spid3r-manifest.toml [ffi] ({:?}) does not match spider.lock ffi-libs ({:?}) — run `spkg install`",
+            entry.name, declared_ffi, entry.ffi_libs
         ));
     }
 
@@ -232,14 +268,45 @@ pub fn collect_project_ffi_links(source_file: &Path) -> Result<ResolvedFfiLinks,
     let lock_entries = read_lock(&root)?;
     let vendor_root = root.join("vendor");
     for entry in &lock_entries {
+        valid_pkg_name(&entry.name)?;
         let vendor_dir = vendor_root.join(&entry.name);
-        let snap_manifest = vendor_dir.join(".spid3r-manifest.toml");
-        if !snap_manifest.is_file() {
-            continue;
+        if let Ok(vmeta) = std::fs::symlink_metadata(&vendor_dir) {
+            if vmeta.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing symlinked dependency directory 'vendor/{}'",
+                    entry.name
+                ));
+            }
         }
-        let raw_manifest = std::fs::read_to_string(&snap_manifest).map_err(|e| {
+        let snap_manifest = vendor_dir.join(".spid3r-manifest.toml");
+        match std::fs::symlink_metadata(&snap_manifest) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!(
+                    "refusing symlinked manifest snapshot in 'vendor/{}'",
+                    entry.name
+                ));
+            }
+            Ok(m) if m.is_file() => {}
+            _ => {
+                if !entry.ffi_libs.is_empty() {
+                    return Err(format!(
+                        "vendor/{} is missing .spid3r-manifest.toml (spider.lock declares ffi-libs) — run `spkg install`",
+                        entry.name
+                    ));
+                }
+                continue;
+            }
+        }
+        let raw_manifest_bytes = std::fs::read(&snap_manifest).map_err(|e| {
             format!(
                 "cannot read vendored manifest '{}': {}",
+                snap_manifest.display(),
+                e
+            )
+        })?;
+        let raw_manifest = String::from_utf8(raw_manifest_bytes.clone()).map_err(|e| {
+            format!(
+                "vendored manifest '{}' is not valid UTF-8: {}",
                 snap_manifest.display(),
                 e
             )
@@ -251,13 +318,19 @@ pub fn collect_project_ffi_links(source_file: &Path) -> Result<ResolvedFfiLinks,
                 e
             )
         })?;
-        if dep_manifest.ffi.libs.is_empty()
-            && dep_manifest.ffi.bundled.is_empty()
-            && dep_manifest.ffi.runtime_libs.is_empty()
-        {
+        let has_ffi = !dep_manifest.ffi.libs.is_empty()
+            || !dep_manifest.ffi.bundled.is_empty()
+            || !dep_manifest.ffi.runtime_libs.is_empty();
+        if !has_ffi && entry.ffi_libs.is_empty() {
             continue;
         }
-        verify_vendor_ffi_entry(&vendor_dir, entry, triple)?;
+        verify_vendor_ffi_entry(
+            &vendor_dir,
+            entry,
+            triple,
+            &raw_manifest_bytes,
+            &dep_manifest.ffi,
+        )?;
         collect_ffi_from_base(
             &format!("vendor/{}", entry.name),
             &dep_manifest.ffi,

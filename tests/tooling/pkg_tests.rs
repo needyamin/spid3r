@@ -2200,3 +2200,429 @@ fn build_auto_links_vendored_ffi_system_lib_without_flag() {
         "AUTO_FFI_OK"
     );
 }
+
+#[test]
+fn security_trust_pk_fails_closed_on_stripped_metadata_sigs_and_http_mirrors() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let p = Project::new("sec_c2");
+    let reg = p.base.join("reg");
+    p.write_sibling(
+        "slib/spider.toml",
+        "[package]\nname = \"slib\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+    );
+    p.write_sibling(
+        "slib/src/lib.matrix",
+        "public fn ok() -> int { return 1; }\n",
+    );
+
+    let seed = "33".repeat(32);
+    let pub_out = Command::new(bin())
+        .args(["publish", "--to-dir", reg.to_str().unwrap()])
+        .current_dir(p.base.join("slib"))
+        .env("SPID3R_SIGN_KEY", &seed)
+        .output()
+        .unwrap();
+    assert!(pub_out.status.success());
+    let pk = std::fs::read_to_string(reg.join("registry.pub"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+    let ini_str = ini.to_str().unwrap();
+
+    // 1. Removing manifest.sha256.sig must fail when SPID3R_TRUST_PK is set.
+    let msig_path = reg.join("slib/1.0.0/manifest.sha256.sig");
+    let orig_msig = std::fs::read(&msig_path).unwrap();
+    std::fs::remove_file(&msig_path).unwrap();
+
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nslib = { version = \"^1.0\" }\n",
+    );
+    p.write("src/main.matrix", "fn main() { return 0; }\n");
+    let (code, _, err) = p.run_env(
+        &["install"],
+        &[
+            ("SPID3R_INI", ini_str),
+            ("SPID3R_REGISTRY", reg.to_str().unwrap()),
+            ("SPID3R_TRUST_PK", &pk),
+        ],
+    );
+    assert_ne!(
+        code, 0,
+        "stripped manifest.sha256.sig must fail under trust_pk"
+    );
+    assert!(err.contains("manifest.sha256.sig"), "{err}");
+    std::fs::write(&msig_path, orig_msig).unwrap();
+
+    // 2. Remote registry missing registry.toml.sig must fail under trust_pk.
+    std::fs::remove_file(reg.join("registry.toml.sig")).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let reg_clone = reg.clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_bg = stop.clone();
+    let h = std::thread::spawn(move || {
+        while !stop_bg.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((mut s, _)) = listener.accept() {
+                if stop_bg.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let raw = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let rel = raw.trim_start_matches('/');
+                let cand = reg_clone.join(rel);
+                if cand.is_file() {
+                    let body = std::fs::read(&cand).unwrap();
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = s.write_all(hdr.as_bytes());
+                    let _ = s.write_all(&body);
+                } else {
+                    let _ = s.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+        }
+    });
+
+    let remote_url = format!("http://127.0.0.1:{}", port);
+    let cache = p.base.join("cache");
+    let (rcode, _, rerr) = p.run_env(
+        &["install"],
+        &[
+            ("SPID3R_INI", ini_str),
+            ("SPID3R_REGISTRY", &remote_url),
+            ("SPID3R_TRUST_PK", &pk),
+            ("SPID3R_CACHE_DIR", cache.to_str().unwrap()),
+        ],
+    );
+    assert_ne!(rcode, 0, "unsigned registry.toml must fail under trust_pk");
+    assert!(rerr.contains("registry.toml.sig"), "{rerr}");
+
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    let _ = h.join();
+}
+
+#[test]
+fn security_ffi_link_and_verify_reject_tampered_manifest_snapshot() {
+    let p = Project::new("sec_c3");
+    p.add_dep("purelib", "1.0.0", DEP_BODY);
+    p.add_app(&[("purelib", "../purelib")], "fn main() { return 0; }\n");
+    assert_eq!(p.run(&["install"]).0, 0);
+
+    // Tamper .spid3r-manifest.toml to inject an undeclared [ffi] lib.
+    let snap = p.root.join("vendor/purelib/.spid3r-manifest.toml");
+    std::fs::write(
+        &snap,
+        "[package]\nname = \"purelib\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[ffi]\nlibs = [\"evil_injected\"]\n",
+    )
+    .unwrap();
+
+    let ffi_err =
+        spid3r_lang::pkg::ffi_link::collect_project_ffi_links(&p.root.join("src/main.matrix"))
+            .unwrap_err();
+    assert!(ffi_err.contains("tampered manifest"), "{ffi_err}");
+    assert_ne!(
+        p.run(&["audit", "--offline"]).0,
+        0,
+        "audit must fail on ffi drift"
+    );
+
+    // Deleting .spid3r-manifest.toml must also fail verify when manifest-sha256 is locked.
+    let reg = p.base.join("reg");
+    p.write_sibling(
+        "regmod/spider.toml",
+        "[package]\nname = \"regmod\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+    );
+    p.write_sibling(
+        "regmod/src/lib.matrix",
+        "public fn a() -> int { return 1; }\n",
+    );
+    assert!(Command::new(bin())
+        .args(["publish", "--to-dir", reg.to_str().unwrap()])
+        .current_dir(p.base.join("regmod"))
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let p2 = Project::new("sec_c3_del");
+    p2.write(
+        "spider.toml",
+        "[package]\nname = \"app2\"\nversion = \"0.1.0\"\n\n[dependencies]\nregmod = { version = \"^1.0\" }\n",
+    );
+    p2.write("src/main.matrix", "fn main() { return 0; }\n");
+    assert_eq!(
+        p2.run_env(&["install"], &[("SPID3R_REGISTRY", reg.to_str().unwrap())])
+            .0,
+        0
+    );
+    std::fs::remove_file(p2.root.join("vendor/regmod/.spid3r-manifest.toml")).unwrap();
+    let (vcode, vout, verr) = p2.run(&["verify"]);
+    assert_ne!(
+        vcode, 0,
+        "verify must catch deleted .spid3r-manifest.toml: {vout}{verr}"
+    );
+    let (_, lout, _) = p2.run(&["list"]);
+    assert!(lout.contains("UNVERIFIED"), "{lout}");
+}
+
+#[test]
+fn security_frozen_rejects_hash_drift_without_mutating_vendor() {
+    let p = Project::new("sec_frozen_h1");
+    p.add_dep("mathlib", "1.0.0", DEP_BODY);
+    p.add_app(&[("mathlib", "../mathlib")], "fn main() { return 0; }\n");
+    assert_eq!(p.run(&["install"]).0, 0);
+    assert_eq!(p.run(&["install", "--frozen"]).0, 0);
+
+    // Mutate upstream path dependency source without changing its version.
+    p.write_sibling(
+        "mathlib/src/lib.matrix",
+        "public fn square(x) {\n    return 999;\n}\n",
+    );
+    let (code, _, err) = p.run(&["install", "--frozen"]);
+    assert_ne!(code, 0, "--frozen must reject sha256 drift");
+    assert!(err.contains("frozen lockfile"), "{err}");
+    // Original vendored copy must remain untouched!
+    assert!(
+        p.read("vendor/mathlib/lib.matrix").contains("x * x"),
+        "failed --frozen must not overwrite vendor/"
+    );
+}
+
+#[test]
+fn security_tar_rejects_pax_headers_and_normalized_case_collisions() {
+    let pax_tar = spid3r_lang::pkg::write_tar(&[]);
+    let _ = pax_tar;
+    // Construct a minimal valid ustar header with typeflag 'x' (PAX header).
+    let mut hdr = [0u8; 512];
+    hdr[..11].copy_from_slice(b"PaxHeader/a");
+    hdr[100..108].copy_from_slice(b"0000644\0");
+    hdr[108..116].copy_from_slice(b"0000000\0");
+    hdr[116..124].copy_from_slice(b"0000000\0");
+    hdr[124..136].copy_from_slice(b"00000000000\0");
+    hdr[136..148].copy_from_slice(b"00000000000\0");
+    hdr[148..156].copy_from_slice(b"        ");
+    hdr[156] = b'x';
+    hdr[257..263].copy_from_slice(b"ustar\0");
+    hdr[263..265].copy_from_slice(b"00");
+    let cksum: u64 = hdr.iter().map(|&b| b as u64).sum();
+    let ck_str = format!("{:06o}\0 ", cksum);
+    hdr[148..156].copy_from_slice(ck_str.as_bytes());
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&hdr);
+    raw.extend_from_slice(&[0u8; 1024]);
+    let err = spid3r_lang::pkg::read_tar(&raw).unwrap_err();
+    assert!(err.contains("PAX"), "{err}");
+
+    let dup_tar = spid3r_lang::pkg::write_tar(&[
+        ("src//a.matrix".to_string(), b"1\n".to_vec()),
+        ("src/A.matrix".to_string(), b"2\n".to_vec()),
+    ]);
+    let out_dir = std::env::temp_dir().join(format!("spid3r_tar_dup_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let dup_err = spid3r_lang::pkg::tar::extract_tar_checked(&dup_tar, &out_dir).unwrap_err();
+    assert!(dup_err.contains("case-colliding"), "{dup_err}");
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn tool_lifecycle_cleans_orphans_refuses_ffi_and_supports_offline() {
+    let p = Project::new("tool_h5");
+    let state = p.base.join("state");
+    let cache = p.base.join("cache");
+    let reg = p.base.join("reg");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&reg).unwrap();
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+    let state_str = state.to_str().unwrap();
+    let ini_str = ini.to_str().unwrap();
+    let reg_str = reg.to_str().unwrap();
+    let cache_str = cache.to_str().unwrap();
+
+    // 1. Tool with 2 bins installed, then upgraded (--force) dropping one bin -> orphan shim removed.
+    p.write_sibling(
+        "tpkg_v1/spider.toml",
+        "[package]\nname = \"tpkg\"\nversion = \"1.0.0\"\n\n[bin]\nbin_keep = \"src/a.matrix\"\nbin_drop = \"src/b.matrix\"\n",
+    );
+    p.write_sibling(
+        "tpkg_v1/src/a.matrix",
+        "fn main() { println(\"A1\"); return 0; }\n",
+    );
+    p.write_sibling(
+        "tpkg_v1/src/b.matrix",
+        "fn main() { println(\"B1\"); return 0; }\n",
+    );
+    assert!(Command::new(bin())
+        .args(["publish", "--to-dir", reg_str])
+        .current_dir(p.base.join("tpkg_v1"))
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let (c1, _, e1) = p.run_env(
+        &["tool", "install", "tpkg"],
+        &[
+            ("SPID3R_STATE_DIR", state_str),
+            ("SPID3R_INI", ini_str),
+            ("SPID3R_REGISTRY", reg_str),
+            ("SPID3R_CACHE_DIR", cache_str),
+        ],
+    );
+    assert_eq!(c1, 0, "{e1}");
+    let drop_shim = if cfg!(windows) {
+        state.join("bin/bin_drop.cmd")
+    } else {
+        state.join("bin/bin_drop")
+    };
+    assert!(drop_shim.is_file());
+
+    // Upgrade via --path removing `bin_drop`.
+    p.write_sibling(
+        "tpkg_v2/spider.toml",
+        "[package]\nname = \"tpkg\"\nversion = \"2.0.0\"\n\n[bin]\nbin_keep = \"src/a.matrix\"\n",
+    );
+    p.write_sibling(
+        "tpkg_v2/src/a.matrix",
+        "fn main() { println(\"A2\"); return 0; }\n",
+    );
+    let (c2, _, e2) = p.run_env(
+        &[
+            "tool",
+            "install",
+            "tpkg",
+            "--path",
+            p.base.join("tpkg_v2").to_str().unwrap(),
+            "--force",
+        ],
+        &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+    );
+    assert_eq!(c2, 0, "{e2}");
+    assert!(
+        !drop_shim.exists(),
+        "orphan shim must be deleted on upgrade"
+    );
+
+    // 2. `--offline` install succeeds from local registry.
+    assert_eq!(
+        p.run_env(
+            &["tool", "uninstall", "tpkg"],
+            &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+        )
+        .0,
+        0
+    );
+    let (off_c, _, off_e) = p.run_env(
+        &["tool", "install", "tpkg", "--offline"],
+        &[
+            ("SPID3R_STATE_DIR", state_str),
+            ("SPID3R_INI", ini_str),
+            ("SPID3R_REGISTRY", reg_str),
+            ("SPID3R_CACHE_DIR", cache_str),
+        ],
+    );
+    assert_eq!(off_c, 0, "tool --offline failed: {off_e}");
+
+    // 3. [ffi] tool is cleanly rejected.
+    p.write_sibling(
+        "ffitool/spider.toml",
+        "[package]\nname = \"ffitool\"\nversion = \"0.1.0\"\n\n[bin]\nffibin = \"src/cli.matrix\"\n\n[ffi]\nlibs = [\"m\"]\n",
+    );
+    p.write_sibling("ffitool/src/cli.matrix", "fn main() { return 0; }\n");
+    let (fc, _, ferr) = p.run_env(
+        &[
+            "tool",
+            "install",
+            "ffitool",
+            "--path",
+            p.base.join("ffitool").to_str().unwrap(),
+        ],
+        &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+    );
+    assert_ne!(fc, 0, "[ffi] tool must be rejected");
+    assert!(ferr.contains("[ffi]"), "{ferr}");
+}
+
+#[test]
+fn yanked_latest_skipped_local_audit_remove_dev_and_json_escape() {
+    let p = Project::new("h3_h6_m2_m3");
+    let reg = p.base.join("reg");
+    let reg_str = reg.to_str().unwrap();
+
+    for ver in ["1.0.0", "1.1.0"] {
+        let d = p.base.join(format!("yk_{}", ver));
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(
+            d.join("spider.toml"),
+            format!(
+                "[package]\nname = \"yk\"\nversion = \"{}\"\nentry = \"src/lib.matrix\"\n",
+                ver
+            ),
+        )
+        .unwrap();
+        std::fs::write(d.join("src/lib.matrix"), "public fn f() { return 1; }\n").unwrap();
+        assert!(Command::new(bin())
+            .args(["publish", "--to-dir", reg_str])
+            .current_dir(&d)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    // Yank 1.1.0 -> fresh `spkg install yk` must pick 1.0.0!
+    std::fs::write(reg.join("yk/yanked.txt"), "1.1.0\n").unwrap();
+
+    let (ic, _, ie) = p.run_env(&["install", "yk"], &[("SPID3R_REGISTRY", reg_str)]);
+    assert_eq!(ic, 0, "{ie}");
+    let lock = p.read("spider.lock");
+    assert!(
+        lock.contains("version = \"1.0.0\""),
+        "must skip yanked 1.1.0: {lock}"
+    );
+
+    // Unyank 1.1.0 via explicit `spkg install yk==1.1.0` -> updates spider.toml + lock, then local audit catches yank + advisory!
+    std::fs::write(
+        reg.join("advisories.txt"),
+        "yk\t<=1.1.0\thigh\tSPK-TEST-1\tTest flaw\n",
+    )
+    .unwrap();
+    let (ac, aout, _) = p.run_env(&["audit"], &[("SPID3R_REGISTRY", reg_str)]);
+    assert_ne!(
+        ac, 0,
+        "local registry advisory must make audit fail: {aout}"
+    );
+    assert!(aout.contains("SPK-TEST-1"), "{aout}");
+
+    // `remove` handles [dev-dependencies], and `list --json` escapes Windows backslashes.
+    p.add_dep("devx", "0.1.0", DEP_BODY);
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\npathdep = { path = \"..\\devx\" }\n\n[dev-dependencies]\ndevx = { path = \"../devx\" }\n",
+    );
+    let _ = p.run(&["install", "--dev"]);
+    let (_, jout, _) = p.run(&["list", "--json"]);
+    assert!(
+        !jout.contains("path+..\\devx") || jout.contains("path+..\\\\devx"),
+        "Windows backslashes must be JSON-escaped:\n{jout}"
+    );
+    let (rc, _, re) = p.run(&["remove", "devx"]);
+    assert_eq!(rc, 0, "remove dev-dep failed: {re}");
+    assert!(!p.read("spider.toml").contains("devx ="));
+}
