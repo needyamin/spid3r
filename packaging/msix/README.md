@@ -20,7 +20,7 @@ This directory holds the Microsoft Store MSIX manifest template (`AppxManifest.x
 
 ## Submitting to Microsoft Partner Center
 
-1. Download `Spid3r-<version>-x64.msix` from the GitHub Release assets (built by `.github/workflows/release.yml` via `tools/release_selfhost.sh` and Windows SDK `makeappx.exe`).
+1. Download `Spid3r-<version>-x64.msix` from the GitHub Release assets (built by `.github/workflows/release.yml` via `tools/release/release_selfhost.sh` and Windows SDK `makeappx.exe`).
 2. Upload the unsigned `.msix` directly to **Partner Center → Submissions → Packages**. Microsoft Store signs Store packages with your Partner Center certificate upon certification.
 3. Because this is a desktop compiler toolchain (`runFullTrust`), include a short note in the **Submission notes for certification** explaining that Spid3r is a programming language CLI, bytecode VM, and LLVM AOT compiler (`spid3r`, `yamc`, `spvm`, `spkg`) with a local desktop settings panel (`spid3r-control`).
 

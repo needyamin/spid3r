@@ -7,6 +7,7 @@ rust-version = "1.98"
 description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
 license = "GPL-3.0-or-later"
 default-run = "spid3r"
+autotests = false
 
 [lib]
 name = "spid3r_lang"
@@ -115,3 +116,413 @@ codegen-units = 1
 # (the documented "error deleting lock file (os error 5)" quirk can escalate
 # into a rustc ICE in the metadata encoder). Reliability over rebuild speed.
 incremental = false
+
+# ---------------------------------------------------------------------------
+# Categorized integration tests (explicit paths so cargo test --test <name>
+# keeps the exact pre-reorganization target names without symbol collisions).
+# ---------------------------------------------------------------------------
+
+# tests/language/ - Language, syntax, types, OOP, and modules (25)
+[[test]]
+name = "lexer_tests"
+path = "tests/language/lexer_tests.rs"
+[[test]]
+name = "parser_tests"
+path = "tests/language/parser_tests.rs"
+[[test]]
+name = "literal_syntax"
+path = "tests/language/literal_syntax.rs"
+[[test]]
+name = "numbers"
+path = "tests/language/numbers.rs"
+[[test]]
+name = "constructs"
+path = "tests/language/constructs.rs"
+[[test]]
+name = "language_surface"
+path = "tests/language/language_surface.rs"
+[[test]]
+name = "syntax_gaps"
+path = "tests/language/syntax_gaps.rs"
+[[test]]
+name = "error_tests"
+path = "tests/language/error_tests.rs"
+[[test]]
+name = "stage2_syntax"
+path = "tests/language/stage2_syntax.rs"
+[[test]]
+name = "stage2b_hoisting"
+path = "tests/language/stage2b_hoisting.rs"
+[[test]]
+name = "stage2c_ergonomics"
+path = "tests/language/stage2c_ergonomics.rs"
+[[test]]
+name = "stage3_match"
+path = "tests/language/stage3_match.rs"
+[[test]]
+name = "stage4_errors"
+path = "tests/language/stage4_errors.rs"
+[[test]]
+name = "stage6_diagnostics"
+path = "tests/language/stage6_diagnostics.rs"
+[[test]]
+name = "stage7_lints"
+path = "tests/language/stage7_lints.rs"
+[[test]]
+name = "gradual_typing_tests"
+path = "tests/language/gradual_typing_tests.rs"
+[[test]]
+name = "narrowing_tests"
+path = "tests/language/narrowing_tests.rs"
+[[test]]
+name = "generics_tests"
+path = "tests/language/generics_tests.rs"
+[[test]]
+name = "oop_tests"
+path = "tests/language/oop_tests.rs"
+[[test]]
+name = "super_tests"
+path = "tests/language/super_tests.rs"
+[[test]]
+name = "magic_tests"
+path = "tests/language/magic_tests.rs"
+[[test]]
+name = "const_module_tests"
+path = "tests/language/const_module_tests.rs"
+[[test]]
+name = "module_graph"
+path = "tests/language/module_graph.rs"
+[[test]]
+name = "module_namespace"
+path = "tests/language/module_namespace.rs"
+[[test]]
+name = "module_resolution"
+path = "tests/language/module_resolution.rs"
+
+# tests/engines/ - Execution engines, VM, differential oracle, WASM, and embedding (12)
+[[test]]
+name = "interpreter_tests"
+path = "tests/engines/interpreter_tests.rs"
+[[test]]
+name = "vm_dispatch_tests"
+path = "tests/engines/vm_dispatch_tests.rs"
+[[test]]
+name = "vm_integrity_guard"
+path = "tests/engines/vm_integrity_guard.rs"
+[[test]]
+name = "opt_tests"
+path = "tests/engines/opt_tests.rs"
+[[test]]
+name = "engine_matrix"
+path = "tests/engines/engine_matrix.rs"
+[[test]]
+name = "difftest"
+path = "tests/engines/difftest.rs"
+[[test]]
+name = "perf_oracle_parity"
+path = "tests/engines/perf_oracle_parity.rs"
+[[test]]
+name = "phase5_perf_parity"
+path = "tests/engines/phase5_perf_parity.rs"
+[[test]]
+name = "wasm_tests"
+path = "tests/engines/wasm_tests.rs"
+[[test]]
+name = "embed_tests"
+path = "tests/engines/embed_tests.rs"
+[[test]]
+name = "integration_tests"
+path = "tests/engines/integration_tests.rs"
+[[test]]
+name = "core_evolution_tests"
+path = "tests/engines/core_evolution_tests.rs"
+
+# tests/native/ - Native LLVM AOT backend, FFI, freestanding, and single-file bundling (8)
+[[test]]
+name = "native_tests"
+path = "tests/native/native_tests.rs"
+[[test]]
+name = "native_catchability"
+path = "tests/native/native_catchability.rs"
+[[test]]
+name = "aot_args"
+path = "tests/native/aot_args.rs"
+[[test]]
+name = "ffi"
+path = "tests/native/ffi.rs"
+[[test]]
+name = "freestanding_cross"
+path = "tests/native/freestanding_cross.rs"
+[[test]]
+name = "gc_portability"
+path = "tests/native/gc_portability.rs"
+[[test]]
+name = "packaging"
+path = "tests/native/packaging.rs"
+[[test]]
+name = "single_file_app"
+path = "tests/native/single_file_app.rs"
+
+# tests/runtime/ - Memory/GC, concurrency, scheduler, event loop, and execution budgets (18)
+[[test]]
+name = "closure_cycle_leak"
+path = "tests/runtime/closure_cycle_leak.rs"
+[[test]]
+name = "cycle_tests"
+path = "tests/runtime/cycle_tests.rs"
+[[test]]
+name = "deep_drop"
+path = "tests/runtime/deep_drop.rs"
+[[test]]
+name = "gc_vm_autocollect"
+path = "tests/runtime/gc_vm_autocollect.rs"
+[[test]]
+name = "weak_tests"
+path = "tests/runtime/weak_tests.rs"
+[[test]]
+name = "stage2_concurrency"
+path = "tests/runtime/stage2_concurrency.rs"
+[[test]]
+name = "atomics_tests"
+path = "tests/runtime/atomics_tests.rs"
+[[test]]
+name = "deadlock_tests"
+path = "tests/runtime/deadlock_tests.rs"
+[[test]]
+name = "sched_tests"
+path = "tests/runtime/sched_tests.rs"
+[[test]]
+name = "sched_limits"
+path = "tests/runtime/sched_limits.rs"
+[[test]]
+name = "event_loop_tests"
+path = "tests/runtime/event_loop_tests.rs"
+[[test]]
+name = "timer_tests"
+path = "tests/runtime/timer_tests.rs"
+[[test]]
+name = "execution_budget"
+path = "tests/runtime/execution_budget.rs"
+[[test]]
+name = "resource_limits"
+path = "tests/runtime/resource_limits.rs"
+[[test]]
+name = "phase1_limits"
+path = "tests/runtime/phase1_limits.rs"
+[[test]]
+name = "p5_lazy_init"
+path = "tests/runtime/p5_lazy_init.rs"
+[[test]]
+name = "runtime_mgmt"
+path = "tests/runtime/runtime_mgmt.rs"
+[[test]]
+name = "process_opts"
+path = "tests/runtime/process_opts.rs"
+
+# tests/stdlib/ - Standard library, data structures, codecs, Unicode/tz, and DB (17)
+[[test]]
+name = "data_structure_tests"
+path = "tests/stdlib/data_structure_tests.rs"
+[[test]]
+name = "stdlib_library_tests"
+path = "tests/stdlib/stdlib_library_tests.rs"
+[[test]]
+name = "stdlib_additions"
+path = "tests/stdlib/stdlib_additions.rs"
+[[test]]
+name = "stdlib_assert"
+path = "tests/stdlib/stdlib_assert.rs"
+[[test]]
+name = "stdlib_codecs"
+path = "tests/stdlib/stdlib_codecs.rs"
+[[test]]
+name = "stdlib_extensions"
+path = "tests/stdlib/stdlib_extensions.rs"
+[[test]]
+name = "stdlib_extensions2"
+path = "tests/stdlib/stdlib_extensions2.rs"
+[[test]]
+name = "stdlib_gen"
+path = "tests/stdlib/stdlib_gen.rs"
+[[test]]
+name = "stdlib_toml"
+path = "tests/stdlib/stdlib_toml.rs"
+[[test]]
+name = "crypto_builtins"
+path = "tests/stdlib/crypto_builtins.rs"
+[[test]]
+name = "file_handles"
+path = "tests/stdlib/file_handles.rs"
+[[test]]
+name = "fs_path_pack"
+path = "tests/stdlib/fs_path_pack.rs"
+[[test]]
+name = "io_additions"
+path = "tests/stdlib/io_additions.rs"
+[[test]]
+name = "regex_scaling"
+path = "tests/stdlib/regex_scaling.rs"
+[[test]]
+name = "unicode_tz_tests"
+path = "tests/stdlib/unicode_tz_tests.rs"
+[[test]]
+name = "db_tests"
+path = "tests/stdlib/db_tests.rs"
+[[test]]
+name = "db_drivers"
+path = "tests/stdlib/db_drivers.rs"
+
+# tests/net/ - Networking, TLS, mail/FTP, and HTTP/web framework (8)
+[[test]]
+name = "net_tests"
+path = "tests/net/net_tests.rs"
+[[test]]
+name = "net_timeout"
+path = "tests/net/net_timeout.rs"
+[[test]]
+name = "phase2_net_limits"
+path = "tests/net/phase2_net_limits.rs"
+[[test]]
+name = "tls_fetch"
+path = "tests/net/tls_fetch.rs"
+[[test]]
+name = "tls_server"
+path = "tests/net/tls_server.rs"
+[[test]]
+name = "mail_ftp_tests"
+path = "tests/net/mail_ftp_tests.rs"
+[[test]]
+name = "web_stack_tests"
+path = "tests/net/web_stack_tests.rs"
+[[test]]
+name = "web_framework_tests"
+path = "tests/net/web_framework_tests.rs"
+
+# tests/tooling/ - CLI, formatter, docs, LSP, debugger, profiler, control panel, GUI, and pkg (15)
+[[test]]
+name = "cli_dispatch"
+path = "tests/tooling/cli_dispatch.rs"
+[[test]]
+name = "component_cli_aliases"
+path = "tests/tooling/component_cli_aliases.rs"
+[[test]]
+name = "f2_cli_outputs"
+path = "tests/tooling/f2_cli_outputs.rs"
+[[test]]
+name = "neofetch_tests"
+path = "tests/tooling/neofetch_tests.rs"
+[[test]]
+name = "tooling_tests"
+path = "tests/tooling/tooling_tests.rs"
+[[test]]
+name = "fmt_tests"
+path = "tests/tooling/fmt_tests.rs"
+[[test]]
+name = "doc_tests"
+path = "tests/tooling/doc_tests.rs"
+[[test]]
+name = "lsp_tests"
+path = "tests/tooling/lsp_tests.rs"
+[[test]]
+name = "debug_tests"
+path = "tests/tooling/debug_tests.rs"
+[[test]]
+name = "profiler"
+path = "tests/tooling/profiler.rs"
+[[test]]
+name = "control_tests"
+path = "tests/tooling/control_tests.rs"
+[[test]]
+name = "gui_tests"
+path = "tests/tooling/gui_tests.rs"
+[[test]]
+name = "pkg_manager"
+path = "tests/tooling/pkg_manager.rs"
+[[test]]
+name = "pkg_tests"
+path = "tests/tooling/pkg_tests.rs"
+[[test]]
+name = "bundle_tests"
+path = "tests/tooling/bundle_tests.rs"
+
+# tests/security/ - Hardening, audits, fuzzing, and security phase gates (12)
+[[test]]
+name = "artifact_hardening"
+path = "tests/security/artifact_hardening.rs"
+[[test]]
+name = "audit_hardening"
+path = "tests/security/audit_hardening.rs"
+[[test]]
+name = "audit_fixes"
+path = "tests/security/audit_fixes.rs"
+[[test]]
+name = "audit_regressions"
+path = "tests/security/audit_regressions.rs"
+[[test]]
+name = "audit_2026_review_tests"
+path = "tests/security/audit_2026_review_tests.rs"
+[[test]]
+name = "phase2_perf_security"
+path = "tests/security/phase2_perf_security.rs"
+[[test]]
+name = "phase3_security"
+path = "tests/security/phase3_security.rs"
+[[test]]
+name = "phase4_paths"
+path = "tests/security/phase4_paths.rs"
+[[test]]
+name = "phase5_hardening"
+path = "tests/security/phase5_hardening.rs"
+[[test]]
+name = "panic_hardening_tests"
+path = "tests/security/panic_hardening_tests.rs"
+[[test]]
+name = "fuzz_tests"
+path = "tests/security/fuzz_tests.rs"
+[[test]]
+name = "r12_fuzz_smoke"
+path = "tests/security/r12_fuzz_smoke.rs"
+
+# tests/regressions/ - Targeted regression and bug-fix suites (14)
+[[test]]
+name = "bug_batch_fixes"
+path = "tests/regressions/bug_batch_fixes.rs"
+[[test]]
+name = "bug_report_fixes"
+path = "tests/regressions/bug_report_fixes.rs"
+[[test]]
+name = "issues_resolution_tests"
+path = "tests/regressions/issues_resolution_tests.rs"
+[[test]]
+name = "low_severity_fixes"
+path = "tests/regressions/low_severity_fixes.rs"
+[[test]]
+name = "f4_opt_field"
+path = "tests/regressions/f4_opt_field.rs"
+[[test]]
+name = "f5_trailing_comma"
+path = "tests/regressions/f5_trailing_comma.rs"
+[[test]]
+name = "f6_list_join"
+path = "tests/regressions/f6_list_join.rs"
+[[test]]
+name = "f7_unicode_escape"
+path = "tests/regressions/f7_unicode_escape.rs"
+[[test]]
+name = "f8_json_eof"
+path = "tests/regressions/f8_json_eof.rs"
+[[test]]
+name = "fix_f3_hangs"
+path = "tests/regressions/fix_f3_hangs.rs"
+[[test]]
+name = "fix_f4_gc"
+path = "tests/regressions/fix_f4_gc.rs"
+[[test]]
+name = "fix_repl_cli"
+path = "tests/regressions/fix_repl_cli.rs"
+[[test]]
+name = "fix_semantic_priv"
+path = "tests/regressions/fix_semantic_priv.rs"
+[[test]]
+name = "fix_vm_trio"
+path = "tests/regressions/fix_vm_trio.rs"

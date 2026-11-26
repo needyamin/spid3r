@@ -1,6 +1,6 @@
 //! IANA time zone support, backed by a generated transition table.
 //!
-//! `tzdata.bin` is produced by `tools/gen_tzdata.py` from the compiled tz
+//! `tzdata.bin` is produced by `tools/codegen/gen_tzdata.py` from the compiled tz
 //! database (RFC 8536 TZif). Two properties matter:
 //!
 //!   * It is **expanded**, not copied. Modern TZif builds are "slim": they
@@ -30,7 +30,7 @@ use super::NativeDef;
 use crate::value::collections;
 use crate::value::{type_name, NativeCtx, Value};
 
-/// The generated database. See `tools/gen_tzdata.py` for the format.
+/// The generated database. See `tools/codegen/gen_tzdata.py` for the format.
 static BLOB: &[u8] = include_bytes!("tzdata.bin");
 
 const MAGIC: &[u8; 5] = b"SPTZ1";

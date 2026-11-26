@@ -38,23 +38,23 @@ benchmarks/
 
 ```bash
 # 1. Measure all runtimes (Spid3r AOT/VM/Tree, Node.js, PHP, Python) and render docs/html/benchmark.html
-python tools/bench_report.py
+python tools/bench/bench_report.py
 
 # 2. Re-render docs/html/benchmark.html from existing benchmarks/json/*.json without re-measuring
-python tools/bench_report.py --render
+python tools/bench/bench_report.py --render
 
 # 3. Verify report figures & table sync against frozen JSON baselines
-python tools/bench_report.py --verify-sync
+python tools/bench/bench_report.py --verify-sync
 
 # 4. In-tree differential + perf gate (tree == vm stdout)
 spid3r bench --gate --compare --runs 5
 
 # 5. Phase 0 integrity, fixture conformance & sensitivity gates
-python tools/phase0_manifest.py --verify
-python tools/phase0_fixtures.py --verify
-python tools/phase0_selftest.py
-python tools/phase0_bench.py --verify-selfhost
-python tools/phase0_bench.py --measure --advisory --quick --out benchmarks/json/compute-latest.json
+python tools/bench/phase0_manifest.py --verify
+python tools/bench/phase0_fixtures.py --verify
+python tools/bench/phase0_selftest.py
+python tools/bench/phase0_bench.py --verify-selfhost
+python tools/bench/phase0_bench.py --measure --advisory --quick --out benchmarks/json/compute-latest.json
 ```
 
 ## Measurement Discipline

@@ -59,9 +59,9 @@ Spid3r follows the **core programming language model of PHP, Python, and Java**:
 ## 2. Ground Rules (Non-Negotiable, GR-1…GR-4)
 
 1. **No fake implementations, no fake results.** Only claim a step is done when its real verification gate has run and passed on this repository.
-2. **No speed claim without benchmark evidence.** Use `tools/phase0_bench.py` (9 warmups / 21 repeats / 2 passes, MAD/median ≤ 5%, two-pass agreement ≤ 3%, startup-subtracted). Tiers: **A** no-regression floors (blocking), **B** measured targets (blocking), **C** stretch (advisory). Never promise numbers.
-3. **Engine contract holds after every step.** `tools/gate.sh` 9/9, `tools/difftest.sh` ALL MATCH, `cargo fmt --check`, and `cargo clippy --all-targets --features native -- -D warnings`. The tree interpreter is the semantic oracle (`docs/ENGINE_CONTRACT.md`).
-4. **Frozen corpus (SH-4).** `selfhost/corpus/` (`136` programs, `137` files, pinned by `MANIFEST.sha256`) is what parity gates run against. Any change requires a ledger entry explaining why + `python tools/corpus_manifest.py build && python tools/corpus_manifest.py verify`.
+2. **No speed claim without benchmark evidence.** Use `tools/bench/phase0_bench.py` (9 warmups / 21 repeats / 2 passes, MAD/median ≤ 5%, two-pass agreement ≤ 3%, startup-subtracted). Tiers: **A** no-regression floors (blocking), **B** measured targets (blocking), **C** stretch (advisory). Never promise numbers.
+3. **Engine contract holds after every step.** `tools/ci/gate.sh` 9/9, `tools/ci/difftest.sh` ALL MATCH, `cargo fmt --check`, and `cargo clippy --all-targets --features native -- -D warnings`. The tree interpreter is the semantic oracle (`docs/ENGINE_CONTRACT.md`).
+4. **Frozen corpus (SH-4).** `selfhost/corpus/` (`136` programs, `137` files, pinned by `MANIFEST.sha256`) is what parity gates run against. Any change requires a ledger entry explaining why + `python tools/selfhost/corpus_manifest.py build && python tools/selfhost/corpus_manifest.py verify`.
 5. **Parity is measured against Stage 0 (Rust `spid3r`)**, never from memory. Any lexer/parser/semantic/lower/vm-emission change must be mirrored in `selfhost/*.matrix` (SH-3).
 6. **Teeth proof.** Every new parity harness or gate must be broken once, shown RED, restored, and recorded.
 7. **Report honestly.** Record negative results, divergences, flakes, and open items plainly.
@@ -70,7 +70,7 @@ Spid3r follows the **core programming language model of PHP, Python, and Java**:
 
 ## 3. Security Invariants (GR-3, SEC-A…D)
 
-- **Unsafe boundary:** Do not add new `unsafe` outside the 14 audited FFI/host-shim modules (`src/native/{ir,link,llvm,rt}.rs`, `src/repl/mod.rs`, `src/runtime_info/mod.rs`, `src/stdlib/{db,entropy,eventloop,file,net,shutdown}.rs`, `src/value/mod.rs`, `src/value/collections/seq.rs`), enforced by `tools/check_unsafe_safety.py` in `tools/gate.sh`. Every `unsafe` block requires a written `// SAFETY:` comment.
+- **Unsafe boundary:** Do not add new `unsafe` outside the 14 audited FFI/host-shim modules (`src/native/{ir,link,llvm,rt}.rs`, `src/repl/mod.rs`, `src/runtime_info/mod.rs`, `src/stdlib/{db,entropy,eventloop,file,net,shutdown}.rs`, `src/value/mod.rs`, `src/value/collections/seq.rs`), enforced by `tools/ci/check_unsafe_safety.py` in `tools/ci/gate.sh`. Every `unsafe` block requires a written `// SAFETY:` comment.
 - **Trust model:** `ptr`/`usize` FFI (`extern fn`) is T5 trusted code. `--sandbox` and `spid3r.ini` `[security]` switches are application-level policy filters for script engines (`tree`/`vm`) only — AOT executables run with full user authority by design (`docs/FFI.md`). Never claim `--sandbox` is an OS kernel sandbox.
 - **Integrity:** `.matrixc` bytecode and `spid3r_lang` staticlibs verify SHA-256 digests (`exit 4` on tamper).
 - **No network in compiler:** Compiler operations (`check`, `compile`, `build`, `fmt`, `doc`) perform zero network access.
@@ -103,9 +103,9 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix (bit-identical f
   - `cargo check --no-default-features --all-targets`
   - `cargo fmt --check`
   - `cargo clippy --all-targets --features native -- -D warnings`
-  - `node tools/verify_doc_claims.js` and `node tools/verify_dev_snippets.js`
+  - `node tools/docs/verify_doc_claims.js` and `node tools/docs/verify_dev_snippets.js`
 - Never run two `cargo` builds with different feature sets concurrently.
-- Known CI flake: `tests/phase2_net_limits.rs` (connection reset under parallel load) — isolate, re-run, record; do not "fix" unrelated code.
+- Known CI flake: `tests/net/phase2_net_limits.rs` (connection reset under parallel load) — isolate, re-run, record; do not "fix" unrelated code.
 
 ---
 
@@ -127,7 +127,7 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix (bit-identical f
 
 1. Read relevant source and docs before editing.
 2. Mirror compiler/semantic changes in `selfhost/` (SH-3) and run parity harnesses (`tools/selfhost_*_parity.sh`).
-3. Run standing gates (`fmt`, `clippy`, `cargo test`, `tools/gate.sh`, `tools/difftest.sh`, doc claim checks) before claiming done.
+3. Run standing gates (`fmt`, `clippy`, `cargo test`, `tools/ci/gate.sh`, `tools/ci/difftest.sh`, doc claim checks) before claiming done.
 4. **Never commit, push, force-push, or rewrite history without the owner explicitly asking.** Always ask before committing.
 5. **Mimosa hook quirk (`.mimosa/`):** If `git commit` is blocked because a staged filename appears in the command text, stage by parent directory (`git add <dir>/`) and commit without naming the file.
 

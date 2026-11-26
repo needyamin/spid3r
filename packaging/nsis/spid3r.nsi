@@ -72,7 +72,7 @@ Unicode true
 ; gui payload built it; absent in core-only installers.
 ;!ifdef CONTROL_EXE — defined on the makensis command line
 ; The Stage-2 self-hosted compiler (spid3r-self.exe) and its runtime pin
-; metadata (Phase 10.1, SH-2 / SH-6), passed by tools/release_selfhost.sh:
+; metadata (Phase 10.1, SH-2 / SH-6), passed by tools/release/release_selfhost.sh:
 ;!ifdef SPID3R_SELF_EXE
 ;!ifdef RUNTIME_SHA256
 ;!ifdef RUNTIME_MANIFEST

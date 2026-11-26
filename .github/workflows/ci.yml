@@ -64,9 +64,9 @@ jobs:
         shell: bash
         run: |
           if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
-            python3 tools/check_unsafe_safety.py
+            python3 tools/ci/check_unsafe_safety.py
           elif command -v python >/dev/null 2>&1 && python --version >/dev/null 2>&1; then
-            python tools/check_unsafe_safety.py
+            python tools/ci/check_unsafe_safety.py
           else
             echo "FAIL: neither python3 nor python found" >&2
             exit 2
@@ -107,7 +107,7 @@ jobs:
         timeout-minutes: 5
         run: cargo run --bin spid3r --no-default-features -- fmt --check
 
-      # CI-03: pin the CANONICAL test counts (tools/count_tests.sh is the only
+      # CI-03: pin the CANONICAL test counts (tools/ci/count_tests.sh is the only
       # accepted counter — never hand-count) into the step summary, so a suite
       # count drifting silently between runs is visible in every CI result.
       - name: Report canonical test counts
@@ -116,7 +116,7 @@ jobs:
           {
             echo "### Canonical test counts (${{ matrix.os }})"
             echo '```'
-            bash tools/count_tests.sh
+            bash tools/ci/count_tests.sh
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -213,15 +213,15 @@ jobs:
       - name: Exercise the browser runtime and every playground preset
         run: |
           cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm web/spid3r.wasm
-          node tools/test_wasm_runtime.js
-          node tools/test_playground_presets.js
+          node tools/wasm/test_wasm_runtime.js
+          node tools/wasm/test_playground_presets.js
 
       # docs/html/doc.html is hand-written HTML with no generator, so nothing
       # else notices when a code sample stops compiling or an anchor loses its
       # target. This evaluates every .w3-code-body snippet on both engines and
       # checks every internal link; it exits non-zero on drift.
       - name: Verify the developer guide's code samples and anchors
-        run: node tools/verify_dev_snippets.js
+        run: node tools/docs/verify_dev_snippets.js
 
       # The snippet gate above only proves that the SAMPLES still run. Every
       # documentation defect the 2026-10-30 audit found was in the PROSE around
@@ -232,13 +232,13 @@ jobs:
       # table structure (orphan <tr>, column-count drift, duplicate ids) —
       # the damage hand-deleting a row leaves behind.
       - name: Verify the developer guide's prose claims
-        run: node tools/verify_doc_claims.js
+        run: node tools/docs/verify_doc_claims.js
 
       # The playground loads its LOCAL siblings via relative <script> tags and
       # prefers the embedded base64 module over fetching a .wasm file. There is
       # ONE canonical deployment set (web/spid3r.wasm + web/spid3r.js +
       # web/spid3r_wasm_data.js) — docs/html/ holds no runtime copies at all
-      # (the playground links ../../web/... directly; tools/test_wasm_embedded.js
+      # (the playground links ../../web/... directly; tools/wasm/test_wasm_embedded.js
       # asserts the docs/html duplicates do not exist). Two guards, neither
       # assuming the CI build is byte-reproducible with a developer machine:
       #   1. behavioral — the COMMITTED embedded module must produce exactly
@@ -251,10 +251,10 @@ jobs:
       - name: Verify the embedded wasm module is current
         run: |
           cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm "$RUNNER_TEMP/fresh_spid3r.wasm"
-          node tools/test_wasm_embedded.js --against "$RUNNER_TEMP/fresh_spid3r.wasm"
+          node tools/wasm/test_wasm_embedded.js --against "$RUNNER_TEMP/fresh_spid3r.wasm"
           git checkout -- web/spid3r.wasm web/spid3r_wasm_data.js
-          node tools/test_wasm_embedded.js
-          node tools/gen_wasm_data.js
+          node tools/wasm/test_wasm_embedded.js
+          node tools/wasm/gen_wasm_data.js
           git diff --exit-code web/spid3r_wasm_data.js
 
   # CI-02: the native/AOT backend joins the GATED differential (previously the
@@ -326,11 +326,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/spid3r-rt
-          bash tools/runtime_artifact.sh package target/debug/libspid3r_lang.a /tmp/spid3r-rt --profile debug
-          bash tools/runtime_artifact.sh verify /tmp/spid3r-rt
+          bash tools/release/runtime_artifact.sh package target/debug/libspid3r_lang.a /tmp/spid3r-rt --profile debug
+          bash tools/release/runtime_artifact.sh verify /tmp/spid3r-rt
           rm -rf /tmp/spid3r-rt
           set -o pipefail
-          if ! bash tools/release_selfhost.sh build \
+          if ! bash tools/release/release_selfhost.sh build \
             --target x86_64-unknown-linux-gnu \
             --stage0 target/debug/spid3r \
             --staticlib target/debug/libspid3r_lang.a \
@@ -364,7 +364,7 @@ jobs:
       # wedged AOT build cannot eat the job (see the script header).
       - name: Tree-vs-native differential over all examples
         timeout-minutes: 30
-        run: bash tools/native_diff.sh examples/*.matrix
+        run: bash tools/ci/native_diff.sh examples/*.matrix
 
       # Phase 11 P-7: advisory selfhost toolchain + HLC native perf tracking.
       - name: Restore previous AOT perf snapshot
@@ -382,16 +382,16 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/perf-aot-cache
-          python3 tools/phase0_bench.py --verify-selfhost
+          python3 tools/bench/phase0_bench.py --verify-selfhost
           cargo build --release --no-default-features --features native
-          python3 tools/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run1.json
-          python3 tools/phase0_bench.py --measure --variants native --bin target/release/spid3r --advisory --quick --out /tmp/hlc-run1.json
+          python3 tools/bench/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run1.json
+          python3 tools/bench/phase0_bench.py --measure --variants native --bin target/release/spid3r --advisory --quick --out /tmp/hlc-run1.json
 
           SH_BASE="benchmarks/json/selfhost-baseline.json"
           if [ -f /tmp/perf-aot-cache/sh-prev.json ]; then
             SH_BASE="/tmp/perf-aot-cache/sh-prev.json"
           fi
-          python3 tools/phase0_compare.py \
+          python3 tools/bench/phase0_compare.py \
             --baseline "$SH_BASE" \
             --current /tmp/sh-run1.json \
             --floors benchmarks/json/selfhost-baseline.json \
@@ -399,8 +399,8 @@ jobs:
             --title "Selfhost Toolchain Perf (Phase 11 P-7)" \
             --github-summary --advisory --out /tmp/sh-cmp.json
           if grep -q '"status": "WATCH"' /tmp/sh-cmp.json && [ -f /tmp/perf-aot-cache/sh-prev.json ]; then
-            python3 tools/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run2.json
-            python3 tools/phase0_compare.py \
+            python3 tools/bench/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run2.json
+            python3 tools/bench/phase0_compare.py \
               --baseline "$SH_BASE" \
               --current /tmp/sh-run1.json /tmp/sh-run2.json \
               --floors benchmarks/json/selfhost-baseline.json \
@@ -412,7 +412,7 @@ jobs:
           if [ -f /tmp/perf-aot-cache/hlc-prev.json ]; then
             HLC_BASE="/tmp/perf-aot-cache/hlc-prev.json"
           fi
-          python3 tools/phase0_compare.py \
+          python3 tools/bench/phase0_compare.py \
             --baseline "$HLC_BASE" \
             --current /tmp/hlc-run1.json \
             --state /tmp/perf-aot-cache/hlc-state.json \
@@ -456,7 +456,7 @@ jobs:
       - name: Build zero-dependency core (release)
         run: cargo build --release --no-default-features
 
-      # The 3 additive Phase 0 golden-value Case rows in tests/engine_matrix.rs
+      # The 3 additive Phase 0 golden-value Case rows in tests/engines/engine_matrix.rs
       # assert the pinned RESULT values on tree + vm. This is their blocking
       # gate; `spid3r test` scans examples/ and does NOT run engine_matrix.
       - name: Golden-value conformance (engine matrix)
@@ -466,17 +466,17 @@ jobs:
         run: cargo run --bin spid3r --no-default-features -- test
 
       - name: Verify vendored source digests, roles and provenance (fail-closed)
-        run: python3 tools/phase0_manifest.py --verify
+        run: python3 tools/bench/phase0_manifest.py --verify
 
       - name: Verify Phase 0 checksum fixtures and inline golden-value rows
-        run: python3 tools/phase0_fixtures.py --verify
+        run: python3 tools/bench/phase0_fixtures.py --verify
 
       - name: Phase 0 sensitivity self-test (BLOCKING)
         shell: bash
         run: |
           passed=0
           for attempt in 1 2 3; do
-            if python3 tools/phase0_selftest.py > /tmp/p0_selftest.out 2>&1; then
+            if python3 tools/bench/phase0_selftest.py > /tmp/p0_selftest.out 2>&1; then
               passed=1
               break
             fi
@@ -508,21 +508,21 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/perf-phase0-cache
-          python3 tools/bench_report.py --mode compute --measure --advisory --quick
+          python3 tools/bench/bench_report.py --mode compute --measure --advisory --quick
           cp -f benchmarks/json/compute.ci-advisory.json /tmp/p0-run1.json
           P0_BASE="benchmarks/json/compute-baseline.json"
           if [ -f /tmp/perf-phase0-cache/p0-prev.json ]; then
             P0_BASE="/tmp/perf-phase0-cache/p0-prev.json"
           fi
-          python3 tools/phase0_compare.py \
+          python3 tools/bench/phase0_compare.py \
             --baseline "$P0_BASE" \
             --current /tmp/p0-run1.json \
             --state /tmp/perf-phase0-cache/p0-state.json \
             --title "Phase 0 Core VM Perf (Phase 11 P-7)" \
             --github-summary --advisory --out /tmp/p0-cmp.json
           if grep -q '"status": "WATCH"' /tmp/p0-cmp.json && [ -f /tmp/perf-phase0-cache/p0-prev.json ]; then
-            python3 tools/bench_report.py --mode compute --measure --advisory --quick
-            python3 tools/phase0_compare.py \
+            python3 tools/bench/bench_report.py --mode compute --measure --advisory --quick
+            python3 tools/bench/phase0_compare.py \
               --baseline "$P0_BASE" \
               --current /tmp/p0-run1.json benchmarks/json/compute.ci-advisory.json \
               --title "Phase 0 Core VM Perf Confirmation (2nd Run)" \
@@ -557,7 +557,7 @@ jobs:
 
       - name: Verify the frozen corpus manifest (SH-4)
         timeout-minutes: 5
-        run: python3 tools/corpus_manifest.py verify
+        run: python3 tools/selfhost/corpus_manifest.py verify
 
       - name: Build the stage-0 toolchain (zero-dependency core)
         timeout-minutes: 15
@@ -565,7 +565,7 @@ jobs:
 
       - name: Oracle dump determinism over the frozen corpus (SH-5)
         timeout-minutes: 10
-        run: bash tools/oracle_dump_check.sh target/release/spid3r
+        run: bash tools/selfhost/oracle_dump_check.sh target/release/spid3r
 
       # Phase 1 (roadmap 1.2-1.4): the self-host differential harness — the
       # Spid3r-written lexer vs the stage-0 oracle, token stream by token
@@ -574,18 +574,18 @@ jobs:
       # Phase-2 parser); anything else failing blocks the merge.
       - name: Self-host lexer parity over the frozen corpus (Phase 1)
         timeout-minutes: 15
-        run: bash tools/selfhost_lex_parity.sh target/release/spid3r tree
+        run: bash tools/selfhost/selfhost_lex_parity.sh target/release/spid3r tree
 
       # Phase 2: the Spid3r-written parser vs the stage-0 oracle — AST dumps
       # byte-identical on the frozen corpus, diagnostics first-line + span
       # parity on the negatives.
       - name: Self-host parser parity over the frozen corpus (Phase 2)
         timeout-minutes: 15
-        run: bash tools/selfhost_parse_parity.sh target/release/spid3r tree
+        run: bash tools/selfhost/selfhost_parse_parity.sh target/release/spid3r tree
 
       # Phase 3: the Spid3r-written semantic checker vs the stage-0 oracle —
       # declaration-registry JSON byte-identical on the positives, first
       # diagnostic + span parity on the negatives.
       - name: Self-host semantic parity over the frozen corpus (Phase 3)
         timeout-minutes: 15
-        run: bash tools/selfhost_semantic_parity.sh target/release/spid3r tree
+        run: bash tools/selfhost/selfhost_semantic_parity.sh target/release/spid3r tree

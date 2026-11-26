@@ -1,7 +1,7 @@
 //! GENERATED FILE - do not edit.
 //!
 //! Unicode tables for normalization and case folding, produced by
-//! `tools/gen_unicode_tables.py` from CPython's `unicodedata`.
+//! `tools/codegen/gen_unicode_tables.py` from CPython's `unicodedata`.
 //!
 //! Unicode version: 15.1.0
 //!

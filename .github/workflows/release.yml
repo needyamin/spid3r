@@ -6,7 +6,7 @@ name: Release
 # Phase 10.1 (SH-2, docs/selfhost/SELFHOST.md): all release compiler binaries
 # (`spid3r-self`) are compiled by `spid3r-self` itself (Stage 1 -> Stage 2 with
 # Stage-3 fixed-point proof) against the SHA-256-pinned runtime staticlib,
-# via `tools/release_selfhost.sh`. Stage 0 (`spid3r`) remains as the bootstrap
+# via `tools/release/release_selfhost.sh`. Stage 0 (`spid3r`) remains as the bootstrap
 # reference and runtime host for VM/interpreter/REPL/debugger/GUI tools.
 #
 # Asset protection: the publish job uses `clobber: false`, so re-running the
@@ -23,7 +23,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # build.rs no longer drives release packaging; tools/release_selfhost.sh does.
+  # build.rs no longer drives release packaging; tools/release/release_selfhost.sh does.
   SPID3R_NO_INSTALLER: "1"
 
 jobs:
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if ! bash tools/release_selfhost.sh build \
+          if ! bash tools/release/release_selfhost.sh build \
             --target "${{ matrix.target }}" \
             --stage0 "target/${{ matrix.target }}/release/spid3r" \
             --staticlib "target/${{ matrix.target }}/release/libspid3r_lang.a" \
@@ -168,7 +168,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Windows NSIS installer: tools/release_selfhost.sh compiles Stage-2
+  # Windows NSIS installer: tools/release/release_selfhost.sh compiles Stage-2
   # `spid3r-self.exe` using `spid3r-self`, verifies Stage-3 fixed point,
   # pins `spid3r_lang.lib` via runtime-manifest.json + .sha256, and invokes
   # makensis on packaging/nsis/spid3r.nsi (bundling LLVM-C + spid3r-self.exe +
@@ -280,7 +280,7 @@ jobs:
           set -o pipefail
           LIB="target/rt-native/spid3r_lang.lib"
           test -s "$LIB"
-          if ! bash tools/release_selfhost.sh build \
+          if ! bash tools/release/release_selfhost.sh build \
             --target x86_64-pc-windows-msvc \
             --stage0 target/release/spid3r.exe \
             --control target/release/spid3r-control.exe \

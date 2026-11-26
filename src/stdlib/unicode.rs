@@ -1,7 +1,7 @@
 //! Unicode normalization (UAX #15) and full case folding.
 //!
 //! The tables live in `unicode_tables.rs`, generated from the UCD by
-//! `tools/gen_unicode_tables.py`. This module is the algorithm:
+//! `tools/codegen/gen_unicode_tables.py`. This module is the algorithm:
 //!
 //!   1. **Decompose** every character recursively (canonical, or compatibility
 //!      for the K forms). Hangul syllables are decomposed arithmetically -

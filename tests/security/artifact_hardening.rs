@@ -1,0 +1,988 @@
+//! Stage-3 artifact hardening regressions (assessment/AUDIT_2026-10-20.md §6):
+//!
+//! * **A-8** — a crafted or corrupt `.matrixc` must fail with a clean
+//!   `Diagnostic`, never a panic: trailing bytes, instruction-table
+//!   mismatches, a fall-through chunk end, unbounded nesting, and the
+//!   quadratic jump validation.
+//! * **A-11** — the WebView2 bootstrapper is opt-in, checksum-verified, and
+//!   fails closed on a partial/tampered download. The policy module is the one
+//!   `build.rs` runs (`build_support/webview2.rs`), included here directly.
+//!
+//! A-5 (git URL whitelist, locked commits, raw-byte hashes) is covered in
+//! `tests/pkg_tests.rs`, which owns the project harness.
+
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use spid3r_lang::value::VmFunc;
+use spid3r_lang::vm::bytecode::{
+    deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode, VmFuncProto,
+};
+
+#[path = "../../build_support/webview2.rs"]
+mod webview2;
+
+fn func_with(chunk: Chunk) -> VmFunc {
+    VmFunc {
+        globals: None,
+        name: None,
+        arity: 0,
+        min_arity: 0,
+        defaults: Vec::new(),
+        is_async: false,
+        chunk: Arc::new(chunk),
+        upvalues: Vec::new(),
+        own_upvalues: 0,
+        debug_locals: Vec::new(),
+    }
+}
+
+/// A minimal valid chunk: `Return`.
+fn simple_chunk() -> Chunk {
+    let mut c = Chunk::new();
+    c.emit(OpCode::Return);
+    c
+}
+
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_spid3r"))
+}
+
+fn run(args: &[&str]) -> (Option<i32>, String, String) {
+    let out = Command::new(bin())
+        .args(args)
+        .output()
+        .expect("spawn spid3r");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+// --------------------------------------------------------------------- A-8
+
+/// Appending bytes after the last structure must be rejected: a file whose
+/// declared structures do not consume the buffer is malformed. Since the v3
+/// checksummed container this is a container-length mismatch rather than a
+/// trailing-structures error, but the invariant is the same.
+#[test]
+fn bytecode_with_trailing_bytes_is_rejected() {
+    let mut bytes = serialize_vmfunc(&func_with(simple_chunk()));
+    let clean = deserialize_vmfunc(&bytes).expect("valid bytecode round-trips");
+    validate_chunk(&clean.chunk).expect("valid chunk validates");
+
+    bytes.push(0xAA);
+    let err = match deserialize_vmfunc(&bytes) {
+        Ok(_) => panic!("trailing byte must be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        err.message.contains("trailing") || err.message.contains("container length mismatch"),
+        "error should reject the appended bytes: {}",
+        err.message
+    );
+}
+
+/// `inst_offsets` and `inst_spans` are read with independent counts, so a
+/// crafted file can make them disagree. `span_at` used to index `inst_spans`
+/// blindly and panicked; validation now rejects the file before execution.
+#[test]
+fn mismatched_instruction_tables_are_rejected() {
+    let mut chunk = Chunk::new();
+    chunk.emit(OpCode::Return);
+    // Two offsets, one span — the shape a hand-edited file can produce.
+    chunk.inst_offsets.push(1);
+    assert_eq!(chunk.inst_offsets.len(), 2);
+    assert_eq!(chunk.inst_spans.len(), 1);
+    let err = validate_chunk(&chunk).expect_err("mismatched tables must be rejected");
+    assert!(
+        err.message.contains("instruction tables disagree"),
+        "unexpected error: {}",
+        err.message
+    );
+
+    // And the accessor itself is total: no panic, falls back to pending_span.
+    let span = chunk.span_at(0);
+    assert_eq!(span.line, chunk.pending_span.line);
+}
+
+/// A chunk that can fall through the end would make the VM fetch `code[ip]`
+/// past the buffer; the validator must require a terminator.
+#[test]
+fn a_fall_through_chunk_end_is_rejected() {
+    let mut chunk = Chunk::new();
+    chunk.emit(OpCode::Pop);
+    let err = validate_chunk(&chunk).expect_err("fall-through end must be rejected");
+    assert!(
+        err.message.contains("fall-through"),
+        "unexpected error: {}",
+        err.message
+    );
+
+    // An empty code section has no terminator at all.
+    let empty = Chunk::new();
+    let err = validate_chunk(&empty).expect_err("empty code must be rejected");
+    assert!(
+        err.message.contains("empty code"),
+        "unexpected: {}",
+        err.message
+    );
+}
+
+/// Deeply nested function chunks must hit the deserializer's depth cap instead
+/// of recursing until the host stack overflows (an uncatchable abort).
+#[test]
+fn deeply_nested_bytecode_hits_the_depth_limit() {
+    let mut inner = simple_chunk();
+    for _ in 0..200 {
+        let mut outer = Chunk::new();
+        outer.emit(OpCode::Return);
+        outer.functions.push(Arc::new(VmFuncProto {
+            name: None,
+            arity: 0,
+            min_arity: 0,
+            defaults: Vec::new(),
+            is_async: false,
+            upvalues: Vec::new(),
+            own_upvalues: 0,
+            chunk: Arc::new(inner),
+            debug_locals: Vec::new(),
+        }));
+        inner = outer;
+    }
+    let bytes = serialize_vmfunc(&func_with(inner));
+    let err = match deserialize_vmfunc(&bytes) {
+        Ok(_) => panic!("200 levels of nesting must be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        err.message.contains("depth limit"),
+        "error should name the depth limit: {}",
+        err.message
+    );
+}
+
+/// Jump-target validation must stay linear-ish: the old `Vec::contains` scan
+/// made a file with many jumps cost O(jumps × instructions), which is a CPU
+/// DoS at every `exec` entry. 50k jumps used to take tens of seconds in a debug
+/// build; the binary search takes milliseconds.
+#[test]
+fn jump_validation_is_not_quadratic() {
+    let mut chunk = Chunk::new();
+    for _ in 0..50_000 {
+        chunk.emit_i16(OpCode::Jump, 0); // falls through to the next instruction
+    }
+    chunk.emit(OpCode::Return);
+    let started = Instant::now();
+    validate_chunk(&chunk).expect("all jumps land on instruction boundaries");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "validation took {:?}; jump checking is quadratic again",
+        elapsed
+    );
+}
+
+/// End-to-end: a corrupted `.matrixc` must exit 1 with a diagnostic on stderr,
+/// never abort the process (a Rust panic would surface as exit code 101 or a
+/// STATUS_STACK_OVERFLOW/0xC0000409 on Windows).
+#[test]
+fn exec_rejects_a_corrupted_matrixc_without_crashing() {
+    let dir = std::env::temp_dir().join(format!("spid3r_stage3_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("hello.matrix");
+    std::fs::write(
+        &src,
+        "fn main() {\n    println(\"hi\");\n    return 0;\n}\n",
+    )
+    .expect("write");
+    let good = dir.join("hello.matrixc");
+    let (code, out, err) = run(&[
+        "compile",
+        src.to_str().unwrap(),
+        "-o",
+        good.to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(0), "compile failed: {}{}", out, err);
+    let bytes = std::fs::read(&good).expect("read bytecode");
+    assert!(deserialize_vmfunc(&bytes).is_ok());
+
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("trailing", {
+            let mut b = bytes.clone();
+            b.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+            b
+        }),
+        ("truncated", bytes[..bytes.len() - 5].to_vec()),
+        ("empty", Vec::new()),
+        ("magic", b"NOTSPID3R".to_vec()),
+    ];
+    for (name, data) in cases {
+        let path = dir.join(format!("bad_{}.matrixc", name));
+        std::fs::write(&path, &data).expect("write");
+        let (code, _out, err) = run(&["exec", path.to_str().unwrap()]);
+        assert_eq!(
+            code,
+            Some(4),
+            "{}: invalid bytecode exits 4, got {:?} ({})",
+            name,
+            code,
+            err
+        );
+        assert!(
+            !err.contains("panicked"),
+            "{}: the host must not panic: {}",
+            name,
+            err
+        );
+        assert!(
+            err.contains("error["),
+            "{}: expected a Spid3r diagnostic, got: {}",
+            name,
+            err
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The v3 checksummed container must catch a single flipped byte anywhere in
+/// the payload (the QA finding: flipping `Call argc 1` into `Call argc 241`
+/// used to execute silently) and in the checksum itself, while the unmodified
+/// artifact still runs and the legacy plain payload (the container's inner
+/// stream) is still accepted with structural validation.
+#[test]
+fn checksummed_bytecode_rejects_a_flipped_byte() {
+    let dir = std::env::temp_dir().join(format!("spid3r_checksum_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("hello.matrix");
+    std::fs::write(
+        &src,
+        "fn main() {\n    println(\"hi\");\n    return 0;\n}\n",
+    )
+    .expect("write");
+    let good = dir.join("hello.matrixc");
+    let (code, out, err) = run(&[
+        "compile",
+        src.to_str().unwrap(),
+        "-o",
+        good.to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(0), "compile failed: {}{}", out, err);
+    let bytes = std::fs::read(&good).expect("read bytecode");
+
+    // The unmodified artifact runs.
+    let (code, out, err) = run(&["exec", good.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "clean artifact must run: {}{}", out, err);
+    assert!(out.contains("hi"), "exec output: {}", out);
+
+    // Layout: MAGIC(6) | version u16 | payload_len u64 | payload | sha256(32).
+    let n = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    assert!(n > 16, "payload unexpectedly small: {}", n);
+    let payload_end = 16 + n;
+
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        // A byte in the middle of the payload (an opcode or operand).
+        ("payload_mid", {
+            let mut b = bytes.clone();
+            let mid = 16 + n / 2;
+            b[mid] ^= 0xFF;
+            b
+        }),
+        // The first payload byte (inside the inner magic — corruption either way).
+        ("payload_first", {
+            let mut b = bytes.clone();
+            b[16] ^= 0x01;
+            b
+        }),
+        // A byte inside the checksum: tampering detected, not ignored.
+        ("checksum_byte", {
+            let mut b = bytes.clone();
+            let last = b.len() - 1;
+            b[last] ^= 0x01;
+            b
+        }),
+    ];
+    for (name, data) in cases {
+        let path = dir.join(format!("flip_{}.matrixc", name));
+        std::fs::write(&path, &data).expect("write");
+        let (code, _out, err) = run(&["exec", path.to_str().unwrap()]);
+        assert_eq!(
+            code,
+            Some(4),
+            "{}: a flipped byte must exit 4, got {:?} ({})",
+            name,
+            code,
+            err
+        );
+        assert!(
+            err.contains("bytecode integrity check failed"),
+            "{}: expected the integrity diagnostic: {}",
+            name,
+            err
+        );
+    }
+
+    // A legacy plain payload (the container's inner stream) is still accepted:
+    // structural validation only, exactly as before the checksum existed.
+    let legacy = &bytes[16..payload_end];
+    let legacy_path = dir.join("legacy.matrixc");
+    std::fs::write(&legacy_path, legacy).expect("write legacy");
+    let (code, _out, err) = run(&["exec", legacy_path.to_str().unwrap()]);
+    assert_eq!(
+        code,
+        Some(0),
+        "legacy plain bytecode must still run: {}",
+        err
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------- A-11
+
+/// The policy seam: only affirmative values enable the download.
+#[test]
+fn webview2_fetch_is_opt_in() {
+    for v in [None, Some(""), Some("0"), Some("no"), Some("off")] {
+        assert!(
+            !webview2::enabled_from(v),
+            "{:?} must not enable the fetch",
+            v
+        );
+    }
+    for v in [Some("1"), Some("true"), Some("YES"), Some(" on ")] {
+        assert!(webview2::enabled_from(v), "{:?} must enable the fetch", v);
+    }
+}
+
+/// A checksum override must be a full 64-hex digest; anything else falls back to
+/// the pinned value instead of silently disabling verification.
+#[test]
+fn webview2_checksum_override_must_be_a_full_digest() {
+    let pinned = webview2::expected_from(None).expect("a pinned hash must exist");
+    assert_eq!(pinned.len(), 64);
+    assert_eq!(
+        webview2::expected_from(Some("deadbeef")),
+        Some(pinned.clone())
+    );
+    assert_eq!(
+        webview2::expected_from(Some("zz")).as_deref(),
+        Some(pinned.as_str())
+    );
+    let custom = "a".repeat(64);
+    assert_eq!(webview2::expected_from(Some(&custom)), Some(custom));
+}
+
+/// Verification rejects a tampered file and a partial download, and accepts the
+/// exact bytes it was given the hash of.
+#[test]
+fn webview2_verification_fails_closed() {
+    let dir = std::env::temp_dir().join(format!("spid3r_wv2_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let file = dir.join("setup.exe");
+    let payload = b"not-a-real-bootstrapper-but-stable";
+    std::fs::write(&file, payload).expect("write");
+    let good = spid3r_lang::pkg::sha256_hex(payload);
+
+    let actual = webview2::verify_file(&file, &good, payload.len() as u64).expect("hash matches");
+    assert_eq!(actual, good);
+
+    // Tampered: same length, different bytes.
+    std::fs::write(&file, b"not-a-real-bootstrapper-but-stablE").expect("write");
+    let err = webview2::verify_file(&file, &good, payload.len() as u64)
+        .expect_err("a changed byte must be rejected");
+    assert!(err.contains("checksum mismatch"), "unexpected: {}", err);
+
+    // Partial download: shorter than the minimum.
+    let err =
+        webview2::verify_file(&file, &good, 10_000).expect_err("a short file must be rejected");
+    assert!(err.contains("partial download"), "unexpected: {}", err);
+
+    // No file at all is an error, not a panic.
+    assert!(webview2::verify_file(&dir.join("missing.exe"), &good, 0).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With the fetch disabled, `ensure_with` never touches the network and never
+/// fabricates a cached file; a verified cache is reused; an unverified cache is
+/// refused (fail closed).
+#[test]
+fn webview2_ensure_never_accepts_an_unverified_file() {
+    let dir = std::env::temp_dir().join(format!("spid3r_wv2e_{}", std::process::id()));
+    let redist = dir.join("redist");
+    std::fs::create_dir_all(&redist).expect("mkdir");
+    let dest = redist.join("MicrosoftEdgeWebview2Setup.exe");
+
+    // 1. Nothing cached, fetch disabled: no file, no download.
+    assert!(webview2::ensure_with(&dir, false, Some("00"), 0).is_none());
+    assert!(!dest.exists());
+
+    // 2. A cached file that matches: reused without fetching.
+    let payload = b"cached-bootstrapper";
+    std::fs::write(&dest, payload).expect("write");
+    let hash = spid3r_lang::pkg::sha256_hex(payload);
+    assert_eq!(
+        webview2::ensure_with(&dir, false, Some(&hash), payload.len() as u64),
+        Some(dest.clone())
+    );
+
+    // 3. A cached file that does not match, fetch disabled: refused, kept.
+    assert!(webview2::ensure_with(&dir, false, Some("11"), 0).is_none());
+    assert!(dest.exists(), "a disabled fetch must not delete the cache");
+
+    // 4. No hash at all: nothing is accepted (fail closed).
+    assert!(webview2::ensure_with(&dir, true, None, 0).is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sanity: the pinned digest is a well-formed SHA-256 and the pinned size is
+/// plausible for the bootstrapper (~1.8 MB), so a typo cannot silently disable
+/// verification.
+#[test]
+fn webview2_pins_a_plausible_artifact() {
+    let pinned = webview2::PINNED_SHA256;
+    assert_eq!(pinned.len(), 64);
+    assert!(pinned.chars().all(|c| c.is_ascii_hexdigit()));
+    // The size is the `min_bytes` floor `ensure` passes to `verify_file`; a
+    // zero/absurd value would disable the partial-download check.
+    let floor = webview2::PINNED_BYTES;
+    assert!(floor != 0 && floor < u64::MAX / 2, "implausible size floor");
+    assert!(webview2::URL.starts_with("https://"));
+}
+
+fn find_makensis_exe(nsis_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut candidates = vec![
+        nsis_dir.join("nsis").join("nsis-3.10").join("makensis.exe"),
+        nsis_dir.join("nsis").join("makensis.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\NSIS\makensis.exe"),
+        PathBuf::from(r"C:\Program Files\NSIS\makensis.exe"),
+    ];
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            candidates.push(dir.join("makensis.exe"));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn find_makeappx_exe() -> Option<PathBuf> {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("makeappx.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let kits_bin = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
+    if let Ok(entries) = std::fs::read_dir(&kits_bin) {
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|x| x.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for vdir in versions {
+            let candidate = vdir.join("x64").join("makeappx.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn read_zip_filenames(bytes: &[u8]) -> Result<Vec<String>, String> {
+    // Parse PKZIP central directory headers (`PK\x01\x02`) without external crates.
+    if bytes.len() < 4 || &bytes[0..4] != b"PK\x03\x04" {
+        return Err("missing ZIP local file header signature".into());
+    }
+    if !bytes.windows(4).any(|w| w == b"PK\x05\x06") {
+        return Err("missing ZIP End of Central Directory signature".into());
+    }
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i + 46 <= bytes.len() {
+        if &bytes[i..i + 4] == b"PK\x01\x02" {
+            let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+            let extra_len = u16::from_le_bytes([bytes[i + 30], bytes[i + 31]]) as usize;
+            let comment_len = u16::from_le_bytes([bytes[i + 32], bytes[i + 33]]) as usize;
+            let end = i + 46 + name_len;
+            if end + extra_len + comment_len <= bytes.len() {
+                let name = String::from_utf8_lossy(&bytes[i + 46..end]).into_owned();
+                names.push(name);
+                i = end + extra_len + comment_len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if names.is_empty() {
+        return Err("ZIP central directory had no file entries".into());
+    }
+    Ok(names)
+}
+
+#[test]
+fn bundled_formatter_vsix_is_valid_and_matches_sha256_pin() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vscode_dir = manifest_dir.join("packaging").join("vscode");
+    let vsix = vscode_dir.join("spid3r-formatter.vsix");
+    let sha_file = vscode_dir.join("spid3r-formatter.vsix.sha256");
+    assert!(vsix.is_file(), "missing bundled VSIX at {}", vsix.display());
+    assert!(
+        sha_file.is_file(),
+        "missing VSIX SHA-256 pin at {}",
+        sha_file.display()
+    );
+
+    let sha_text = std::fs::read_to_string(&sha_file).expect("read .sha256");
+    let expected = sha_text.split_whitespace().next().unwrap_or("");
+    assert_eq!(expected.len(), 64, "digest must be 64 hex chars");
+    webview2::verify_file(&vsix, expected, 1024).expect("VSIX checksum verification must succeed");
+
+    let bytes = std::fs::read(&vsix).expect("read VSIX bytes");
+    let entries = read_zip_filenames(&bytes).expect("parse VSIX central directory");
+    for required in [
+        "[Content_Types].xml",
+        "extension.vsixmanifest",
+        "extension/package.json",
+        "extension/out/extension.js",
+        "extension/out/formatter.js",
+        "extension/syntaxes/spid3r.tmLanguage.json",
+    ] {
+        assert!(
+            entries.iter().any(|e| e == required),
+            "VSIX missing required entry `{required}`; entries = {:?}",
+            entries
+        );
+    }
+    for forbidden in ["node_modules/", ".git/"] {
+        assert!(
+            !entries.iter().any(|e| e.contains(forbidden)),
+            "VSIX must not bundle `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn nsis_installer_script_is_valid_and_compiles() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let nsis_dir = manifest_dir.join("packaging").join("nsis");
+    let script = nsis_dir.join("spid3r.nsi");
+    assert!(script.is_file());
+    let content = std::fs::read_to_string(&script).expect("read spid3r.nsi");
+    assert!(content.contains("MicrosoftEdgeWebview2Setup.exe"));
+    assert!(content.contains("https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
+    assert!(content.contains("SecWebView2"));
+    assert!(content.contains("SecPath"));
+    assert!(content.contains("/NOPATH"));
+    assert!(content.contains("SPID3R_NO_PATH"));
+    assert!(content.contains("NSD_CreateCheckbox"));
+    assert!(content.contains("WelcomeShow"));
+    assert!(content.contains("WelcomeLeave"));
+    assert!(content.contains(r#"SetOutPath "$TEMP""#));
+    assert!(content.contains("taskkill.exe"));
+    assert!(content.contains("/REBOOTOK"));
+    assert!(content.contains("Rename"));
+    assert!(content.contains("SecEditorExt"));
+    assert!(content.contains("FORMATTER_VSIX"));
+    assert!(content.contains("/NOEDITOR"));
+    assert!(content.contains("SPID3R_NO_EDITOR_EXT"));
+    assert!(content.contains("$$PATH:"));
+    assert!(content.contains("/d /v:on"));
+    assert!(content.contains("/TIMEOUT=60000"));
+    assert!(content.contains(r#"Delete "$INSTDIR\editor\spid3r-formatter.vsix""#));
+    assert!(content.contains(r#"RMDir "$INSTDIR\editor""#));
+
+    // Ensure PowerShell command line does not use broken \" inside -Command "..."
+    assert!(
+        !content.contains("powershell.exe -NoProfile -NonInteractive -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile(\\\""),
+        "PowerShell command must not use broken escaped quotes in NSIS string"
+    );
+
+    let Some(makensis) = find_makensis_exe(&nsis_dir) else {
+        return;
+    };
+
+    // 1. Dry-run makensis check with GUI=1 and no bundled bootstrapper
+    let temp_out1 =
+        std::env::temp_dir().join(format!("spid3r_test_inst1_{}.exe", std::process::id()));
+    let status1 = Command::new(&makensis)
+        .current_dir(&nsis_dir)
+        .arg("/V1")
+        .arg("/XSetCompressor /FINAL zlib")
+        .arg(format!("/DOUTFILE={}", temp_out1.display()))
+        .arg("/DWITH_GUI=1")
+        .arg("/DWITH_NATIVE=0")
+        .arg("spid3r.nsi")
+        .status();
+    let created1 = temp_out1.is_file();
+    let _ = std::fs::remove_file(&temp_out1);
+    match status1 {
+        Ok(s) => {
+            assert!(s.success(), "makensis failed on spid3r.nsi with WITH_GUI=1");
+            assert!(
+                created1,
+                "makensis did not produce expected temporary installer file"
+            );
+        }
+        Err(e) => panic!("cannot run makensis: {}", e),
+    }
+
+    // 2. Dry-run makensis check with WITH_GUI=0 (zero-dependency core installer)
+    let temp_out2 =
+        std::env::temp_dir().join(format!("spid3r_test_inst2_{}.exe", std::process::id()));
+    let status2 = Command::new(&makensis)
+        .current_dir(&nsis_dir)
+        .arg("/V1")
+        .arg("/XSetCompressor /FINAL zlib")
+        .arg(format!("/DOUTFILE={}", temp_out2.display()))
+        .arg("/DWITH_GUI=0")
+        .arg("/DWITH_NATIVE=0")
+        .arg("spid3r.nsi")
+        .status();
+    let created2 = temp_out2.is_file();
+    let _ = std::fs::remove_file(&temp_out2);
+    match status2 {
+        Ok(s) => {
+            assert!(s.success(), "makensis failed on spid3r.nsi with WITH_GUI=0");
+            assert!(
+                created2,
+                "makensis did not produce expected temporary installer file"
+            );
+        }
+        Err(e) => panic!("cannot run makensis: {}", e),
+    }
+
+    // 3. Dry-run makensis check with bundled WEBVIEW2_SETUP + explicit FORMATTER_VSIX
+    let dummy_setup = std::env::temp_dir().join(format!("dummy_setup_{}.exe", std::process::id()));
+    let _ = std::fs::write(&dummy_setup, b"MZ dummy");
+    let vsix = manifest_dir
+        .join("packaging")
+        .join("vscode")
+        .join("spid3r-formatter.vsix");
+    let temp_out3 =
+        std::env::temp_dir().join(format!("spid3r_test_inst3_{}.exe", std::process::id()));
+    let status3 = Command::new(&makensis)
+        .current_dir(&nsis_dir)
+        .arg("/V1")
+        .arg("/XSetCompressor /FINAL zlib")
+        .arg(format!("/DOUTFILE={}", temp_out3.display()))
+        .arg("/DWITH_GUI=1")
+        .arg("/DWITH_NATIVE=0")
+        .arg(format!("/DWEBVIEW2_SETUP={}", dummy_setup.display()))
+        .arg(format!("/DFORMATTER_VSIX={}", vsix.display()))
+        .arg("spid3r.nsi")
+        .status();
+    let created3 = temp_out3.is_file();
+    let _ = std::fs::remove_file(&dummy_setup);
+    let _ = std::fs::remove_file(&temp_out3);
+    match status3 {
+        Ok(s) => {
+            assert!(
+                s.success(),
+                "makensis failed on spid3r.nsi with WEBVIEW2_SETUP"
+            );
+            assert!(
+                created3,
+                "makensis did not produce expected temporary installer file"
+            );
+        }
+        Err(e) => panic!("cannot run makensis: {}", e),
+    }
+
+    // 4. Dry-run makensis check with opted-out /DFORMATTER_VSIX=
+    let temp_out4 =
+        std::env::temp_dir().join(format!("spid3r_test_inst4_{}.exe", std::process::id()));
+    let status4 = Command::new(&makensis)
+        .current_dir(&nsis_dir)
+        .arg("/V1")
+        .arg("/XSetCompressor /FINAL zlib")
+        .arg(format!("/DOUTFILE={}", temp_out4.display()))
+        .arg("/DWITH_GUI=0")
+        .arg("/DWITH_NATIVE=0")
+        .arg("/DFORMATTER_VSIX=")
+        .arg("spid3r.nsi")
+        .status();
+    let created4 = temp_out4.is_file();
+    let _ = std::fs::remove_file(&temp_out4);
+    match status4 {
+        Ok(s) => {
+            assert!(
+                s.success(),
+                "makensis failed on spid3r.nsi with /DFORMATTER_VSIX="
+            );
+            assert!(
+                created4,
+                "makensis did not produce expected temporary installer file"
+            );
+        }
+        Err(e) => panic!("cannot run makensis: {}", e),
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_editor_cli_lookup_and_invocation_are_safe() {
+    use std::os::windows::process::CommandExt;
+
+    let base = std::env::temp_dir().join(format!("spid3r_ed & test_{}", std::process::id()));
+    let path_bin = base.join("bin & tools");
+    let cwd_dir = base.join("untrusted cwd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&path_bin).expect("create temp bin");
+    std::fs::create_dir_all(&cwd_dir).expect("create temp cwd");
+
+    let log_file = base.join("invocations.log");
+    let vsix_file = base.join("spid3r & formatter.vsix");
+    std::fs::write(&vsix_file, b"PK\x03\x04test").expect("write dummy vsix");
+
+    // Decoy binary inside CWD must NOT be picked when searching `$PATH:code.cmd`.
+    std::fs::write(
+        cwd_dir.join("code.cmd"),
+        "@echo POISONED_CWD\r\n@exit /b 99\r\n",
+    )
+    .expect("write poisoned CWD cmd");
+
+    let mock_cmd = format!(
+        "@echo off\r\necho %1 %2 %3>>\"{}\"\r\nexit /b 0\r\n",
+        log_file.display()
+    );
+    for ed in ["code", "cursor", "windsurf"] {
+        std::fs::write(path_bin.join(format!("{ed}.cmd")), &mock_cmd).expect("write mock cmd");
+    }
+    // Simulate one failing editor CLI (`codium`) to verify non-zero exit does not break callers.
+    std::fs::write(path_bin.join("codium.cmd"), "@echo off\r\nexit /b 1\r\n")
+        .expect("write failing codium.cmd");
+
+    let win_dir = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let where_exe = win_dir.join("System32").join("where.exe");
+    let cmd_exe = win_dir.join("System32").join("cmd.exe");
+
+    for ed in ["code", "cursor", "windsurf", "codium"] {
+        let lookup = Command::new(&where_exe)
+            .current_dir(&cwd_dir)
+            .env("PATH", &path_bin)
+            .arg(format!("$PATH:{ed}.cmd"))
+            .output()
+            .expect("run where.exe");
+        assert!(lookup.status.success(), "where.exe should find {ed}.cmd");
+        let resolved = String::from_utf8_lossy(&lookup.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).ok(),
+            std::fs::canonicalize(path_bin.join(format!("{ed}.cmd"))).ok(),
+            "must resolve from PATH only, not CWD: {resolved}"
+        );
+
+        let inv = Command::new(&cmd_exe)
+            .current_dir(&cwd_dir)
+            .env("SPID3R_EDITOR_CLI", &resolved)
+            .env("SPID3R_VSIX_PATH", &vsix_file)
+            .raw_arg(r#"/d /v:on /c "call "!SPID3R_EDITOR_CLI!" --install-extension "!SPID3R_VSIX_PATH!" --force""#)
+            .output()
+            .expect("run cmd.exe /d /v:on");
+        if ed == "codium" {
+            assert_eq!(inv.status.code(), Some(1));
+        } else {
+            assert!(
+                inv.status.success(),
+                "{ed}.cmd invocation failed: {}",
+                String::from_utf8_lossy(&inv.stderr)
+            );
+        }
+    }
+
+    let missing = Command::new(&where_exe)
+        .current_dir(&cwd_dir)
+        .env("PATH", &path_bin)
+        .arg("$PATH:nonexistent_editor_xyz.cmd")
+        .output()
+        .expect("run where.exe missing");
+    assert!(!missing.status.success());
+
+    let log = std::fs::read_to_string(&log_file).expect("read invocation log");
+    let expected_arg = format!("\"{}\"", vsix_file.display());
+    assert_eq!(log.lines().count(), 3);
+    for line in log.lines() {
+        assert!(line.contains("--install-extension"), "line={line}");
+        assert!(line.contains(&expected_arg), "line={line}");
+        assert!(line.contains("--force"), "line={line}");
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn msix_manifest_and_packaging_are_valid() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let msix_dir = manifest_dir.join("packaging").join("msix");
+    let tpl_path = msix_dir.join("AppxManifest.xml.in");
+    assert!(tpl_path.is_file(), "missing {}", tpl_path.display());
+    let tpl = std::fs::read_to_string(&tpl_path).expect("read AppxManifest.xml.in");
+
+    for req_token in [
+        "@MSIX_IDENTITY_NAME@",
+        "@MSIX_PUBLISHER@",
+        "@MSIX_PUBLISHER_DISPLAY@",
+        "@MSIX_VERSION@",
+        "@MSIX_ARCH@",
+        "@MSIX_CONTROL_BLOCK@",
+        "@MSIX_CLI_DEFAULT_TILE@",
+        r#"Name="Windows.Desktop""#,
+        r#"<rescap:Capability Name="runFullTrust" />"#,
+        r#"Alias="spid3r.exe""#,
+        r#"Alias="sp.exe""#,
+        r#"Alias="yamc.exe""#,
+        r#"Alias="yamcvm.exe""#,
+        r#"Alias="spvm.exe""#,
+        r#"Alias="spkg.exe""#,
+        r#"Alias="spid3r-self.exe""#,
+        "<uap:FileType>.matrix</uap:FileType>",
+        "<uap:FileType>.mt</uap:FileType>",
+    ] {
+        assert!(tpl.contains(req_token), "template missing {req_token}");
+    }
+
+    let assets_dir = msix_dir.join("Assets");
+    let required_assets = [
+        "StoreLogo.png",
+        "Square44x44Logo.png",
+        "Square71x71Logo.png",
+        "Square150x150Logo.png",
+        "Square310x310Logo.png",
+        "Wide310x150Logo.png",
+    ];
+    for asset in required_assets {
+        let p = assets_dir.join(asset);
+        let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("missing {}: {e}", p.display()));
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "invalid PNG header in {}",
+            p.display()
+        );
+    }
+
+    // Verify Partner Center identity defaults in tools/release/release_selfhost.sh.
+    let rel_sh = std::fs::read_to_string(
+        manifest_dir
+            .join("tools")
+            .join("release")
+            .join("release_selfhost.sh"),
+    )
+    .expect("read release_selfhost.sh");
+    assert!(rel_sh.contains("ANSNEWTECH.Spid3r"));
+    assert!(rel_sh.contains("CN=087A9974-75CB-44FC-B893-8D3999E5E5E5"));
+    assert!(rel_sh.contains("ANSNEW TECH."));
+
+    let Some(makeappx) = find_makeappx_exe() else {
+        return;
+    };
+
+    let stage = std::env::temp_dir().join(format!("spid3r_msix_test_{}", std::process::id()));
+    let out_msix = std::env::temp_dir().join(format!("spid3r_test_{}.msix", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    let _ = std::fs::remove_file(&out_msix);
+    std::fs::create_dir_all(stage.join("Assets")).expect("create msix stage Assets");
+    for asset in required_assets {
+        std::fs::copy(assets_dir.join(asset), stage.join("Assets").join(asset))
+            .expect("copy asset");
+    }
+    for exe in [
+        "spid3r.exe",
+        "sp.exe",
+        "yamc.exe",
+        "yamcvm.exe",
+        "spvm.exe",
+        "spkg.exe",
+        "spid3r-self.exe",
+        "spid3r-control.exe",
+    ] {
+        std::fs::write(stage.join(exe), b"MZ dummy").expect("write dummy exe");
+    }
+
+    let control_block = "    <Application\n\
+      Id=\"Spid3rControl\"\n\
+      Executable=\"spid3r-control.exe\"\n\
+      EntryPoint=\"Windows.FullTrustApplication\">\n\
+      <uap:VisualElements\n\
+        DisplayName=\"Spid3r\"\n\
+        Description=\"Spid3r Control Panel and language settings dashboard\"\n\
+        BackgroundColor=\"transparent\"\n\
+        Square150x150Logo=\"Assets\\Square150x150Logo.png\"\n\
+        Square44x44Logo=\"Assets\\Square44x44Logo.png\">\n\
+        <uap:DefaultTile\n\
+          Wide310x150Logo=\"Assets\\Wide310x150Logo.png\"\n\
+          Square310x310Logo=\"Assets\\Square310x310Logo.png\"\n\
+          Square71x71Logo=\"Assets\\Square71x71Logo.png\" />\n\
+      </uap:VisualElements>\n\
+      <Extensions>\n\
+        <uap5:Extension Category=\"windows.appExecutionAlias\" Executable=\"spid3r-control.exe\" EntryPoint=\"Windows.FullTrustApplication\">\n\
+          <uap5:AppExecutionAlias>\n\
+            <uap5:ExecutionAlias Alias=\"spid3r-control.exe\" />\n\
+          </uap5:AppExecutionAlias>\n\
+        </uap5:Extension>\n\
+      </Extensions>\n\
+    </Application>\n\n";
+
+    let rendered = tpl
+        .replace("@MSIX_IDENTITY_NAME@", "ANSNEWTECH.Spid3r")
+        .replace(
+            "@MSIX_PUBLISHER@",
+            "CN=087A9974-75CB-44FC-B893-8D3999E5E5E5",
+        )
+        .replace("@MSIX_PUBLISHER_DISPLAY@", "ANSNEW TECH.")
+        .replace("@MSIX_VERSION@", "1.1.1.0")
+        .replace("@MSIX_ARCH@", "x64")
+        .replace("@MSIX_CONTROL_BLOCK@", control_block)
+        .replace("@MSIX_CLI_DEFAULT_TILE@", "");
+    assert!(
+        !rendered.contains("AppListEntry=\"none\""),
+        "Store MSIX must not declare AppListEntry=\"none\" (requires HeadlessAppBypass waiver)"
+    );
+    std::fs::write(stage.join("AppxManifest.xml"), rendered).expect("write AppxManifest.xml");
+
+    let output = Command::new(&makeappx)
+        .args(["pack", "/o", "/d"])
+        .arg(&stage)
+        .arg("/p")
+        .arg(&out_msix)
+        .output()
+        .expect("run makeappx pack");
+    let _ = std::fs::remove_dir_all(&stage);
+
+    assert!(
+        output.status.success(),
+        "makeappx pack failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let msix_bytes = std::fs::read(&out_msix).expect("read generated msix");
+    let _ = std::fs::remove_file(&out_msix);
+    let entries = read_zip_filenames(&msix_bytes).expect("parse MSIX central directory");
+    for req in [
+        "AppxManifest.xml",
+        "AppxBlockMap.xml",
+        "[Content_Types].xml",
+        "Assets/StoreLogo.png",
+        "spid3r.exe",
+        "yamc.exe",
+        "spid3r-control.exe",
+    ] {
+        assert!(
+            entries.iter().any(|e| e == req),
+            "MSIX missing {req}; entries = {entries:?}"
+        );
+    }
+}

@@ -211,7 +211,7 @@ pub fn check_file_with(
 /// emitted in source order. The check runs first — a file that does not check
 /// has no registry. The self-host checker (selfhost/semantic.matrix) must
 /// produce byte-identical output; consumed by
-/// tools/selfhost_semantic_parity.sh.
+/// tools/selfhost/selfhost_semantic_parity.sh.
 pub fn registry_json(
     program: &Program,
     is_main: bool,
