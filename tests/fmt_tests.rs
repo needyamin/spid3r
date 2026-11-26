@@ -42,7 +42,12 @@ fn check_roundtrip(name: &str, src: &str) {
 fn formats_every_example_and_benchmark() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files: Vec<PathBuf> = Vec::new();
-    for dir in ["examples", "benchmarks"] {
+    let bench_dir = if root.join("benchmarks/spid3r").is_dir() {
+        "benchmarks/spid3r"
+    } else {
+        "benchmarks"
+    };
+    for dir in ["examples", bench_dir] {
         let d = root.join(dir);
         if !d.is_dir() {
             continue;

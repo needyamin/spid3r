@@ -344,9 +344,9 @@ LLVM_PROFILE_FILE="$S0_PROF_PAT" \
 LLVM_PROFILE_FILE="$S0_PROF_PAT" \
   "$INST_S0" check "$ROOT/selfhost/main.matrix" >/dev/null 2>&1
 LLVM_PROFILE_FILE="$S0_PROF_PAT" \
-  "$INST_S0" run --engine vm "$ROOT/benchmarks/compare/prime.matrix" < /dev/null >/dev/null
+  "$INST_S0" run --engine vm "$ROOT/benchmarks/spid3r/compute/prime.matrix" < /dev/null >/dev/null
 LLVM_PROFILE_FILE="$S0_PROF_PAT" \
-  "$INST_S0" run --engine vm "$ROOT/benchmarks/compare/map.matrix" < /dev/null >/dev/null
+  "$INST_S0" run --engine vm "$ROOT/benchmarks/spid3r/compute/map.matrix" < /dev/null >/dev/null
 
 # Stage-1 self-compile + AOT runtime workloads (separate profile so rt loops do not dwarf Stage 0)
 LLVM_PROFILE_FILE="$RT_PAT_S1" SPID3R_RUNTIME_LIB="$INST_LIB_NAT" \
@@ -359,7 +359,7 @@ LLVM_PROFILE_FILE="$RT_PAT_S1" \
   "$INST_S1" tokens "$ROOT/benchmarks/selfhost/lex_workload.matrix" >/dev/null
 for w in prime json map; do
   LLVM_PROFILE_FILE="$RT_PAT_S1" SPID3R_RUNTIME_LIB="$INST_LIB_NAT" \
-    "$INST_S1" build --release "$ROOT/benchmarks/compare/${w}.matrix" -o "$WORK_DIR/tmp/${w}${EXE_SUF}" >/dev/null
+    "$INST_S1" build --release "$ROOT/benchmarks/spid3r/compute/${w}.matrix" -o "$WORK_DIR/tmp/${w}${EXE_SUF}" >/dev/null
   LLVM_PROFILE_FILE="$RT_PAT_S1" "$WORK_DIR/tmp/${w}${EXE_SUF}" < /dev/null >/dev/null
 done
 

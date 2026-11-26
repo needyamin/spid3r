@@ -340,9 +340,18 @@ then runs NSIS on `packaging/nsis/spid3r.nsi`.
   built-in ones. An install made by an earlier version still has that folder, so
   the installer deletes `$INSTDIR\stdlib` on the way in — otherwise an in-place
   upgrade would keep resolving imports from the old, editable copy.
+- Optional **Add Spid3r to PATH** checkbox (`SecPath`, checked by default on both
+  the Welcome and Components pages — uncheck in the GUI or pass `/NOPATH` /
+  `SPID3R_NO_PATH=1` for silent opt-out; long >1,024-char user `PATH` values are
+  updated without truncation).
+- Clean upgrade and uninstall handling: terminates running Spid3r processes
+  before replacing or deleting binaries, switches working directory out of
+  `$INSTDIR` to `%TEMP%`, purges legacy folders, and uses atomic `.old` rename +
+  `/REBOOTOK` fallback for stubborn locked files.
 - Creates a dedicated **Spid3r** Start Menu group with shortcuts for the Command
-  Shell, the Desktop Calculator and the Uninstaller, plus an optional Desktop
-  Shortcuts component.
+  Shell (with `$INSTDIR` prepended to `PATH` for that shell even if global `PATH`
+  was skipped), the Spid3r Control Panel, the Desktop Calculator, and the Uninstaller,
+  plus an optional Desktop Shortcuts component.
 - Registers `.matrix` file associations with Windows Explorer context menu actions
   ("Run with Spid3r", "Check Syntax", and "Run with GUI").
 - Bundles the SHA-256-verified `spid3r-formatter.vsix` extension (`packaging/vscode/`)
@@ -356,6 +365,14 @@ then runs NSIS on `packaging/nsis/spid3r.nsi`.
   links into every program. Users still need MSVC Build Tools with the
   Windows SDK to link; the programs they build have no LLVM dependency.
 - Set `SPID3R_NO_INSTALLER=1` to skip the installer step.
+
+### Microsoft Store MSIX package (`packaging/msix/`)
+
+`tools/release_selfhost.sh` and `.github/workflows/release.yml` also build an unsigned
+Microsoft Store package `Spid3r-<version>-x64.msix` (+ `.sha256`) using Windows SDK
+`makeappx.exe` and `packaging/msix/AppxManifest.xml.in` (Identity `ANSNEWTECH.Spid3r`,
+Publisher `CN=087A9974-75CB-44FC-B893-8D3999E5E5E5`, Store ID `9NPH5XX0F6KF`).
+Pass `--skip-msix` to `tools/release_selfhost.sh build` to skip `.msix` creation locally.
 
 #### WebView2 bootstrapper (opt-in, verified)
 

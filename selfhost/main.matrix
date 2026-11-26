@@ -141,7 +141,7 @@ fn main() {
         return 0;
     }
     if mode == "--help" or mode == "-h" or mode == "help" {
-        println("spid3r-self 1.1.1 — Spid3r self-hosted compiler & dev tools");
+        println("spid3r-self 1.1.1 — Spid3r self-hosted compiler (YamLLVM AOT) & dev tools");
         println("Commands:");
         println("  build <file.matrix> [-o <out>] [--release] [--target <triple>]");
         println("  compile <file.matrix> [out]      (write .matrixc bytecode)");
@@ -368,8 +368,8 @@ fn main() {
                     e[0],
                     pth,
                     [e[1],
-                    e[2],
-                    e[3]],
+                        e[2],
+                        e[3]],
                     null
                 ) + "\n"
             );
@@ -425,8 +425,8 @@ fn main() {
                     e2[0],
                     pth,
                     [e2[1],
-                    e2[2],
-                    e2[3]],
+                        e2[2],
+                        e2[3]],
                     null
                 ) + "\n"
             );
@@ -579,16 +579,16 @@ fn main() {
                 }
                 eprint(
                     "error[" + phase + "]: " + e7[0] + "
-                        "
+                    "
                 );
                 eprint(
                     "  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
-                        "
+                    "
                 );
             } else {
                 eprint(
                     "error[internal]: " + e7 + "
-                        "
+                    "
                 );
             }
             return 1;

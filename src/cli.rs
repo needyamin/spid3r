@@ -524,25 +524,6 @@ EXIT CODES:
                                            bytecode / runtime artifact
 ";
 
-// pub fn version_text() -> String {
-//     format!(
-//         "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗\n\
-//          \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗\n\
-//          \x20 ███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝\n\
-//          \x20 ╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗\n\
-//          \x20 ███████║██║     ██║██████╔╝██████╔╝██║  ██║\n\
-//          \x20 ╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝\n\n\
-//          \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
-//          \x20 Version       {}\n\
-//          \x20 Language      {}\n\
-//          \x20 Compiler      Self-hosted (LLVM 23 AOT)\n\
-//          \x20 Host          Rust (Stage 0)\n\
-//          \x20 Runtime       No external dependencies\n\n\
-//          \x20 Developed by ANSNEW TECH",
-//         VERSION, LANGUAGE_VERSION
-//     )
-// }
-
 pub fn version_text() -> String {
     format!(
         "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗         ╱     ╲\n\
@@ -554,9 +535,9 @@ pub fn version_text() -> String {
          \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
          \x20 Version       {}\n\
          \x20 Language      {}\n\
-         \x20 Compiler      Self-hosted (LLVM 23 AOT)\n\
-         \x20 Host          Rust (Stage 0)\n\
-         \x20 Runtime       No external dependencies\n\n\
+         \x20 Compiler      yamc (YamLLVM)\n\
+         \x20 Engine        Spid3r Engine (spvm)\n\
+         \x20 Runtime       spid3r_lang (YamGC)\n\n\
          \x20 Developed by ANSNEW TECH",
         VERSION, LANGUAGE_VERSION
     )
@@ -4239,7 +4220,12 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
         }
     }
     if files.is_empty() {
-        for dir in ["examples", "benchmarks"] {
+        let bench_dir = if Path::new("benchmarks/spid3r").is_dir() {
+            "benchmarks/spid3r"
+        } else {
+            "benchmarks"
+        };
+        for dir in ["examples", bench_dir] {
             let d = PathBuf::from(dir);
             if d.is_dir() {
                 let mut found: Vec<String> = std::fs::read_dir(&d)
@@ -4467,7 +4453,11 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         }
     }
     if files.is_empty() {
-        let dir = PathBuf::from("benchmarks");
+        let dir = if Path::new("benchmarks/spid3r").is_dir() {
+            PathBuf::from("benchmarks/spid3r")
+        } else {
+            PathBuf::from("benchmarks")
+        };
         if !dir.is_dir() {
             return Err(Diagnostic::new(
                 Phase::Usage,

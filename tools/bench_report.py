@@ -3,16 +3,14 @@
 
 Two phases, so the page can be re-rendered without re-measuring:
 
-    python tools/bench_report.py --measure   # writes benchmarks/report-data.json
+    python tools/bench_report.py --measure   # writes benchmarks/json/micro-suite.json
     python tools/bench_report.py --render    # writes docs/html/benchmark.html
     python tools/bench_report.py             # both
 
 Everything here is wall-clock, best-of-N, measured by spawning a fresh process
-per run - the same method `spid3r bench` itself uses, and the same method the
-historical numbers in benchmarks/results.json were taken with. Interpreter
-startup is measured separately and reported as its own column, because for the
-fastest benchmarks it is a large share of the total (PHP takes ~30 ms just to
-start, which is more than the whole `json` workload).
+per run - the same method `spid3r bench` itself uses. Interpreter/runtime
+startup is measured separately via a no-op invocation so both raw wall time
+and startup-adjusted compute time are reported honestly.
 """
 
 import argparse
@@ -23,19 +21,22 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "benchmarks"
+JSON_DIR = BENCH / "json"
+SPID3R_DIR = BENCH / "spid3r"
 OUT_HTML = ROOT / "docs" / "html" / "benchmark.html"
-OUT_JSON = BENCH / "report-data.json"
-REF_P1_JSON = BENCH / "reference.p1.json"
-REF_P2_JSON = BENCH / "selfhost" / "baseline.json"
+OUT_JSON = JSON_DIR / "micro-suite.json"
+REF_P1_JSON = JSON_DIR / "compute-baseline.json"
+LATEST_COMPUTE_JSON = JSON_DIR / "compute-latest.json"
+REF_P2_JSON = JSON_DIR / "selfhost-baseline.json"
+BUDGETS_JSON = JSON_DIR / "footprint-budgets.json"
 
-# Outer-iteration counts, mirrored from BENCH_ITERS in src/cli.rs so the report
-# can turn a wall time into iters/sec without re-deriving it from the table.
 ITERS = {
     "arith": 2_000_000,
     "strings": 30_000,
@@ -47,7 +48,6 @@ ITERS = {
     "tasks": 2_000,
 }
 
-# Perf-gate floors, mirrored from BENCH_FLOORS in src/cli.rs.
 FLOORS = {
     "arith": 6_000_000,
     "strings": 140_000,
@@ -59,12 +59,8 @@ FLOORS = {
     "tasks": 6_000,
 }
 
-# Frozen Tier-A startup floor (Phase 11 P-5: 8.24 ms baseline + margin).
 STARTUP_FLOOR_MS = 8.5
 
-# Display order, mirroring the table in the plan (optimize_plan.html section 2).
-# report-data.json keeps whatever order `spid3r bench` emits; only the printed
-# summary and the ratio column follow this one.
 WORKLOAD_ORDER = ["arith", "methods", "strings", "list", "map", "closures", "json", "tasks"]
 
 BENCH_NAMES = {
@@ -87,7 +83,7 @@ BENCH_DESC = {
     "methods": "200K method calls on objects",
     "closures": "40K closure allocations and calls",
     "json": "2K encode/decode round-trips",
-    "tasks": "2K spawn/join task round-trips",
+    "tasks": "2K spawn/channel task round-trips",
     "stress_suite": "Mixed workload, correctness only (ungated)",
 }
 
@@ -100,7 +96,9 @@ def bin_path() -> Path:
     sys.exit("target/release/spid3r not found - run `cargo build --release` first")
 
 
-TIME_RE = re.compile(r"^(?P<stem>[a-z_]+)\s+(?P<iters>\d+|-)\s+(?P<time>[\d.]+)(?P<unit>ms|s|µs)\s+(?P<rate>[\d.]+|-)\s*$")
+TIME_RE = re.compile(
+    r"^(?P<stem>[a-z_]+)\s+(?P<iters>\d+|-)\s+(?P<time>[\d.]+)(?P<unit>ms|s|µs)\s+(?P<rate>[\d.]+|-)\s*$"
+)
 
 
 def parse_bench_table(out: str):
@@ -117,7 +115,6 @@ def parse_bench_table(out: str):
 
 
 def parse_spid3r_version(out: str) -> str:
-    """Extract 'spid3r <ver> (language <lang>)' from `spid3r --version` output."""
     ver = re.search(r"^\s*Version\s+(\S+)", out, re.MULTILINE)
     lang = re.search(r"^\s*Language\s+(\S+)", out, re.MULTILINE)
     if ver:
@@ -126,12 +123,23 @@ def parse_spid3r_version(out: str) -> str:
     return lines[0] if lines else "spid3r"
 
 
+def git_sha() -> str:
+    try:
+        p = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return p.stdout.strip() if p.returncode == 0 else "unknown"
+    except OSError:
+        return "unknown"
+
+
 def run_bench(engine: str, runs: int, compare: bool = False):
     cmd = [str(bin_path()), "bench", "--engine", engine, "--runs", str(runs)]
     if compare:
-        # `--compare` makes the harness require byte-identical output from the
-        # other engine, so the timing run doubles as the differential check the
-        # report claims. A divergence exits non-zero and we stop here.
         cmd.append("--compare")
     proc = subprocess.run(
         cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace"
@@ -141,38 +149,31 @@ def run_bench(engine: str, runs: int, compare: bool = False):
     return parse_bench_table(proc.stdout), proc.stdout
 
 
-def best_of(cmd, runs):
-    """Best wall-clock of N fresh process runs, in ms."""
+def best_of(cmd, runs, expected_stdout=None):
+    """Best wall-clock of N fresh process runs, in ms (checking stdout if supplied)."""
     best = float("inf")
     for _ in range(runs):
         t0 = time.perf_counter()
-        subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        best = min(best, (time.perf_counter() - t0) * 1000)
+        proc = subprocess.run(
+            cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        elapsed = (time.perf_counter() - t0) * 1000
+        if proc.returncode != 0:
+            raise RuntimeError(f"command {cmd} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+        if expected_stdout is not None and proc.stdout.strip() != expected_stdout:
+            raise RuntimeError(
+                f"checksum mismatch for {cmd}: got {proc.stdout.strip()!r}, expected {expected_stdout!r}"
+            )
+        best = min(best, elapsed)
     return best
 
 
-def startup_ms(cmd, runs=9):
-    return best_of(cmd, runs)
-
-
-# A startup-adjusted number is only a measurement if the adjusted time is
-# larger than the noise in the startup estimate it was derived from. That
-# noise is the median absolute deviation of the startup samples; 0.5 ms is the
-# absolute floor below which a process-spawn measurement on a shared desktop
-# means nothing at all. Rows whose reference lands under its own resolution
-# are reported as unresolved rather than divided into a fake ratio -- see the
-# docstring of ratio_for().
 RESOLUTION_ABS_MS = 0.5
 RESOLUTION_MAD_FACTOR = 2.0
 
 
 def startup_stats(cmd, runs=9):
-    """(best_ms, mad_ms) for a no-op invocation.
-
-    `best_ms` is the fixed cost subtracted from a workload; `mad_ms` is how
-    much that estimate wobbles between runs, which is the resolution limit of
-    everything derived from it.
-    """
+    """(best_ms, mad_ms) for a no-op invocation."""
     samples = []
     for _ in range(runs):
         t0 = time.perf_counter()
@@ -185,17 +186,67 @@ def startup_stats(cmd, runs=9):
     return best, mad
 
 
+def measure_aot(binp: str, stems, runs_aot: int):
+    """Build release AOT executables for each micro workload and measure them."""
+    results = {}
+    aot_startup = None
+    exe_suf = ".exe" if os.name == "nt" else ""
+    with tempfile.TemporaryDirectory(prefix="spid3r_micro_aot_") as td:
+        tmp = Path(td)
+        empty_src = tmp / "empty.matrix"
+        empty_src.write_text("fn main() { return 0; }\n", encoding="utf-8")
+        empty_exe = tmp / f"empty{exe_suf}"
+        b0 = subprocess.run(
+            [binp, "build", "--release", str(empty_src), "-o", str(empty_exe)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if b0.returncode != 0:
+            return results, None, f"AOT unavailable in this build: {b0.stderr.strip()[:120]}"
+        aot_startup = startup_stats([str(empty_exe)], runs=9)
+
+        for stem in stems:
+            src = SPID3R_DIR / f"{stem}.matrix"
+            if not src.is_file():
+                continue
+            # Reference stdout from VM
+            vm_ref = subprocess.run(
+                [binp, "run", "--engine", "vm", str(src)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if vm_ref.returncode != 0:
+                continue
+            expected = vm_ref.stdout.strip()
+            out_exe = tmp / f"{stem}{exe_suf}"
+            b = subprocess.run(
+                [binp, "build", "--release", str(src), "-o", str(out_exe)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if b.returncode != 0:
+                continue
+            results[stem] = best_of([str(out_exe)], runs_aot, expected_stdout=expected)
+    return results, aot_startup, None
+
+
 def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
     binp = str(bin_path())
     data = {
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "git_sha": git_sha(),
         "host": {
             "os": platform.platform(),
             "cpu": cpu_name(),
             "cores": os.cpu_count(),
             "python": platform.python_version(),
         },
-        "runs": {"spid3r": runs_spid3r, "tree": runs_tree, "other": runs_other},
+        "runs": {"spid3r": runs_spid3r, "aot": runs_spid3r, "tree": runs_tree, "other": runs_other},
         "spid3r_version": parse_spid3r_version(
             subprocess.run(
                 [binp, "--version"],
@@ -206,16 +257,16 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
             ).stdout
         ),
         "startup": {},
+        "startup_mad": {},
+        "resolution": {},
         "vm": {},
+        "aot": {},
         "tree": {},
+        "nodejs": {},
         "php": {},
         "python": {},
         "gate": [],
     }
-
-    data["startup"] = {}
-    data["startup_mad"] = {}
-    data["resolution"] = {}
 
     def record_startup(key, cmd):
         best, mad = startup_stats(cmd)
@@ -224,14 +275,18 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
         data["resolution"][key] = max(RESOLUTION_ABS_MS, RESOLUTION_MAD_FACTOR * mad)
 
     record_startup("spid3r", [binp, "--version"])
+    if shutil.which("node"):
+        record_startup("nodejs", ["node", "-e", ""])
+        data["node_version"] = (
+            subprocess.run(["node", "-v"], capture_output=True, text=True).stdout.strip().lstrip("v")
+        )
     if shutil.which("php"):
         record_startup("php", ["php", "-r", ""])
-    if shutil.which("python"):
-        record_startup("python", [sys.executable, "-c", ""])
-    if shutil.which("php"):
         data["php_version"] = (
             subprocess.run(["php", "-r", "echo PHP_VERSION;"], capture_output=True, text=True).stdout.strip()
         )
+    if shutil.which("python"):
+        record_startup("python", [sys.executable, "-c", ""])
 
     vm_rows, vm_out = run_bench("vm", runs_spid3r, compare=True)
     data["compare"] = True
@@ -244,10 +299,26 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
     for stem, row in tree_rows.items():
         data["tree"][stem] = row["ms"]
 
-    # Reference implementations: benchmarks/php/*.php and benchmarks/python/*.py
-    # (json lives in json_bench.*).
+    # Measure Spid3r Native AOT (YamLLVM) on the same gated workloads
+    aot_res, aot_st, aot_note = measure_aot(binp, [s for s in vm_rows if s in ITERS], runs_spid3r)
+    if aot_res:
+        data["aot"] = aot_res
+    if aot_st:
+        best_a, mad_a = aot_st
+        data["startup"]["aot"] = best_a
+        data["startup_mad"]["aot"] = mad_a
+        data["resolution"]["aot"] = max(RESOLUTION_ABS_MS, RESOLUTION_MAD_FACTOR * mad_a)
+    if aot_note:
+        data["aot_note"] = aot_note
+
+    # Reference implementations in benchmarks/{nodejs,php,python}/
     for stem in vm_rows:
+        if stem not in ITERS:
+            continue
         fname = "json_bench" if stem == "json" else stem
+        js = BENCH / "nodejs" / f"{fname}.js"
+        if js.exists() and shutil.which("node"):
+            data["nodejs"][stem] = best_of(["node", str(js)], runs_other)
         php = BENCH / "php" / f"{fname}.php"
         if php.exists() and shutil.which("php"):
             data["php"][stem] = best_of(["php", str(php)], runs_other)
@@ -271,21 +342,12 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
             }
         )
 
-    # Startup-adjusted numbers, and the ratio the whole speed program is
-    # written in. Absolute milliseconds are host-specific (this is a shared,
-    # unpinned machine), so the portable claim is:
-    #
-    #     ratio = (spid3r - spid3r_startup) / min(php - php_startup,
-    #                                              python - python_startup)
-    #
-    # Both engines share one binary, so both subtract the same startup. These
-    # are NEW keys: the existing `vm` / `tree` / `php` / `python` maps keep
-    # their raw, unadjusted meaning because docs/html/benchmark.html renders
-    # them and the perf floors are computed from them.
     data["adj"] = {}
     for engine, startup_key in (
         ("vm", "spid3r"),
+        ("aot", "aot"),
         ("tree", "spid3r"),
+        ("nodejs", "nodejs"),
         ("php", "php"),
         ("python", "python"),
     ):
@@ -294,34 +356,20 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
             stem: max(0.0, ms - startup) for stem, ms in data[engine].items()
         }
 
-    # Two ratios, because they answer two different questions.
-    #
-    #   ratio_php  -- spid3r / PHP, always computable here, and STABLE: PHP's
-    #                 startup is ~25 ms with ~1 ms jitter, so its 2-22 ms
-    #                 workloads sit well clear of the noise. This is the gate.
-    #   ratio_best -- spid3r / min(resolved php, python), the figure the plan's
-    #                 section 2 quotes. CPython on this host is the bundled
-    #                 3.13 with a ~197 ms startup; its 1-15 ms workloads are
-    #                 inside its own jitter, so whether it "wins" a row flips
-    #                 between runs. It is reported, not gated on.
-    #
-    # A reference contributes to ratio_best only if its adjusted time clears
-    # its own resolution. Dividing by anything smaller is arithmetic on noise:
-    # CPython's adjusted time for `json` comes out at 0.0 ms in some sessions.
     data["ratio_php"] = {}
     data["ratio_adj"] = {}
     data["ratio_ref"] = {}
     data["ratio_resolved"] = {}
-    for engine in ("vm", "tree"):
+    for engine in ("vm", "aot", "tree"):
         vs_php, vs_best, refs_used, resolved = {}, {}, {}, {}
-        for stem, adj in data["adj"][engine].items():
+        for stem, adj in data["adj"].get(engine, {}).items():
             php_adj = data["adj"]["php"].get(stem)
             if php_adj is not None and php_adj > data["resolution"].get("php", RESOLUTION_ABS_MS):
                 vs_php[stem] = adj / php_adj
 
             usable = {
                 ref: data["adj"][ref][stem]
-                for ref in ("php", "python")
+                for ref in ("nodejs", "php", "python")
                 if stem in data["adj"][ref]
                 and data["adj"][ref][stem] > data["resolution"].get(ref, RESOLUTION_ABS_MS)
             }
@@ -339,15 +387,12 @@ def measure(runs_spid3r=5, runs_tree=3, runs_other=3):
 
 
 def ordered_workloads(data):
-    """The plan's display order, then anything else the harness reported."""
     known = [s for s in WORKLOAD_ORDER if s in data["vm"]]
     extra = [s for s in data["vm"] if s not in WORKLOAD_ORDER]
     return known + extra
 
 
 def print_ratios(data):
-    """One row per workload: adjusted ms per engine, the stable ratio against
-    PHP, and the plan's "best reference" ratio where it is resolvable."""
     adj = data.get("adj") or {}
     vs_php = data.get("ratio_php") or {}
     vs_best = data.get("ratio_adj") or {}
@@ -359,37 +404,23 @@ def print_ratios(data):
 
     print()
     print(
-        f"{'workload':<10}{'vm adj':>9}{'vm/php':>8}{'vm/best':>9}"
-        f"{'tree adj':>10}{'tree/php':>10}{'tree/best':>11}{'php adj':>9}{'py adj':>8}"
+        f"{'workload':<10}{'aot adj':>9}{'vm adj':>9}{'vm/php':>8}"
+        f"{'tree adj':>10}{'node adj':>10}{'php adj':>9}{'py adj':>8}   best_ref"
     )
-    unresolved = []
     for stem in ordered_workloads(data):
+        if stem == "stress_suite":
+            continue
+        aot_adj = (adj.get("aot") or {}).get(stem)
         vm_adj = (adj.get("vm") or {}).get(stem)
         tree_adj = (adj.get("tree") or {}).get(stem)
+        nd_adj = (adj.get("nodejs") or {}).get(stem)
         php_adj = (adj.get("php") or {}).get(stem)
         py_adj = (adj.get("python") or {}).get(stem)
         is_res = (resolved.get("vm") or {}).get(stem, False)
-        if not is_res and stem in (adj.get("vm") or {}) and stem != "stress_suite":
-            unresolved.append(stem)
-        best_v = (vs_best.get("vm") or {}).get(stem) if is_res else None
-        best_t = (vs_best.get("tree") or {}).get(stem) if is_res else None
-        used = (refs_used.get("vm") or {}).get(stem, "")
+        used = (refs_used.get("vm") or {}).get(stem, "") if is_res else ""
         print(
-            f"{stem:<10}{fmt(vm_adj, 9)}{fmt((vs_php.get('vm') or {}).get(stem), 8, 2)}"
-            f"{fmt(best_v, 9, 2)}"
-            f"{fmt(tree_adj, 10)}{fmt((vs_php.get('tree') or {}).get(stem), 10, 2)}"
-            f"{fmt(best_t, 11, 2)}"
-            f"{fmt(php_adj, 9)}{fmt(py_adj, 8)}   {used}"
-        )
-    print(
-        "(ms, startup-adjusted; vm/php is the stable gate ratio; "
-        "vm/best is spid3r / fastest reference -- lower is better)"
-    )
-    if unresolved:
-        print(
-            "best-reference n/a: the reference's compute is inside its own startup "
-            f"resolution ({', '.join(unresolved)}). startup: "
-            + ", ".join(f"{k} {v:.1f}ms" for k, v in (data.get("startup") or {}).items())
+            f"{stem:<10}{fmt(aot_adj, 9)}{fmt(vm_adj, 9)}{fmt((vs_php.get('vm') or {}).get(stem), 8, 2)}"
+            f"{fmt(tree_adj, 10)}{fmt(nd_adj, 10)}{fmt(php_adj, 9)}{fmt(py_adj, 8)}   {used}"
         )
 
 
@@ -465,16 +496,11 @@ def verify_doc_sync() -> int:
         if val not in bench_txt:
             print(f"SYNC FAIL: {name} ({val}) missing in docs/html/benchmark.html", file=sys.stderr)
             return 1
-    print(f"BENCH DOC SYNC PASS: {len(pins)} figures verified across benchmark.html and frozen JSONs")
+    print(f"BENCH DOC SYNC PASS: {len(pins)} figures verified across benchmark.html and benchmarks/json/*.json")
     return 0
 
 
 def main():
-    # Phase 0: `--mode compute` is a JSON-ONLY measurement entry point. It
-    # delegates to tools/phase0_bench.py and NEVER renders docs/html/benchmark.html
-    # and NEVER touches benchmarks/report-data.json. All other flags are passed
-    # through unchanged, so `--mode compute --measure` runs the external
-    # compute protocol; the default `report` mode is completely unaffected.
     argv = sys.argv[1:]
     if "--mode" in argv:
         i = argv.index("--mode")
@@ -491,21 +517,13 @@ def main():
         argv = argv[:i] + argv[i + 2:]
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["report", "compute"], default="report",
-                    help="report = legacy wall-clock page (default); compute = Phase 0 external protocol")
+    ap.add_argument("--mode", choices=["report", "compute"], default="report")
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--render", action="store_true")
-    ap.add_argument("--check-startup-floor", action="store_true",
-                    help="Fail non-zero if spid3r startup exceeds STARTUP_FLOOR_MS (8.5 ms).")
-    ap.add_argument("--verify-sync", action="store_true",
-                    help="Verify benchmark.html and frozen JSON baselines agree on every figure.")
+    ap.add_argument("--check-startup-floor", action="store_true")
+    ap.add_argument("--verify-sync", action="store_true")
     ap.add_argument("--runs", type=int, default=5, help="spid3r runs (best of N)")
-    # 21 is the sample count tools/phase0_bench.py uses. It is not decoration:
-    # the reference side of the ratio is a difference of two independently
-    # measured minima, and at best-of-5 that difference moves 20-50% between
-    # sessions on this host because PHP's fixed cost (~26 ms) is larger than
-    # half these workloads. Best-of-21 pulls the large rows to within ~10%.
-    ap.add_argument("--other-runs", type=int, default=21, help="php/python runs (best of N)")
+    ap.add_argument("--other-runs", type=int, default=5, help="node/php/python runs (best of N)")
     args = ap.parse_args(argv)
 
     if args.verify_sync:
@@ -514,10 +532,12 @@ def main():
     do_measure = args.measure or not args.render
     do_render = args.render or not args.measure
 
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+
     if do_measure:
-        print("measuring (spid3r vm, spid3r tree, php, python)...")
+        print("measuring (spid3r aot, spid3r vm, spid3r tree, node, php, python)...")
         data = measure(runs_spid3r=args.runs, runs_other=args.other_runs)
-        OUT_JSON.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        OUT_JSON.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
         print(f"wrote {OUT_JSON.relative_to(ROOT)}")
     else:
         data = json.loads(OUT_JSON.read_text(encoding="utf-8"))
@@ -534,13 +554,29 @@ def main():
         print(f"STARTUP FLOOR PASS: {sp_startup:.3f} ms <= {STARTUP_FLOOR_MS:.1f} ms")
 
     if do_render:
-        from bench_report_render import render  # local module, same directory
+        from bench_report_render import render
 
         ref_p1 = json.loads(REF_P1_JSON.read_text(encoding="utf-8")) if REF_P1_JSON.is_file() else None
+        latest_compute = (
+            json.loads(LATEST_COMPUTE_JSON.read_text(encoding="utf-8"))
+            if LATEST_COMPUTE_JSON.is_file()
+            else None
+        )
         ref_p2 = json.loads(REF_P2_JSON.read_text(encoding="utf-8")) if REF_P2_JSON.is_file() else None
-        html = render(data, BENCH_NAMES, BENCH_DESC, ITERS, FLOORS, ref_p1=ref_p1, ref_p2=ref_p2)
-        OUT_HTML.write_text(html, encoding="utf-8")
-        print(f"wrote {OUT_HTML.relative_to(ROOT)} ({len(html):,} bytes)")
+        budgets = json.loads(BUDGETS_JSON.read_text(encoding="utf-8")) if BUDGETS_JSON.is_file() else None
+        rendered = render(
+            data,
+            BENCH_NAMES,
+            BENCH_DESC,
+            ITERS,
+            FLOORS,
+            ref_p1=ref_p1,
+            ref_p2=ref_p2,
+            latest_compute=latest_compute,
+            budgets=budgets,
+        )
+        OUT_HTML.write_text(rendered, encoding="utf-8", newline="\n")
+        print(f"wrote {OUT_HTML.relative_to(ROOT)} ({len(rendered):,} bytes)")
 
 
 if __name__ == "__main__":

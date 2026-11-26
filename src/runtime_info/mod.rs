@@ -292,6 +292,11 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     s.push("Spid3r version", crate::VERSION);
     s.push("Language version", crate::LANGUAGE_VERSION);
     s.push("Host language", "Rust");
+    s.push("Compiler", "yamc (YamLLVM)");
+    s.push("Execution engine", "Spid3r Engine (spvm / spvm_rt)");
+    s.push("Memory manager", "YamGC");
+    s.push("Runtime library", "spid3r_lang");
+    s.push("Package manager", "spkg");
     s.push("Rust compiler", rustc_version());
     s.push(
         "Build profile",
@@ -419,7 +424,7 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
 
     let mut s = Section::new("Features");
     s.push("gui", feature(cfg!(feature = "gui")));
-    s.push("native (LLVM AOT)", feature(cfg!(feature = "native")));
+    s.push("native (YamLLVM)", feature(cfg!(feature = "native")));
     s.push("tls", feature(cfg!(feature = "tls")));
     s.push("spid3rinfo", "on");
     out.push(s);

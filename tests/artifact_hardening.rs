@@ -469,6 +469,33 @@ fn find_makensis_exe(nsis_dir: &std::path::Path) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+fn find_makeappx_exe() -> Option<PathBuf> {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("makeappx.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let kits_bin = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
+    if let Ok(entries) = std::fs::read_dir(&kits_bin) {
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|x| x.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for vdir in versions {
+            let candidate = vdir.join("x64").join("makeappx.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 fn read_zip_filenames(bytes: &[u8]) -> Result<Vec<String>, String> {
     // Parse PKZIP central directory headers (`PK\x01\x02`) without external crates.
     if bytes.len() < 4 || &bytes[0..4] != b"PK\x03\x04" {
@@ -552,6 +579,16 @@ fn nsis_installer_script_is_valid_and_compiles() {
     assert!(content.contains("MicrosoftEdgeWebview2Setup.exe"));
     assert!(content.contains("https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
     assert!(content.contains("SecWebView2"));
+    assert!(content.contains("SecPath"));
+    assert!(content.contains("/NOPATH"));
+    assert!(content.contains("SPID3R_NO_PATH"));
+    assert!(content.contains("NSD_CreateCheckbox"));
+    assert!(content.contains("WelcomeShow"));
+    assert!(content.contains("WelcomeLeave"));
+    assert!(content.contains(r#"SetOutPath "$TEMP""#));
+    assert!(content.contains("taskkill.exe"));
+    assert!(content.contains("/REBOOTOK"));
+    assert!(content.contains("Rename"));
     assert!(content.contains("SecEditorExt"));
     assert!(content.contains("FORMATTER_VSIX"));
     assert!(content.contains("/NOEDITOR"));
@@ -785,4 +822,160 @@ fn windows_editor_cli_lookup_and_invocation_are_safe() {
     }
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn msix_manifest_and_packaging_are_valid() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let msix_dir = manifest_dir.join("packaging").join("msix");
+    let tpl_path = msix_dir.join("AppxManifest.xml.in");
+    assert!(tpl_path.is_file(), "missing {}", tpl_path.display());
+    let tpl = std::fs::read_to_string(&tpl_path).expect("read AppxManifest.xml.in");
+
+    for req_token in [
+        "@MSIX_IDENTITY_NAME@",
+        "@MSIX_PUBLISHER@",
+        "@MSIX_PUBLISHER_DISPLAY@",
+        "@MSIX_VERSION@",
+        "@MSIX_ARCH@",
+        "@MSIX_CONTROL_BLOCK@",
+        "@MSIX_CLI_APPLIST@",
+        "@MSIX_CLI_DEFAULT_TILE@",
+        r#"Name="Windows.Desktop""#,
+        r#"<rescap:Capability Name="runFullTrust" />"#,
+        r#"Alias="spid3r.exe""#,
+        r#"Alias="sp.exe""#,
+        r#"Alias="yamc.exe""#,
+        r#"Alias="yamcvm.exe""#,
+        r#"Alias="spvm.exe""#,
+        r#"Alias="spkg.exe""#,
+        r#"Alias="spid3r-self.exe""#,
+        "<uap:FileType>.matrix</uap:FileType>",
+        "<uap:FileType>.mt</uap:FileType>",
+    ] {
+        assert!(tpl.contains(req_token), "template missing {req_token}");
+    }
+
+    let assets_dir = msix_dir.join("Assets");
+    let required_assets = [
+        "StoreLogo.png",
+        "Square44x44Logo.png",
+        "Square71x71Logo.png",
+        "Square150x150Logo.png",
+        "Square310x310Logo.png",
+        "Wide310x150Logo.png",
+    ];
+    for asset in required_assets {
+        let p = assets_dir.join(asset);
+        let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("missing {}: {e}", p.display()));
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "invalid PNG header in {}",
+            p.display()
+        );
+    }
+
+    // Verify Partner Center identity defaults in tools/release_selfhost.sh.
+    let rel_sh = std::fs::read_to_string(manifest_dir.join("tools").join("release_selfhost.sh"))
+        .expect("read release_selfhost.sh");
+    assert!(rel_sh.contains("ANSNEWTECH.Spid3r"));
+    assert!(rel_sh.contains("CN=087A9974-75CB-44FC-B893-8D3999E5E5E5"));
+    assert!(rel_sh.contains("ANSNEW TECH."));
+
+    let Some(makeappx) = find_makeappx_exe() else {
+        return;
+    };
+
+    let stage = std::env::temp_dir().join(format!("spid3r_msix_test_{}", std::process::id()));
+    let out_msix = std::env::temp_dir().join(format!("spid3r_test_{}.msix", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    let _ = std::fs::remove_file(&out_msix);
+    std::fs::create_dir_all(stage.join("Assets")).expect("create msix stage Assets");
+    for asset in required_assets {
+        std::fs::copy(assets_dir.join(asset), stage.join("Assets").join(asset))
+            .expect("copy asset");
+    }
+    for exe in [
+        "spid3r.exe",
+        "sp.exe",
+        "yamc.exe",
+        "yamcvm.exe",
+        "spvm.exe",
+        "spkg.exe",
+        "spid3r-self.exe",
+        "spid3r-control.exe",
+    ] {
+        std::fs::write(stage.join(exe), b"MZ dummy").expect("write dummy exe");
+    }
+
+    let control_block = "    <Application\n\
+      Id=\"Spid3rControl\"\n\
+      Executable=\"spid3r-control.exe\"\n\
+      EntryPoint=\"Windows.FullTrustApplication\">\n\
+      <uap:VisualElements\n\
+        DisplayName=\"Spid3r\"\n\
+        Description=\"Spid3r Control Panel and language settings dashboard\"\n\
+        BackgroundColor=\"transparent\"\n\
+        Square150x150Logo=\"Assets\\Square150x150Logo.png\"\n\
+        Square44x44Logo=\"Assets\\Square44x44Logo.png\">\n\
+        <uap:DefaultTile\n\
+          Wide310x150Logo=\"Assets\\Wide310x150Logo.png\"\n\
+          Square310x310Logo=\"Assets\\Square310x310Logo.png\"\n\
+          Square71x71Logo=\"Assets\\Square71x71Logo.png\" />\n\
+      </uap:VisualElements>\n\
+      <Extensions>\n\
+        <uap5:Extension Category=\"windows.appExecutionAlias\" Executable=\"spid3r-control.exe\" EntryPoint=\"Windows.FullTrustApplication\">\n\
+          <uap5:AppExecutionAlias>\n\
+            <uap5:ExecutionAlias Alias=\"spid3r-control.exe\" />\n\
+          </uap5:AppExecutionAlias>\n\
+        </uap5:Extension>\n\
+      </Extensions>\n\
+    </Application>\n\n";
+
+    let rendered = tpl
+        .replace("@MSIX_IDENTITY_NAME@", "ANSNEWTECH.Spid3r")
+        .replace(
+            "@MSIX_PUBLISHER@",
+            "CN=087A9974-75CB-44FC-B893-8D3999E5E5E5",
+        )
+        .replace("@MSIX_PUBLISHER_DISPLAY@", "ANSNEW TECH.")
+        .replace("@MSIX_VERSION@", "1.1.1.0")
+        .replace("@MSIX_ARCH@", "x64")
+        .replace("@MSIX_CONTROL_BLOCK@", control_block)
+        .replace("@MSIX_CLI_APPLIST@", "\n        AppListEntry=\"none\"")
+        .replace("@MSIX_CLI_DEFAULT_TILE@", "");
+    std::fs::write(stage.join("AppxManifest.xml"), rendered).expect("write AppxManifest.xml");
+
+    let output = Command::new(&makeappx)
+        .args(["pack", "/o", "/d"])
+        .arg(&stage)
+        .arg("/p")
+        .arg(&out_msix)
+        .output()
+        .expect("run makeappx pack");
+    let _ = std::fs::remove_dir_all(&stage);
+
+    assert!(
+        output.status.success(),
+        "makeappx pack failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let msix_bytes = std::fs::read(&out_msix).expect("read generated msix");
+    let _ = std::fs::remove_file(&out_msix);
+    let entries = read_zip_filenames(&msix_bytes).expect("parse MSIX central directory");
+    for req in [
+        "AppxManifest.xml",
+        "AppxBlockMap.xml",
+        "[Content_Types].xml",
+        "Assets/StoreLogo.png",
+        "spid3r.exe",
+        "yamc.exe",
+        "spid3r-control.exe",
+    ] {
+        assert!(
+            entries.iter().any(|e| e == req),
+            "MSIX missing {req}; entries = {entries:?}"
+        );
+    }
 }

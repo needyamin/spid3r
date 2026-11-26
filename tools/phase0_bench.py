@@ -64,13 +64,17 @@ except ImportError as exc:  # fail CLOSED with a clean diagnostic, never a trace
     sys.exit(f"PHASE0: FAIL-CLOSED - missing helper module: {exc}")
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPARE = ROOT / "benchmarks" / "compare"
-RESULTS = ROOT / "benchmarks" / "results.phase0.json"
-CI_RESULTS = ROOT / "benchmarks" / "results.phase0.ci-advisory.json"
-SELFHOST_DIR = ROOT / "benchmarks" / "selfhost"
+BENCH = ROOT / "benchmarks"
+JSON_DIR = BENCH / "json"
+COMPARE = BENCH / "spid3r" / "compute"
+NODE_COMPARE = BENCH / "nodejs" / "compute"
+RUST_COMPARE = BENCH / "rust" / "compute"
+RESULTS = JSON_DIR / "compute-latest.json"
+CI_RESULTS = JSON_DIR / "compute.ci-advisory.json"
+SELFHOST_DIR = BENCH / "selfhost"
 SELFHOST_MANIFEST = SELFHOST_DIR / "MANIFEST.sha256"
-SELFHOST_BASELINE = SELFHOST_DIR / "baseline.json"
-SELFHOST_CI_RESULTS = SELFHOST_DIR / "results.selfhost.ci-advisory.json"
+SELFHOST_BASELINE = JSON_DIR / "selfhost-baseline.json"
+SELFHOST_CI_RESULTS = JSON_DIR / "selfhost.ci-advisory.json"
 
 PINS = {
     "prime": "RESULT 5133 121013308",
@@ -517,7 +521,7 @@ def build_commands(session: Session, binp: Path, workloads: list[str],
             else:
                 all_v["native"] = [str(exe)]
         if "node" in variants:
-            js_src = COMPARE / f"{w}.js"
+            js_src = NODE_COMPARE / f"{w}.js"
             node_exe = shutil.which("node")
             if not js_src.is_file():
                 notes.append(f"{w}: JS reference not found ({js_src.name})")
@@ -526,7 +530,7 @@ def build_commands(session: Session, binp: Path, workloads: list[str],
             else:
                 all_v["node"] = [node_exe, str(js_src)]
         if "rust" in variants:
-            rs_src = COMPARE / f"{w}.rs"
+            rs_src = RUST_COMPARE / f"{w}.rs"
             rustc_exe = shutil.which("rustc")
             if not rs_src.is_file():
                 notes.append(f"{w}: Rust reference absent ({rs_src.name})")
@@ -797,7 +801,7 @@ def write_artifacts(data: dict, args) -> list[Path]:
                 for w, variants in data["workloads"].items()
             },
         }
-        bp = ROOT / "benchmarks" / f"baseline-{sha}.json"
+        bp = JSON_DIR / f"baseline-{sha}.json"
         bp.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
         written.append(bp)
     return written

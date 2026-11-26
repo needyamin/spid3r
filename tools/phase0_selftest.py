@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase0_bench as h  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPARE = ROOT / "benchmarks" / "compare"
+COMPARE = ROOT / "benchmarks" / "spid3r" / "compute"
 
 WARMUP = 9
 MEASURED = 5
@@ -162,7 +162,7 @@ def pipeline_once(binp: Path) -> dict:
             "pass": ok,
             "arm_binary": str(binp),
             "arm_command": [str(x) for x in cmd],
-            "arm_workload": "benchmarks/compare/json.matrix (verbatim, pinned RESULT 249868800 9163)",
+            "arm_workload": "benchmarks/spid3r/compute/json.matrix (verbatim, pinned RESULT 249868800 9163)",
             "warmup": WARMUP, "measured": MEASURED,
             "injected_ns": injected_ns,
             "injection_basis": "5% of pilot COMPUTE median (wall - startup)",

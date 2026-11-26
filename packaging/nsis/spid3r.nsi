@@ -3,10 +3,13 @@
 ;
 ;  Per-user install (no administrator prompt):
 ;    * installs the toolchain to %LOCALAPPDATA%\Programs\Spid3r
-;    * adds that directory to the CURRENT USER's PATH (new cmd/PowerShell
-;      windows can run `spid3r` directly)
+;    * optionally adds that directory to the CURRENT USER's PATH (checked by
+;      default on the Welcome & Components pages; opt out via checkbox, /NOPATH,
+;      or SPID3R_NO_PATH=1)
 ;    * creates Start Menu shortcuts in Programs\Spid3r
-;    * optional: desktop shortcuts and .matrix file association
+;    * optional: desktop shortcuts, .matrix/.mt file association, IDE extension
+;    * terminates running Spid3r processes cleanly before upgrade / uninstall
+;      so no locked executables block re-install or leave orphan files behind
 ;    * registers uninstaller and complete metadata in "Apps & features"
 ;
 ;  The payload is the toolchain only — no docs, examples, benchmarks or
@@ -17,7 +20,7 @@
 ;          passing APPVERSION (Cargo.toml), WITH_GUI, SPID3R_EXE, and optionally
 ;          CALCULATOR_EXE.
 ;          Manual: makensis spid3r.nsi (from this directory, after a release build)
-;  Test:   Spid3r-Setup-<ver>.exe /S /D=C:\some\dir
+;  Test:   Spid3r-Setup-<ver>.exe /S [/NOPATH] [/NOEDITOR] /D=C:\some\dir
 ; ============================================================================
 
 Unicode true
@@ -25,6 +28,7 @@ Unicode true
 !include "WordFunc.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "Sections.nsh"
 
 !ifndef WITH_GUI
 !define WITH_GUI 1
@@ -86,6 +90,11 @@ Unicode true
 !define WM_SETTINGCHANGE 0x001A
 !endif
 
+Var WelcomePathCheckbox
+Var PathAdded
+Var FinishPathSummary
+Var FinishRunHint
+
 Name "${APPNAME} ${APPVERSION}"
 !ifndef OUTFILE
 !define OUTFILE "..\..\dist\Spid3r-Setup-${APPVERSION}.exe"
@@ -97,11 +106,11 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !if ${WITH_NATIVE} == 1
-BrandingText "Spid3r Programming Language — Dual-Engine VM & Native AOT Compiler"
+BrandingText "Spid3r Programming Language — Spid3r Engine (spvm) & YamLLVM Native AOT"
 !else if ${WITH_GUI} == 1
-BrandingText "Spid3r Programming Language — Dual-Engine VM with Webview GUI"
+BrandingText "Spid3r Programming Language — Spid3r Engine (spvm) with Webview GUI"
 !else
-BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
+BrandingText "Spid3r Programming Language — Spid3r Engine Zero-Dependency Core Toolchain"
 !endif
 
 ; ----------------------------------------------------------------- UI ------
@@ -113,6 +122,9 @@ BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "assets\welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "assets\welcome.bmp"
 
+!define MUI_WELCOMEPAGE_TEXT "Setup will guide you through installing Spid3r ${APPVERSION} per-user in your Local AppData folder (no administrator prompt needed).$\r$\n$\r$\nClick Next to continue, or uncheck the PATH option below if you prefer not to modify your shell PATH."
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE WelcomeLeave
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
 !insertmacro MUI_PAGE_COMPONENTS
@@ -120,17 +132,18 @@ BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
 !insertmacro MUI_PAGE_INSTFILES
 
 !define MUI_FINISHPAGE_TITLE "Spid3r is ready"
+!define MUI_FINISHPAGE_TEXT_LARGE
 !if ${WITH_GUI} == 1
-!define FINISH_GUI_NOTE " GUI programs need the WebView2 runtime (included with Windows 11 and Microsoft Edge)."
+!define FINISH_GUI_NOTE "$\r$\nGUI windows require WebView2 (included in Windows 11 & Edge)."
 !else
 !define FINISH_GUI_NOTE ""
 !endif
 !if ${WITH_NATIVE} == 1
-!define FINISH_NATIVE_NOTE "$\r$\n The native backend is included: spid3r build turns a .matrix file into a standalone .exe."
+!define FINISH_NATIVE_NOTE "$\r$\nNative AOT compiler included: yamc / spid3r build."
 !else
 !define FINISH_NATIVE_NOTE ""
 !endif
-!define MUI_FINISHPAGE_TEXT "Spid3r has been installed to $INSTDIR and added to your user PATH.$\r$\n$\r$\nStart Menu shortcuts have been created in 'Spid3r'.$\r$\n$\r$\nRun in a NEW terminal window:$\r$\n    spid3r version$\r$\n    spid3r --help$\r$\n$\r$\n${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
+!define MUI_FINISHPAGE_TEXT "Spid3r has been installed to $INSTDIR.$FinishPathSummary$\r$\n$\r$\n$FinishRunHint${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
 !define MUI_FINISHPAGE_SHOWREADME "${DOCSURL}"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open online Spid3r documentation"
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
@@ -141,9 +154,213 @@ BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
 
 !insertmacro MUI_LANGUAGE "English"
 
+; ------------------------------------------------ process / path helpers ---
+; Shared by both installer (`UN = ""`) and uninstaller (`UN = "un."`) so
+; upgrades and uninstalls terminate running Spid3r binaries cleanly, clean up
+; locked files safely, and never truncate long (>1024-char) user PATHs.
+!macro DEFINE_FILE_HELPERS UN
+Function ${UN}StopSpid3rProcesses
+  Push $1
+  Push $2
+  ${If} ${FileExists} "$WINDIR\Sysnative\taskkill.exe"
+    StrCpy $2 "$WINDIR\Sysnative\taskkill.exe"
+  ${Else}
+    StrCpy $2 "$SYSDIR\taskkill.exe"
+  ${EndIf}
+  ${If} ${FileExists} "$2"
+    nsExec::ExecToLog '"$2" /F /T /IM "spid3r-control.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "spid3r-self.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "spid3r.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "sp.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "yamc.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "yamcvm.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "spvm.exe"'
+    Pop $1
+    nsExec::ExecToLog '"$2" /F /T /IM "spkg.exe"'
+    Pop $1
+    Sleep 400
+  ${EndIf}
+  Pop $2
+  Pop $1
+FunctionEnd
+
+; Delete relative filename $0 inside $INSTDIR even if locked by a running
+; process. Order: direct delete -> stop Spid3r processes + retry -> rename to
+; *.old + Delete /REBOOTOK -> fallback Delete /REBOOTOK.
+Function ${UN}ForceDeletePath
+  Push $1
+  Push $2
+  ${If} ${FileExists} "$INSTDIR\$0"
+    ClearErrors
+    Delete "$INSTDIR\$0"
+    ${If} ${FileExists} "$INSTDIR\$0"
+      Call ${UN}StopSpid3rProcesses
+      ; Only kill calculator.exe if this installation owns a locked copy.
+      ${If} $0 == "calculator.exe"
+        ${If} ${FileExists} "$WINDIR\Sysnative\taskkill.exe"
+          StrCpy $2 "$WINDIR\Sysnative\taskkill.exe"
+        ${Else}
+          StrCpy $2 "$SYSDIR\taskkill.exe"
+        ${EndIf}
+        ${If} ${FileExists} "$2"
+          nsExec::ExecToLog '"$2" /F /T /IM "calculator.exe"'
+          Pop $1
+          Sleep 300
+        ${EndIf}
+      ${EndIf}
+      Delete "$INSTDIR\$0"
+      ${If} ${FileExists} "$INSTDIR\$0"
+        Delete "$INSTDIR\$0.old"
+        ClearErrors
+        Rename "$INSTDIR\$0" "$INSTDIR\$0.old"
+        ${IfNot} ${Errors}
+          Delete /REBOOTOK "$INSTDIR\$0.old"
+        ${Else}
+          Delete /REBOOTOK "$INSTDIR\$0"
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $2
+  Pop $1
+FunctionEnd
+
+Function ${UN}SafeAddToPath
+  Push $0
+  Push $1
+  Push $2
+  ClearErrors
+  ReadRegStr $0 HKCU "Environment" "Path"
+  ${If} ${Errors}
+    ; Value is missing OR >1023 chars (ERROR_MORE_DATA): handle safely in PS.
+    Goto ${UN}add_path_ps
+  ${EndIf}
+  ${If} $0 == ""
+    WriteRegExpandStr HKCU "Environment" "Path" "$INSTDIR"
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+    Goto ${UN}add_path_done
+  ${EndIf}
+  StrLen $2 "$0"
+  ${If} $2 >= 1000
+    Goto ${UN}add_path_ps
+  ${EndIf}
+  ${WordAdd} "$0" ";" "E+$INSTDIR" $1
+  ${If} $0 != $1
+    WriteRegExpandStr HKCU "Environment" "Path" "$1"
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${EndIf}
+  Goto ${UN}add_path_done
+
+${UN}add_path_ps:
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$INSTDIR")'
+  nsExec::ExecToLog /TIMEOUT=15000 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:SPID3R_PATH_DIR.TrimEnd([char]92); $$cur = [Environment]::GetEnvironmentVariable('Path', 'User'); $$parts = @(); if ($$cur) { $$parts = $$cur -split ';' | Where-Object { $$_ -ne '' -and $$_.TrimEnd([char]92) -ine $$d } }; $$parts += $$d; [Environment]::SetEnvironmentVariable('Path', ($$parts -join ';'), 'User')"`
+  Pop $1
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", p 0)'
+
+${UN}add_path_done:
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function ${UN}SafeRemoveFromPath
+  Push $0
+  Push $1
+  Push $2
+  ClearErrors
+  ReadRegStr $0 HKCU "Environment" "Path"
+  ${If} ${Errors}
+    Goto ${UN}rem_path_ps
+  ${EndIf}
+  ${If} $0 == ""
+    Goto ${UN}rem_path_done
+  ${EndIf}
+  StrLen $2 "$0"
+  ${If} $2 >= 1000
+    Goto ${UN}rem_path_ps
+  ${EndIf}
+  ${WordAdd} "$0" ";" "E-$INSTDIR" $1
+  ${WordAdd} "$1" ";" "E-$INSTDIR\" $2
+  ${If} $0 != $2
+    WriteRegExpandStr HKCU "Environment" "Path" "$2"
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${EndIf}
+  Goto ${UN}rem_path_done
+
+${UN}rem_path_ps:
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", t "$INSTDIR")'
+  nsExec::ExecToLog /TIMEOUT=15000 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:SPID3R_PATH_DIR.TrimEnd([char]92); $$cur = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($$cur) { $$parts = $$cur -split ';' | Where-Object { $$_ -ne '' -and $$_.TrimEnd([char]92) -ine $$d }; [Environment]::SetEnvironmentVariable('Path', ($$parts -join ';'), 'User') }"`
+  Pop $1
+  System::Call 'Kernel32::SetEnvironmentVariable(t "SPID3R_PATH_DIR", p 0)'
+
+${UN}rem_path_done:
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+!macroend
+
+!insertmacro DEFINE_FILE_HELPERS ""
+!insertmacro DEFINE_FILE_HELPERS "un."
+
+Function PrepareInstDir
+  ${If} ${FileExists} "$INSTDIR\*.*"
+    DetailPrint "Preparing destination directory $INSTDIR..."
+    Delete "$INSTDIR\*.old"
+    Delete "$INSTDIR\*.tmp"
+    RMDir /r "$INSTDIR\stdlib"
+    RMDir /r "$INSTDIR\docs"
+    RMDir /r "$INSTDIR\examples"
+    RMDir /r "$INSTDIR\benchmarks"
+    StrCpy $0 "spid3r.exe"
+    Call ForceDeletePath
+    StrCpy $0 "sp.exe"
+    Call ForceDeletePath
+    StrCpy $0 "yamc.exe"
+    Call ForceDeletePath
+    StrCpy $0 "yamcvm.exe"
+    Call ForceDeletePath
+    StrCpy $0 "spvm.exe"
+    Call ForceDeletePath
+    StrCpy $0 "spkg.exe"
+    Call ForceDeletePath
+    StrCpy $0 "spid3r-self.exe"
+    Call ForceDeletePath
+    StrCpy $0 "spid3r-control.exe"
+    Call ForceDeletePath
+    StrCpy $0 "calculator.exe"
+    Call ForceDeletePath
+    StrCpy $0 "LLVM-C.dll"
+    Call ForceDeletePath
+    StrCpy $0 "LLVM-C.lib"
+    Call ForceDeletePath
+    StrCpy $0 "spid3r_lang.lib"
+    Call ForceDeletePath
+    StrCpy $0 "spid3r_lang.lib.sha256"
+    Call ForceDeletePath
+    StrCpy $0 "runtime-manifest.json"
+    Call ForceDeletePath
+    StrCpy $0 "uninstall.exe"
+    Call ForceDeletePath
+  ${EndIf}
+FunctionEnd
+
 ; ------------------------------------------------------------ sections -----
 Section "Spid3r compiler & runtime (required)" SecCore
   SectionIn RO
+  StrCpy $PathAdded "0"
+  StrCpy $FinishPathSummary " (user PATH was not modified)."
+  StrCpy $FinishRunHint 'Open "Spid3r Command Shell" from Start Menu, or run: "$INSTDIR\spid3r.exe" version'
+
+  ; Terminate any running old binaries and clear legacy artifacts before writing.
+  Call PrepareInstDir
+
   SetOutPath "$INSTDIR"
   File "${SPID3R_EXE}"
   File "/oname=sp.exe" "${SPID3R_EXE}"
@@ -174,37 +391,20 @@ Section "Spid3r compiler & runtime (required)" SecCore
 !endif
 !endif
   File "assets\spid3r.ico"
-  ; No `stdlib/` payload: every stdlib module is compiled into spid3r.exe
-  ; (`src/stdlib_embed.rs`), and all three backends fall back to that table
-  ; when the filesystem search finds nothing. Shipping a second, writable copy
-  ; beside the executable bought nothing and gave the install a set of 29
-  ; inconspicuous files that silently outrank the built-in ones — editing
-  ; `stdlib\json.matrix` there changed every program on the machine.
-  ;
-  ; Dropping it from the payload is not enough on its own: an install made by an
-  ; earlier version still has the folder, and it still wins. Remove it here so an
-  ; in-place upgrade cannot keep running the old, editable modules.
-  RMDir /r "$INSTDIR\stdlib"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; Write the default spid3r.ini into %APPDATA%\Spid3r so the machine starts
   ; with a visible, editable configuration file (Runtime Configuration).
   ; Idempotent: `control ini --init` refuses to overwrite an existing ini.
   nsExec::ExecToLog '"$INSTDIR\spid3r.exe" control ini --init'
+  Pop $1
 
-  ; --- add to the current user's PATH (deduplicated) ---
-  ReadRegStr $R0 HKCU "Environment" "Path"
-  ${WordAdd} "$R0" ";" "E+$INSTDIR" $R1
-  StrCmp "$R0" "$R1" +2
-    WriteRegExpandStr HKCU "Environment" "Path" "$R1"
-  StrCmp "$R0" "$R1" +2
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
-
-  WriteRegStr HKCU "Software\Spid3r" "InstallDir" "$INSTDIR"
+  WriteRegStr   HKCU "Software\Spid3r" "InstallDir" "$INSTDIR"
+  WriteRegDWORD HKCU "Software\Spid3r" "AddedToPath" 0
 
   ; --- Start Menu shortcuts ---
   CreateDirectory "$SMPROGRAMS\Spid3r"
-  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;%PATH%$\" & spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
 !ifdef CONTROL_EXE
   CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Control Panel.lnk" "$INSTDIR\spid3r-control.exe" "" "$INSTDIR\spid3r.ico" 0
 !endif
@@ -230,6 +430,14 @@ Section "Spid3r compiler & runtime (required)" SecCore
   WriteRegStr   HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify"             1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair"             1
+SectionEnd
+
+Section "Add Spid3r to PATH (recommended for cmd / PowerShell)" SecPath
+  Call SafeAddToPath
+  WriteRegDWORD HKCU "Software\Spid3r" "AddedToPath" 1
+  StrCpy $PathAdded "1"
+  StrCpy $FinishPathSummary " and added to your user PATH."
+  StrCpy $FinishRunHint "Run in a NEW terminal window: spid3r version"
 SectionEnd
 
 ; ------------------------------------------------------- prerequisites -----
@@ -339,15 +547,13 @@ webview2_done:
 SectionEnd
 !endif
 
-
-
 ; No documentation, examples or benchmark component: the installer carries the
 ; toolchain and nothing else. The developer guide, playground and examples live
 ; in the repository and at DOCSURL, so shipping a second copy in Program Files
 ; only meant stale docs on disk and 100+ extra files to uninstall.
 
 Section /o "Desktop shortcuts" SecDesktop
-  CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version"' "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "set $\"PATH=$INSTDIR;%PATH%$\" & spid3r version"' "$INSTDIR\spid3r.ico" 0
 !if ${WITH_GUI} == 1
 !if /FileExists "${CALCULATOR_EXE}"
   CreateShortCut "$DESKTOP\Spid3r Calculator.lnk" "$INSTDIR\calculator.exe" "" "$INSTDIR\spid3r.ico" 0
@@ -510,14 +716,15 @@ SectionEnd
 
 ; --------------------------------------------------------- descriptions ----
 !if ${WITH_NATIVE} == 1
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui / build (native executables via LLVM), standalone calculator app, and PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: spid3r, sp, yamc, yamcvm, spvm, spkg, YamLLVM native AOT, and standalone calculator app."
 !else if ${WITH_GUI} == 1
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui, the Spid3r Control Panel, standalone calculator app, and PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: spid3r, sp, yamc, yamcvm, spvm, spkg, the Spid3r Control Panel, and standalone calculator app."
 !else
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl, plus automatic PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: spid3r, sp, yamc, yamcvm, spvm, and spkg zero-dependency core binaries."
 !endif
+LangString DESC_SecPath ${LANG_ENGLISH} "Adds $INSTDIR to your current user PATH so spid3r, sp, yamc, yamcvm, spvm, and spkg work directly in new cmd and PowerShell windows."
 LangString DESC_SecDesktop ${LANG_ENGLISH} "Creates convenient shortcuts on your desktop for quick terminal access and the standalone calculator."
-LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
+LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix and .mt source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
 !ifdef HAVE_FORMATTER_VSIX
 LangString DESC_SecEditorExt ${LANG_ENGLISH} "Bundles the offline spid3r-formatter.vsix extension and installs it automatically for detected VS Code, Cursor, Windsurf, or VSCodium editors on PATH."
 !endif
@@ -527,6 +734,7 @@ LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCore}     $(DESC_SecCore)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecPath}     $(DESC_SecPath)
 !if ${WITH_GUI} == 1
   !insertmacro MUI_DESCRIPTION_TEXT ${SecWebView2} $(DESC_SecWebView2)
 !endif
@@ -537,15 +745,52 @@ LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView
 !endif
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
+; ------------------------------------------------- page callbacks & init ---
+; Placed after Sections so `${SecPath}` is defined for Select/UnselectSection.
+Function .onInit
+  ClearErrors
+  ${GetParameters} $0
+  ${GetOptions} "$0" "/NOPATH" $1
+  ${IfNot} ${Errors}
+    !insertmacro UnselectSection ${SecPath}
+    Return
+  ${EndIf}
+  ReadEnvStr $1 "SPID3R_NO_PATH"
+  ${If} $1 == "1"
+    !insertmacro UnselectSection ${SecPath}
+  ${EndIf}
+FunctionEnd
+
+Function WelcomeShow
+  ${NSD_CreateCheckbox} 120u 154u 195u 16u "Add Spid3r to PATH (cmd / PowerShell / terminal)"
+  Pop $WelcomePathCheckbox
+  SetCtlColors $WelcomePathCheckbox "" "${MUI_BGCOLOR}"
+  ; Ensure checkbox renders above the Welcome text label at all DPI scales.
+  System::Call 'user32::SetWindowPos(p $WelcomePathCheckbox, p 0, i 0, i 0, i 0, i 0, i 3)'
+  ${If} ${SectionIsSelected} ${SecPath}
+    ${NSD_Check} $WelcomePathCheckbox
+  ${Else}
+    ${NSD_Uncheck} $WelcomePathCheckbox
+  ${EndIf}
+FunctionEnd
+
+Function WelcomeLeave
+  ${NSD_GetState} $WelcomePathCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    !insertmacro SelectSection ${SecPath}
+  ${Else}
+    !insertmacro UnselectSection ${SecPath}
+  ${EndIf}
+FunctionEnd
+
 ; ------------------------------------------------------------ uninstall ----
 Section "Uninstall"
-  ; --- remove the PATH entry ---
-  ReadRegStr $R0 HKCU "Environment" "Path"
-  ${WordAdd} "$R0" ";" "E-$INSTDIR" $R1
-  StrCmp "$R0" "$R1" +2
-    WriteRegExpandStr HKCU "Environment" "Path" "$R1"
-  StrCmp "$R0" "$R1" +2
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ; Move current working directory out of $INSTDIR BEFORE deleting files or
+  ; removing $INSTDIR, otherwise Windows holds a directory lock on $INSTDIR.
+  SetOutPath "$TEMP"
+
+  ; --- remove the PATH entry (even if PATH > 1024 chars or trailing '\') ---
+  Call un.SafeRemoveFromPath
 
   ; --- file association ---
   DeleteRegKey HKCU "Software\Classes\.matrix"
@@ -562,35 +807,63 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINSTKEY}"
   DeleteRegKey HKCU "Software\Spid3r"
 
-  ; --- files ---
-  Delete "$INSTDIR\spid3r.exe"
-  Delete "$INSTDIR\sp.exe"
-  Delete "$INSTDIR\yamc.exe"
-  Delete "$INSTDIR\yamcvm.exe"
-  Delete "$INSTDIR\spvm.exe"
-  Delete "$INSTDIR\spkg.exe"
-  Delete "$INSTDIR\spid3r-self.exe"
-  Delete "$INSTDIR\spid3r-control.exe"
-  Delete "$INSTDIR\calculator.exe"
-  Delete "$INSTDIR\LLVM-C.dll"
-  Delete "$INSTDIR\LLVM-C.lib"
-  Delete "$INSTDIR\spid3r_lang.lib"
-  Delete "$INSTDIR\spid3r_lang.lib.sha256"
-  Delete "$INSTDIR\runtime-manifest.json"
-  Delete "$INSTDIR\spid3r.lib"
-  Delete "$INSTDIR\spid3r.ico"
-  Delete "$INSTDIR\README.md"
+  ; --- stop running binaries first, then delete all files & legacy artifacts ---
+  Call un.StopSpid3rProcesses
+
+  StrCpy $0 "spid3r.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "sp.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "yamc.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "yamcvm.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "spvm.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "spkg.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r-self.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r-control.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "calculator.exe"
+  Call un.ForceDeletePath
+  StrCpy $0 "LLVM-C.dll"
+  Call un.ForceDeletePath
+  StrCpy $0 "LLVM-C.lib"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r_lang.lib"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r_lang.lib.sha256"
+  Call un.ForceDeletePath
+  StrCpy $0 "runtime-manifest.json"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r.lib"
+  Call un.ForceDeletePath
+  StrCpy $0 "spid3r.ico"
+  Call un.ForceDeletePath
+  StrCpy $0 "README.md"
+  Call un.ForceDeletePath
+
   Delete "$INSTDIR\editor\spid3r-formatter.vsix"
   RMDir "$INSTDIR\editor"
+  Delete "$INSTDIR\*.old"
+  Delete "$INSTDIR\*.tmp"
   Delete "$INSTDIR\uninstall.exe"
+  Delete /REBOOTOK "$INSTDIR\uninstall.exe"
+
   ; README.md, docs, examples, benchmarks and stdlib/ are no longer installed,
   ; but an install made by an earlier version still has them: remove them on
-  ; uninstall so an upgrade-then-uninstall does not leave 100+ orphan files
-  ; behind.
+  ; uninstall so an upgrade-then-uninstall does not leave orphan files behind.
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\stdlib"
   RMDir /r "$INSTDIR\examples"
   RMDir /r "$INSTDIR\benchmarks"
+  RMDir /r "$INSTDIR\editor"
+
   RMDir "$INSTDIR"
+  ${If} ${FileExists} "$INSTDIR\*.*"
+    RMDir /REBOOTOK "$INSTDIR"
+  ${EndIf}
   RMDir /r "$LOCALAPPDATA\Spid3r"
 SectionEnd

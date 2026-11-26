@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase0_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPARE = ROOT / "benchmarks" / "compare"
+COMPARE = ROOT / "benchmarks" / "spid3r" / "compute"
 ENGINE_MATRIX = ROOT / "tests" / "engine_matrix.rs"
 
 PINS = {

@@ -61,26 +61,6 @@ Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`**
 | Vendored packages | checksummed, verified by `spid3r verify` | shipped |
 | FFI (`extern fn`) | trusted C ABI, AOT only | shipped |
 
-![Packages: declare, vendor, verify, sign, publish, install — local & remote registries](docs/diagrams/packages.svg)
-
-- **Packages:** `spider.toml` + `src/`, vendored dependencies locked by `spider.lock` and verified by `spid3r verify` without running install scripts.
-- **Registries & signing:** `spid3r install` resolves `path`, `git`, local, and `http(s)://` registries (`SPID3R_REGISTRY` / `packages.registry`) with semver unification, `sha256.txt`, and Ed25519 signature verification (`sha256.txt.sig` under `packages.trust_pk` / `SPID3R_TRUST_PK` / `registry.pub`) from `spid3r publish --to-dir`.
-
-```bash
-$ spid3r modules app.matrix --tree        # resolved import graph
-$ spid3r verify                           # verify vendored tree vs spider.lock
-```
-
-![Trust boundary: no gate by default, opt-in capability gate via --sandbox or Engine::deny](docs/diagrams/security.svg)
-
-- **Capability gate:** runs with user authority by default; `spid3r run --sandbox`, `spid3r exec --sandbox`, and Rust `Engine::deny` block filesystem, network, process, and env natives with catchable `sandboxed: ... denied` errors.
-- **Runtime config:** `spid3r.ini` precedence layers, `spid3rinfo()`, `spid3r config`, and local `spid3r control` / `spid3r-control`.
-
-## Generics & unboxing
-
-![Generics, monomorphization, and unboxed containers in Spid3r](docs/diagrams/generics-unboxing.svg)
-
-- **Generics & unboxing (`R10`):** multi-arg type parameters (`<K, V>`, `<T: Numeric>`), explicit call/constructor instantiation (`identity<int>(x)`, `new Box<int>(v)`), erased `<T>` back-compat, AOT function monomorphization (`spid3r_mono_*`), and unboxed `list<int>` / `list<float>` storage ([Generics design](docs/GENERICS_DESIGN.md)).
 
 ## Self-hosted compiler architecture
 
@@ -94,19 +74,6 @@ $ spid3r verify                           # verify vendored tree vs spider.lock
 - **Retained Rust Stage 0 (`src/`):** cold bootstrap seed, differential parity oracle, SHA-256-pinned runtime (`spid3r_lang`), and interactive/host tools (`tree`, `vm`, `repl`, `debug`, `lsp`, `doc`, `gui`, `wasm32`).
 
 See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirement boundary details.
-
-## What's inside
-
-| Aspect | Detail |
-|---|---|
-| **Implementation** | `135,054` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `23,430` lines) |
-| **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
-| **Bytecode** | 60 opcodes · `.matrixc` container with SHA-256 integrity |
-| **Standard library** | `26` `.matrix` modules + `254` built-in native entries (linked via `117` AOT C-ABI trampolines) |
-| **Tests** | `1,436` Rust/integration tests (`1,391` core · `18` GUI · `27` native AOT) · 3-engine differential + `136`-program frozen selfhost corpus |
-| **Self-hosting** | Stage 1 → Stage 2 → Stage 3 `spid3r_main.o` bit-identical fixed point & SHA-256 runtime pin ([docs/selfhost/](docs/selfhost/README.md)) |
-| **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
-| **Binary** | `spid3r` (`~12.4 MB`) + self-hosted `spid3r-self` (`~5.1 MB`) · static CRT on Windows · no installed runtime needed |
 
 ## The language
 

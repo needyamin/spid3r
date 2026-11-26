@@ -110,7 +110,7 @@ __pycache__/
 *.py[cod]
 
 # Phase 0 CI advisory measurement. Shared CI runners cannot be pinned, so this
-# file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
-# snapshot is benchmarks/results.phase0.json (which IS committed).
-/benchmarks/results.phase0.ci-advisory.json
+# file is ADVISORY ONLY and must never be committed. The frozen baselines live
+# in benchmarks/json/.
+/benchmarks/json/*.ci-advisory.json
 

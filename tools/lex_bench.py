@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASELINE_JSON = ROOT / "benchmarks" / "selfhost" / "baseline.json"
+BASELINE_JSON = ROOT / "benchmarks" / "json" / "selfhost-baseline.json"
 PINNED_WORKLOAD = ROOT / "benchmarks" / "selfhost" / "lex_workload.matrix"
 
 
@@ -34,7 +34,7 @@ def load_lex_target() -> tuple[float, float | None, str]:
         data = json.loads(BASELINE_JSON.read_text(encoding="utf-8"))
         t = (data.get("targets") or {}).get("lex")
         if t and "tier_a_floor_mb_s" in t:
-            return float(t["tier_a_floor_mb_s"]), float(t["selfhost_baseline"]), "benchmarks/selfhost/baseline.json"
+            return float(t["tier_a_floor_mb_s"]), float(t["selfhost_baseline"]), "benchmarks/json/selfhost-baseline.json"
     return 0.19, None, "fallback constant (baseline.json missing)"
 
 

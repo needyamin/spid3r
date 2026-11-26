@@ -269,9 +269,13 @@ jobs:
           # sp, yamc, yamcvm, spvm, spkg as solid-LZMA copies of spid3r.exe).
           cargo build --release --locked --bin spid3r --bin spid3r-control --no-default-features --features gui,native,tls
 
-      - name: Build self-hosted release compiler & NSIS installer (spid3r-self)
+      - name: Build self-hosted release compiler, NSIS & MSIX Store packages (spid3r-self)
         shell: bash
         timeout-minutes: 25
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'ANSNEWTECH.Spid3r' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=087A9974-75CB-44FC-B893-8D3999E5E5E5' }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'ANSNEW TECH.' }}
         run: |
           set -o pipefail
           LIB="target/rt-native/spid3r_lang.lib"
@@ -290,15 +294,20 @@ jobs:
             exit 2
           fi
           cp release-out/Spid3r-Setup-*.exe release-out/Spid3r-Setup-*.exe.sha256 .
+          cp release-out/Spid3r-*.msix release-out/Spid3r-*.msix.sha256 .
           cp release-out/spid3r-runtime-*.tar.gz release-out/spid3r-runtime-*.tar.gz.sha256 .
 
-      - name: Verify the installer and its native payload
+      - name: Verify the installer, Store MSIX, and native payload
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter "Spid3r-Setup-*.exe" | Select-Object -First 1
           if (-not $exe) { Write-Error "::error::no Spid3r-Setup-*.exe was produced"; exit 1 }
           if ($exe.Length -lt 15MB) { Write-Error "::error::installer is $($exe.Length) bytes — the native/LLVM payload is missing"; exit 1 }
           Write-Host "Installer: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
+          $msix = Get-ChildItem -Path . -Filter "Spid3r-*.msix" | Select-Object -First 1
+          if (-not $msix) { Write-Error "::error::no Spid3r-*.msix was produced"; exit 1 }
+          if ($msix.Length -lt 15MB) { Write-Error "::error::MSIX is $($msix.Length) bytes — the native/LLVM payload is missing"; exit 1 }
+          Write-Host "Store MSIX: $($msix.Name) ($([math]::Round($msix.Length/1MB,1)) MB)"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
@@ -307,6 +316,8 @@ jobs:
           path: |
             Spid3r-Setup-*.exe
             Spid3r-Setup-*.exe.sha256
+            Spid3r-*.msix
+            Spid3r-*.msix.sha256
             spid3r-runtime-*.tar.gz
             spid3r-runtime-*.tar.gz.sha256
           if-no-files-found: error
@@ -324,7 +335,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Verify all four tarballs and the Windows installer are present
+      - name: Verify all four tarballs, the Windows installer, and the Store MSIX are present
         run: |
           cd dist
           for t in \
@@ -340,6 +351,7 @@ jobs:
             tar tzf "spid3r-${t}.tar.gz" | grep -q '^spid3r-formatter\.vsix$' || { echo "MISSING spid3r-formatter.vsix in spid3r-${t}.tar.gz"; exit 1; }
           done
           ls Spid3r-Setup-*.exe || { echo "MISSING: Spid3r-Setup-*.exe"; exit 1; }
+          ls Spid3r-*.msix || { echo "MISSING: Spid3r-*.msix"; exit 1; }
           ls -l
 
       - name: Generate combined checksum file
@@ -355,6 +367,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/Spid3r-Setup-*.exe
+            dist/Spid3r-*.msix
             dist/sha256sums.txt
           retention-days: 7
 
@@ -367,15 +380,16 @@ jobs:
           files: |
             dist/spid3r-*.tar.gz
             dist/Spid3r-Setup-*.exe
+            dist/Spid3r-*.msix
             dist/sha256sums.txt
           overwrite_files: true
           fail_on_unmatched_files: true
           body: |
-            Prebuilt spid3r binaries (`spid3r-self` compiled by the self-hosted toolchain + `spid3r` VM/interpreter tools) and the Windows NSIS installer (with bundled LLVM + SHA-256-pinned runtime staticlib).
+            Prebuilt spid3r binaries (`spid3r-self` compiled by the self-hosted toolchain + `spid3r` VM/interpreter tools), the Windows NSIS installer (`Spid3r-Setup-<version>.exe`), and the Microsoft Store package (`Spid3r-<version>-x64.msix`), all with bundled LLVM + SHA-256-pinned runtime staticlib.
 
             Install on Linux/macOS:
             ```
             curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh
             ```
 
-            Windows: run `Spid3r-Setup-<version>.exe`. SHA-256 sums: `sha256sums.txt`.
+            Windows: run `Spid3r-Setup-<version>.exe` (or submit `Spid3r-<version>-x64.msix` to Microsoft Partner Center). SHA-256 sums: `sha256sums.txt`.

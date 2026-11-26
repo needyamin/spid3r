@@ -19,9 +19,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPARE = ROOT / "benchmarks" / "compare"
-MANIFEST = COMPARE / "manifest.json"
-LEDGER = COMPARE / "SOURCES.sha256"
+BENCH = ROOT / "benchmarks"
+JSON_DIR = BENCH / "json"
+MANIFEST = JSON_DIR / "compute-manifest.json"
+LEDGER = JSON_DIR / "SOURCES.sha256"
 
 EXPECTED_ROLES = {"workload", "reference", "calibration"}
 
@@ -55,7 +56,7 @@ def verify(verbose: bool = True) -> dict:
 
     checked = 0
     for path, expected in sorted(manifest_map.items()):
-        p = COMPARE / path
+        p = BENCH / path
         if not p.is_file():
             errors.append(f"missing file: {path}")
             continue
@@ -68,7 +69,7 @@ def verify(verbose: bool = True) -> dict:
             errors.append(f"unknown role {roles[path]!r} for {path}")
         checked += 1
         if verbose:
-            print(f"OK   {path:<28} {got[:12]}  role={roles[path]}")
+            print(f"OK   {path:<34} {got[:12]}  role={roles[path]}")
 
     extra = sorted(set(ledger_map) - set(manifest_map))
     if extra:
@@ -77,9 +78,16 @@ def verify(verbose: bool = True) -> dict:
     # Exactly five timed workloads + one calibration fixture, nothing else.
     workloads = sorted(p for p, r in roles.items() if r == "workload")
     calibrations = sorted(p for p, r in roles.items() if r == "calibration")
-    if workloads != ["equality.matrix", "json.matrix", "map.matrix", "prime.matrix", "set.matrix"]:
+    expected_workloads = [
+        "spid3r/compute/equality.matrix",
+        "spid3r/compute/json.matrix",
+        "spid3r/compute/map.matrix",
+        "spid3r/compute/prime.matrix",
+        "spid3r/compute/set.matrix",
+    ]
+    if workloads != expected_workloads:
         errors.append(f"unexpected workload set: {workloads}")
-    if calibrations != ["phase0_calibration.matrix"]:
+    if calibrations != ["spid3r/compute/phase0_calibration.matrix"]:
         errors.append(f"unexpected calibration set: {calibrations}")
 
     # Pins must be present and absolute.

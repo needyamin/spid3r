@@ -32,7 +32,7 @@
   "checksum_semantics": {
     "prime": "RESULT 5133 121013308 - count of primes below 50000 and their sum",
     "json": "RESULT 249868800 9163 - accumulated total and length of the last serialized row text",
-    "map": "RESULT 44432313 100000 - accumulated lookup values followed by the STRING LITERAL \" 100000\" (with a leading space) at benchmarks/compare/map.matrix:21: println(\"RESULT \" + string(acc) + \" 100000\");. It is NOT string(100000) and NOT a computed lookup count. Verified directly against the vendored source.",
+    "map": "RESULT 44432313 100000 - accumulated lookup values followed by the STRING LITERAL \" 100000\" (with a leading space) at benchmarks/spid3r/compute/map.matrix:21: println(\"RESULT \" + string(acc) + \" 100000\");. It is NOT string(100000) and NOT a computed lookup count. Verified directly against the vendored source.",
     "python_json": "ABSENT - there is no json reference implementation in the HLC sources for Python; do not describe it as 'skipped' or 'traceback'. Geomeans vs Python therefore cover prime and map only."
   },
   "workloads": {
@@ -43,12 +43,12 @@
         "limit": 50000
       },
       "expected_result": "RESULT 5133 121013308",
-      "spid3r_source": "prime.matrix",
+      "spid3r_source": "spid3r/compute/prime.matrix",
       "references": [
-        "prime.php",
-        "prime.py",
-        "prime.js",
-        "prime.rs"
+        "php/compute/prime.php",
+        "python/compute/prime.py",
+        "nodejs/compute/prime.js",
+        "rust/compute/prime.rs"
       ],
       "iterations": 49998,
       "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 8, 16, 18): let t0 = now_ms(); / let us = (now_ms() - t0) * 1000; / println(\"TIME_US \" + string(us));. constants, loops and the RESULT expression unchanged."
@@ -61,11 +61,11 @@
         "round_trips": 600
       },
       "expected_result": "RESULT 249868800 9163",
-      "spid3r_source": "json.matrix",
+      "spid3r_source": "spid3r/compute/json.matrix",
       "references": [
-        "json.php",
-        "json.py",
-        "json.js"
+        "php/compute/json.php",
+        "python/compute/json.py",
+        "nodejs/compute/json.js"
       ],
       "iterations": 600,
       "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 12, 28, 30).",
@@ -79,11 +79,11 @@
         "lookups": 100000
       },
       "expected_result": "RESULT 44432313 100000",
-      "spid3r_source": "map.matrix",
+      "spid3r_source": "spid3r/compute/map.matrix",
       "references": [
-        "map.php",
-        "map.py",
-        "map.js"
+        "php/compute/map.php",
+        "python/compute/map.py",
+        "nodejs/compute/map.js"
       ],
       "iterations": 100000,
       "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 12, 20, 22)."
@@ -96,7 +96,7 @@
         "probes": 20000
       },
       "expected_result": "RESULT 10000 20000",
-      "spid3r_source": "set.matrix",
+      "spid3r_source": "spid3r/compute/set.matrix",
       "references": [],
       "iterations": 20000,
       "inline_case_transformation": "verbatim minus exactly 3 lines (let t0 / let us / println TIME_US)."
@@ -108,7 +108,7 @@
         "iterations": 200000
       },
       "expected_result": "RESULT 4124 200000",
-      "spid3r_source": "equality.matrix",
+      "spid3r_source": "spid3r/compute/equality.matrix",
       "references": [],
       "iterations": 200000,
       "inline_case_transformation": "verbatim minus exactly 3 lines (let t0 / let us / println TIME_US)."
@@ -116,88 +116,88 @@
   },
   "sources": [
     {
-      "path": "json.js",
+      "path": "nodejs/compute/json.js",
       "sha256": "f1b0a398d9272c9a4ad57869d19eae98d645f9469ecd374e938d22f54de110ba",
       "role": "reference"
     },
     {
-      "path": "json.matrix",
+      "path": "spid3r/compute/json.matrix",
       "sha256": "09013969c831f0c3cb0351656f195a31e78c90c23cfc75e2d02220dcaf699176",
       "role": "workload"
     },
     {
-      "path": "json.php",
+      "path": "php/compute/json.php",
       "sha256": "6fddd786f8818896c06eaba4c01fd969c605bffa716a88e3eea44af14b3346de",
       "role": "reference"
     },
     {
-      "path": "json.py",
+      "path": "python/compute/json.py",
       "sha256": "95689f6e7d00b517eb365df79091bdec1b49c2582c417d9a2a75a722f43d2cc2",
       "role": "reference"
     },
     {
-      "path": "map.js",
+      "path": "nodejs/compute/map.js",
       "sha256": "06c3e5f1a07ba9db07b32e2f01a38db5a8ed0578cacccc7b18daa8f8dca97c5d",
       "role": "reference"
     },
     {
-      "path": "map.matrix",
+      "path": "spid3r/compute/map.matrix",
       "sha256": "cf1c96af4d151ada545f1a3e2c28a0fa2dd65e344f2999ba3a496bca3c0b756b",
       "role": "workload"
     },
     {
-      "path": "map.php",
+      "path": "php/compute/map.php",
       "sha256": "196f5745ee3469bb288ed7e8111e0b08befac6bed6f5bbb48ee793e985d4d38b",
       "role": "reference"
     },
     {
-      "path": "map.py",
+      "path": "python/compute/map.py",
       "sha256": "554e4ad56db13115217eb69e62b4e5c931040ef52a492af59bee78e9046ad2f7",
       "role": "reference"
     },
     {
-      "path": "prime.js",
+      "path": "nodejs/compute/prime.js",
       "sha256": "ec19b81d9a6f42a6cd49ba9bc8b95d8bede6bac51552de30bf8f92ea5a0b7b56",
       "role": "reference"
     },
     {
-      "path": "prime.matrix",
+      "path": "spid3r/compute/prime.matrix",
       "sha256": "614987f0865f4130b53a40c39812c469b0bbf251b1e021322a8f7c0e69fd526f",
       "role": "workload"
     },
     {
-      "path": "prime.php",
+      "path": "php/compute/prime.php",
       "sha256": "d595afc8bbed572093f36c891563dafdc08f40fc535a2069f81e9dfa2a3e5fd3",
       "role": "reference"
     },
     {
-      "path": "prime.py",
+      "path": "python/compute/prime.py",
       "sha256": "6af89a11cb693c238b4a47431c4724e24cd284b5fcaea97164066479d8f74796",
       "role": "reference"
     },
     {
-      "path": "prime.rs",
+      "path": "rust/compute/prime.rs",
       "sha256": "19d14f6bfe1c4c0806d7ed538989973743daf738de52703b963bfdfa5ed603de",
       "role": "reference"
     },
     {
-      "path": "phase0_calibration.matrix",
+      "path": "spid3r/compute/phase0_calibration.matrix",
       "sha256": "f437fbb7bcdb51b2c0b4d643a511dcde877af7595f740a7046f8684417d7a596",
       "role": "calibration"
     },
     {
-      "path": "set.matrix",
+      "path": "spid3r/compute/set.matrix",
       "sha256": "a70009112fc3fcdd74d36789c554b2c5987d02d27cf3318280be9ebf0b40033a",
       "role": "workload"
     },
     {
-      "path": "equality.matrix",
+      "path": "spid3r/compute/equality.matrix",
       "sha256": "0a1d42d21404a8c000df737f845178cdb5c2c6f2f9126b5730b9ad2ec84d5d83",
       "role": "workload"
     }
   ],
   "calibration": {
-    "path": "phase0_calibration.matrix",
+    "path": "spid3r/compute/phase0_calibration.matrix",
     "role": "calibration",
     "registrations": "none - never in BENCH_ITERS, BENCH_FLOORS, any benchmark run, any geomean, ratio, delta or floor",
     "stdout": "empty",
@@ -206,11 +206,11 @@
   },
   "fixture_sets": {
     "verbatim": [
-      "prime.matrix",
-      "json.matrix",
-      "map.matrix",
-      "set.matrix",
-      "equality.matrix"
+      "spid3r/compute/prime.matrix",
+      "spid3r/compute/json.matrix",
+      "spid3r/compute/map.matrix",
+      "spid3r/compute/set.matrix",
+      "spid3r/compute/equality.matrix"
     ],
     "derived_matrix_files": 0,
     "clones": 0,
@@ -314,7 +314,7 @@
       "cargo run --bin spid3r --no-default-features -- test"
     ],
     "advisory_step_continue_on_error": true,
-    "advisory_output": "benchmarks/results.phase0.ci-advisory.json",
-    "frozen_snapshot": "benchmarks/results.phase0.json (local pinned-host twice-run only; CI NEVER overwrites it)"
+    "advisory_output": "benchmarks/json/compute.ci-advisory.json",
+    "frozen_snapshot": "benchmarks/json/compute-latest.json (local pinned-host twice-run only; CI NEVER overwrites it)"
   }
 }

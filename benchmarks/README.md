@@ -1,278 +1,64 @@
 # Spid3r Benchmarks
 
-Reproducible micro-benchmarks for the Spid3r language: eight gated workloads
-run on both execution engines (bytecode VM and tree-walk interpreter), plus
-optional cross-language comparisons against Python and PHP reference
-implementations.
+Reproducible, checksum-verified benchmark suite organized strictly by language (`spid3r/`, `python/`, `php/`, `nodejs/`, `rust/`) with all JSON datasets, frozen baselines, budgets, and manifests consolidated in [`benchmarks/json/`](json/).
 
-## How to run the benchmarks
+## Directory Layout
 
-Prerequisites: build the interpreter once (`cargo build --release`), and have
-Python 3 on PATH (PHP optional — the report skips PHP if it is not installed).
-Then, from the repository root:
-
+```text
+benchmarks/
+├── spid3r/                      # Spid3r (.matrix) workloads
+│   ├── arith.matrix             # 2M-iteration integer loop (gated)
+│   ├── closures.matrix          # 40K closure allocations & calls (gated)
+│   ├── json.matrix              # 2K JSON write/parse round-trips (gated)
+│   ├── list.matrix              # 200K list push/pop churn (gated)
+│   ├── map.matrix               # 40K map insert/lookup churn (gated)
+│   ├── methods.matrix           # 200K object method calls (gated)
+│   ├── strings.matrix           # 30K string concatenations (gated)
+│   ├── tasks.matrix             # 2K spawn/channel round-trips (gated)
+│   ├── set.matrix               # Set add/contains churn
+│   ├── equality.matrix          # Scalar equality churn
+│   ├── stress_suite.matrix      # Mixed correctness suite (ungated)
+│   └── compute/                 # Checksum-pinned Phase 0 compute workloads + calibration
+├── python/                      # Python 3 reference suite + compute/
+├── php/                         # PHP 8.3 reference suite + compute/
+├── nodejs/                      # Node.js reference suite + compute/
+├── rust/                        # Rust (-O) compute reference (compute/prime.rs)
+├── selfhost/                    # Frozen compiler-throughput corpus inputs & MANIFEST.sha256
+└── json/                        # All JSON measurements, baselines, budgets & manifests
+    ├── micro-suite.json         # Latest multi-runtime micro-suite data
+    ├── compute-baseline.json    # Frozen Phase 11 P-1 3-way compute baseline
+    ├── compute-latest.json      # Freshly measured Phase 0 compute snapshot
+    ├── selfhost-baseline.json   # Frozen Stage-0 vs Stage-1 compiler throughput baseline
+    ├── footprint-budgets.json   # Startup, RSS, commit & binary size budgets
+    ├── compute-manifest.json    # SHA-256 workload provenance & integrity manifest
+    └── SOURCES.sha256           # sha256sum ledger for compute-manifest.json
 ```
-# ONE COMMAND: measure everything and REPLACE docs/html/benchmark.html
+
+## Quick Commands
+
+```bash
+# 1. Measure all runtimes (Spid3r AOT/VM/Tree, Node.js, PHP, Python) and render docs/html/benchmark.html
 python tools/bench_report.py
 
-# quick numbers only (no page): the in-tree perf gate, tree == vm checked
+# 2. Re-render docs/html/benchmark.html from existing benchmarks/json/*.json without re-measuring
+python tools/bench_report.py --render
+
+# 3. Verify report figures & table sync against frozen JSON baselines
+python tools/bench_report.py --verify-sync
+
+# 4. In-tree differential + perf gate (tree == vm stdout)
 spid3r bench --gate --compare --runs 5
 
-# external-timing compute protocol (writes results.phase0.json)
-python tools/phase0_bench.py --measure
+# 5. Phase 0 integrity, fixture conformance & sensitivity gates
+python tools/phase0_manifest.py --verify
+python tools/phase0_fixtures.py --verify
+python tools/phase0_selftest.py
+python tools/phase0_bench.py --verify-selfhost
+python tools/phase0_bench.py --measure --advisory --quick --out benchmarks/json/compute-latest.json
 ```
 
-The first command measures every workload (Spid3r VM + tree-walk, Python,
-PHP), writes `benchmarks/report-data.json`, and **replaces the entire
-`docs/html/benchmark.html`** with the freshly rendered report — open that
-file in a browser to read the results. Every timing run also checks the
-workload's deterministic output, so a run that times wrongly-built binaries
-fails loudly instead of reporting garbage.
+## Measurement Discipline
 
-## Directory layout
-
-```
-benchmarks/
-├── *.matrix                 Spid3r benchmark sources (one file per workload)
-│   ├── arith.matrix         2M-iteration integer accumulation loop
-│   ├── strings.matrix       30K string concatenations and slices
-│   ├── list.matrix          200K pushes then pops, summing values
-│   ├── map.matrix           40K hash inserts and lookups
-│   ├── methods.matrix       200K method calls on objects
-│   ├── closures.matrix      40K closure allocations and calls
-│   ├── json.matrix          2K encode/decode round-trips
-│   ├── tasks.matrix         2K spawn/join task round-trips
-│   └── stress_suite.matrix  Mixed workload, correctness only (ungated)
-├── python/*.py              Python reference implementations (same workloads)
-├── php/*.php                PHP reference implementations (same workloads)
-├── compare/                 Phase 0 verbatim HLC compute workloads (subdirectory)
-│   ├── prime/json/map.matrix     Verbatim timed sources (pinned checksums)
-│   ├── *.php / *.py / *.js / .rs Verbatim reference implementations
-│   ├── phase0_calibration.matrix Startup calibration only (role: calibration)
-│   ├── manifest.json             SHA-256 of all 14 files + roles + provenance
-│   ├── SOURCES.sha256            Same digests in sha256sum -c format
-│   └── README.md                 Protocol, provenance and deviations
-└── report-data.json         Latest measured data (written by the report tool)
-```
-
-The folder ships CLEAN: every `results.phase*.json`, `results.n*.json`,
-`baseline-<sha>.json` and `phase*-compare.json` is a harness OUTPUT, generated
-on demand by `tools/phase0_bench.py --measure` / `tools/phase0_compare.py` and
-cleared after the performance program closed (2026-11-13). The program's
-results live on in `docs/html/benchmark.html` (regenerated by the report
-tool above); the raw phase evidence remains recoverable from git history.
-
-`compare/` is a **subdirectory on purpose**: `spid3r bench`, `spid3r fmt --check`
-and `spid3r test` all scan `benchmarks/` and `examples/` **non-recursively**.
-Keeping the verbatim HLC sources there means `bench --gate --compare --runs 5`
-still sees exactly the original 8 gated workloads, and the formatter does not
-reject the verbatim prime/json sources. The two `map.matrix` / `json.matrix`
-files at the top level are the original in-tree workloads, **not** the HLC ones.
-
-Every `.matrix` workload prints deterministic output. The harness uses this so
-each timing run doubles as a correctness check.
-
-## Prerequisites (on any machine)
-
-1. **Rust** — to build the interpreter. Check `rust-toolchain.toml` in the repo
-   root for the exact toolchain version, then run:
-
-   ```
-   cargo build --release
-   ```
-
-   The benchmark harness expects the binary at `target/release/spid3r(.exe)`.
-
-2. **Python 3** — required to run the full report (`tools/bench_report.py`).
-   Any modern Python 3 works; no third-party packages are needed.
-
-3. **PHP CLI** *(optional)* — only needed if you want the PHP columns in the
-   report. If `php` is not on your `PATH`, the tool simply skips PHP and the
-   report shows Spid3r vs Python only.
-
-## Quick run: just the numbers
-
-From the repo root:
-
-```
-spid3r bench                      # bytecode VM (the default engine), best of N
-spid3r bench --engine tree        # tree-walk interpreter
-spid3r bench --engine vm --runs 5
-spid3r bench --compare            # require tree and vm to print identical output
-spid3r bench --gate               # exit non-zero if a perf floor regresses
-spid3r bench --gate --compare --runs 5   # local perf-gate check (not a CI step)
-```
-
-Output is a table per workload: `iters`, best wall-clock time, and iters/sec.
-
-## Full report (the docs/html/benchmark.html page)
-
-`tools/bench_report.py` measures everything and renders the report page. It
-spawns a fresh process per run and takes the best of N (5 for Spid3r, 3 for
-tree/Python/PHP). Run it from the repo root:
-
-```
-# measure + render in one go
-python tools/bench_report.py
-
-# or in two phases
-python tools/bench_report.py --measure   # writes benchmarks/report-data.json
-python tools/bench_report.py --render    # writes docs/html/benchmark.html
-
-# more samples for the non-Spid3r runtimes
-python tools/bench_report.py --runs 5 --other-runs 5
-```
-
-`--render` alone re-renders the page from the existing
-`benchmarks/report-data.json` without re-measuring — useful for tweaking the
-page layout.
-
-## Performance gates
-
-Each gated workload has a floor in `src/cli.rs` (`BENCH_FLOORS`), calibrated at
-roughly one third of the worst rate observed on the reference machine. The
-floor exists to catch catastrophic regressions (a 3x+ slowdown) on shared CI
-runners — passing the gate is a floor, not a target. A new benchmark added to
-`BENCH_ITERS` without a floor is simply not gated.
-
-## Comparing results across machines
-
-Absolute numbers are **host-specific**. CPU power plans, boost behavior, and
-background load can shift results 25–30%. When comparing machines:
-
-- **Compare ratios, not milliseconds** — e.g. VM-vs-tree speedup per workload,
-  or Spid3r-vs-Python ratio.
-- Use the same `--runs`/`--other-runs` on both machines.
-- Prefer a consistent power profile (e.g. "Balanced" on Windows) between runs.
-- The startup-adjusted section of the report subtracts each runtime's measured
-  no-op startup time; treat differences under ~1 ms as noise.
-
-## Phase 0 external compute protocol
-
-The Phase 0 protocol adds a **separate, JSON-only** measurement path for the
-three Heavy-Load Checker compute workloads. It is deliberately *not* wired into
-`spid3r bench`: the HLC `.matrix` sources print a non-deterministic `TIME_US`
-line, which the bench harness's byte-exact stdout contract would reject. See
-[`compare/README.md`](compare/README.md) for the full protocol, provenance,
-SHA-256 digests and the four recorded deviations from the literal plan.
-
-```
-python tools/phase0_manifest.py --verify        # fail-closed digest check
-python tools/phase0_fixtures.py --verify        # pinned RESULT on tree/vm/exec
-python tools/phase0_selftest.py                 # 5% sensitivity self-test (blocking)
-python tools/bench_report.py --mode compute --measure
-python tools/phase0_compare.py \
-    --baseline benchmarks/baseline-<sha>.json \
-    --current benchmarks/results.phase0.json benchmarks/results.phase0.json
-```
-
-Key points:
-
-- **Option A** — external `time.perf_counter_ns()` around a fresh subprocess.
-  No new builtin, no stdlib/CLI/Cargo/wasm change. The self-reported `TIME_US`
-  is 1 ms-quantized (`quantized_us: 1000`, `authoritative: false`) and is never
-  used for a delta.
-- **Checksum-first** — a run is rejected unless it exits 0, prints exactly one
-  pinned `RESULT` line and one `TIME_US` line. Pins: `5133 121013308`,
-  `249868800 9163`, `44432313 100000`.
-- **Statistics** — 9 warmup + 21 measured + 2 independent passes;
-  `min / median / p95 / MAD / stdev / MAD÷median` on both `compute_ms` and
-  `wall_ms`; `MAD÷median ≤ 5%`; `startup_mad_ms ≤ 2 ms`; two-run agreement
-  `≤3% PASS / 3–5% INVALID_RERUN / >5% BLOCK`.
-- **Commit-over-commit** — `tools/phase0_compare.py` enforces the ±5% /
-  `3×` pooled-MAD regression rule, because `bench --gate` floors only catch 3×+
-  regressions and `--compare` only checks tree == vm output.
-- **Unpinned shared host ⇒ `ADVISORY_ONLY`, never frozen.** Only a pinned host
-  with two agreeing runs may freeze `results.phase0.json` /
-  `baseline-<sha>.json`. CI writes a distinct
-  `results.phase0.ci-advisory.json` and can never overwrite the frozen snapshot.
-- The 8 gated in-tree workloads, `BENCH_FLOORS` and `src/cli.rs` are
-  **unchanged** — Phase 0 has a zero `src/` diff.
-
-## Phase 1 (cheap wins) measurement
-
-Phase 1 reuses the Phase 0 protocol unchanged and adds one rule: results are
-compared **commit-over-commit** with `tools/phase0_compare.py` against the
-frozen `baseline-<sha>.json`. On an unpinned shared host every result is
-`ADVISORY_ONLY` and must never overwrite the frozen baseline, so pass
-`--advisory` together with an explicit `--out` inside the workspace:
-
-```
-python tools/phase0_bench.py --measure --advisory --out benchmarks/results.phase1.json
-python tools/phase0_compare.py \
-    --baseline benchmarks/baseline-<sha>.json \
-    --current benchmarks/results.phase1.json benchmarks/results.phase1-run2.json \
-    --out benchmarks/phase1-compare.json
-```
-
-Phase 1 changes are engine/stdlib internals only: no new builtin, CLI flag,
-opcode or `.matrixc` format change. The public-facing prose in `README.md`,
-`docs/html/doc.html`, `docs/STANDARD_LIBRARY.md` and `docs/BYTECODE.md`
-therefore stays valid, but `tools/verify_doc_claims.js` still gates it, and
-`web/spid3r.wasm` + `web/spid3r_wasm_data.js` are rebuilt after any core
-change.
-
-**Sensitivity caveat.** The blocking self-test injects 5% of the *current*
-compute median of `benchmarks/compare/map.matrix`. Phase 1 made that workload
-faster, so the injected delta shrank from ~1.6 ms to ~1.15 ms — close to the
-~1 ms scheduling noise on an unpinned shared host. **No threshold is
-loosened**: noisy attempts are invalidated and rerun (up to 3), and the whole
-measurement is repeated until the gate passes. On a dedicated pinned host the
-gate is stable. A future phase that makes the workload faster still should size
-the injection from the plan's fixed 30 ms reference instead of the moving
-compute median.
-
-## Phase 2 (value / dispatch slice) measurement
-
-Phase 2 reuses the same Phase 0 protocol (`--measure --advisory`, 9 warmups /
-21 samples / 2 independent passes, external `perf_counter_ns`, checksum-first,
-`ADVISORY_ONLY`, no frozen baseline). Pre-registered before measurement, four
-stretch targets are **declared unmet** for this slice: `map ≤ 7.6 ms`,
-`json ≤ 142 ms`, compute geomean `≤ 2.0x` vs PHP 8.3, and tree-walk
-`≤ 1.5x VM` on all three workloads. The tracked gates are three-engine
-byte-identity, `--no-opt ≥ 5% slower` than the default VM, `prime ≤ 34 ms`
-(borderline) and wall geomean `≤ 1.5x` (already 1.499x in Phase 1 = hold).
-
-**Two Phase 2-specific rules.** (1) The only speedup is a **compile-time
-optimizer pass** (`src/vm/opt.rs` loop back-edge rotation) that runs on the
-default path only, so the `vm` and `no-opt` variants are now genuinely
-different code, not just different cache behaviour. (2) The bytecode cache key
-gained a compiler epoch in Phase 2 precisely so a pass change cannot silently
-serve pre-upgrade bytecode — but a configured `cache.bytecode_dir` may still
-contain old-key files. For CI-equivalent numbers, point `SPID3R_INI` at a temp
-ini with a **fresh** `cache.bytecode_dir`, then also verify one warm cache-hit
-run so both paths are exercised. `--no-opt` bypasses the cache entirely.
-
-Scope note: no new builtin, CLI flag, `OpCode`, `Chunk` field, dependency or
-`.matrixc` format change; `src/cli.rs` does change (cache epoch), unlike Phase
-1's zero `src/` CLI diff. The map inline cache, tree-walk environment cache
-and any `Value` layout change were deliberately **cut** from this slice and
-are carried forward as backlog. Because `--prof` on the default path now
-executes one fewer `Jump` per loop iteration, `tests/engine_matrix.rs` pins
-the exact instruction-count delta (1064 for its 64 + 1000 loop iterations)
-while `--prof --no-opt` stays at the Phase 1 count of 18050.
-
-## What is NOT measured here
-
-- The AOT/native backend (needs LLVM, runs in its own CI job). Phase 0 marks
-  it `not_measured` and freezes it from the external report instead.
-- The WebAssembly build (see `docs/html/playground.html`). The Phase 0 harness
-  is native-only: on wasm32 `now_ms()` is an `AtomicI64` call counter and
-  `TIME_US` carries no elapsed-time information.
-- Startup-to-first-byte for real applications, memory ceilings, or I/O — these
-  are micro-benchmarks, not application benchmarks.
-
-## `http_echo` benchmark (R2.4)
-
-`benchmarks/compare/http_echo/` measures HTTP/1.1 64-byte echo throughput and
-P99 latency for Spid3r's event-loop server (`server.matrix`, using
-`on_readable` + `event_loop_run`) against a matching Node.js `http` server
-(`server.js`).
-
-- **Protocol (`bench.py`):** fresh server process per pass on `127.0.0.1:0`
-  (ephemeral port), `N = 16` concurrent client threads, `0.5 s` warmup, `2.0 s`
-  measurement window, two consecutive passes per target/mode (`keepalive` and
-  `close`), requiring two-pass agreement `<= 3%`.
-- **Checksum:** every response must return `200 OK` with exact 64-byte body
-  (`64 * completed` verified bytes, zero failed responses).
-- **Tier-B targets:** set only after the initial baseline measurement (GR-2).
+- **Fresh-process timing:** Every timing sample spawns a fresh OS process and measures startup overhead separately via a no-op invocation, computing both raw wall-clock and startup-adjusted compute time.
+- **Deterministic verification:** Every workload prints a deterministic output or pinned `RESULT` checksum checked on every run.
+- **Zero-dependency parity:** `spid3r bench --compare` enforces byte-identical stdout across `spvm` bytecode VM and the `tree` oracle.

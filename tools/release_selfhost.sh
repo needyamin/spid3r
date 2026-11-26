@@ -7,8 +7,9 @@
 #   - Versioned prebuilt runtime staticlib tarball + manifest + .sha256
 #   - Platform release tarball (`spid3r-<target>.tar.gz` + `.sha256`) containing
 #     `spid3r-self` (plus retained `spid3r` VM/interpreter/tools if supplied)
-#   - Windows NSIS installer (`Spid3r-Setup-<version>.exe` + `.sha256`) bundling
-#     Stage-2 `spid3r-self.exe` + pinned runtime + LLVM-C + retained tools
+#   - Windows NSIS installer (`Spid3r-Setup-<version>.exe` + `.sha256`) and
+#     Microsoft Store package (`Spid3r-<version>-<arch>.msix` + `.sha256`)
+#     bundling Stage-2 `spid3r-self.exe` + pinned runtime + LLVM-C + retained tools
 #   - Combined `sha256sums.txt` verified via sha256sum/shasum
 #   - Smoke tests on the released compiler binary + archive extraction
 #
@@ -23,6 +24,10 @@
 #     --llvm-version <ver>    LLVM version override
 #     --pgo                   Build ThinLTO + split-PGO Stage 0, runtime, and Stage 1 via tools/pgo_build.sh
 #     --skip-installer        Do not build Windows NSIS installer
+#     --skip-msix             Do not build Microsoft Store .msix package
+#     --msix-identity <name>  Override AppxManifest Identity Name (default: ANSNEWTECH.Spid3r)
+#     --msix-publisher <dn>   Override AppxManifest Publisher (default: CN=087A9974-75CB-44FC-B893-8D3999E5E5E5)
+#     --msix-publisher-display <name> Override PublisherDisplayName (default: ANSNEW TECH.)
 #     --smoke-install         On Windows (CI / disposable host), run silent NSIS /S /D= test
 #
 #   bash tools/release_selfhost.sh verify <out_dir>
@@ -177,6 +182,40 @@ find_makensis() {
   return 1
 }
 
+find_makeappx() {
+  if command -v makeappx.exe >/dev/null 2>&1; then
+    command -v makeappx.exe
+    return 0
+  fi
+  if command -v makeappx >/dev/null 2>&1; then
+    command -v makeappx
+    return 0
+  fi
+  local arch_dir="x64"
+  case "${TARGET:-x86_64}" in
+    aarch64*) arch_dir="arm64" ;;
+  esac
+  local kits_root="/c/Program Files (x86)/Windows Kits/10/bin"
+  if [ -d "$kits_root" ]; then
+    local found
+    found="$(ls -1d "$kits_root"/10.*/"$arch_dir"/makeappx.exe 2>/dev/null | sort -r | head -n 1 || true)"
+    if [ -n "$found" ] && [ -f "$found" ]; then
+      echo "$found"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+msix_four_part_version() {
+  local raw="${1%%-*}"
+  local a b c
+  IFS='.' read -r a b c _ <<EOF
+$raw
+EOF
+  printf '%s.%s.%s.0' "${a:-1}" "${b:-0}" "${c:-0}"
+}
+
 verify_formatter_vsix() {
   local vsix="$ROOT/packaging/vscode/spid3r-formatter.vsix"
   local sha="$ROOT/packaging/vscode/spid3r-formatter.vsix.sha256"
@@ -276,21 +315,29 @@ cmd_build() {
   local staticlib=""
   local llvm_ver=""
   local skip_installer=0
+  local skip_msix=0
   local smoke_install=0
   local use_pgo=0
+  local msix_identity="${MSIX_IDENTITY_NAME:-ANSNEWTECH.Spid3r}"
+  local msix_publisher="${MSIX_PUBLISHER:-CN=087A9974-75CB-44FC-B893-8D3999E5E5E5}"
+  local msix_publisher_display="${MSIX_PUBLISHER_DISPLAY_NAME:-ANSNEW TECH.}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --out-dir)        out_dir="${2:?--out-dir requires a value}"; shift 2 ;;
-      --stage1)         stage1="${2:?--stage1 requires a value}"; shift 2 ;;
-      --stage0)         stage0="${2:?--stage0 requires a value}"; shift 2 ;;
-      --control)        control_bin="${2:?--control requires a value}"; shift 2 ;;
-      --staticlib)      staticlib="${2:?--staticlib requires a value}"; shift 2 ;;
-      --target)         target="${2:?--target requires a value}"; shift 2 ;;
-      --llvm-version)   llvm_ver="${2:?--llvm-version requires a value}"; shift 2 ;;
-      --pgo)            use_pgo=1; shift ;;
-      --skip-installer) skip_installer=1; shift ;;
-      --smoke-install)  smoke_install=1; shift ;;
+      --out-dir)                 out_dir="${2:?--out-dir requires a value}"; shift 2 ;;
+      --stage1)                  stage1="${2:?--stage1 requires a value}"; shift 2 ;;
+      --stage0)                  stage0="${2:?--stage0 requires a value}"; shift 2 ;;
+      --control)                 control_bin="${2:?--control requires a value}"; shift 2 ;;
+      --staticlib)               staticlib="${2:?--staticlib requires a value}"; shift 2 ;;
+      --target)                  target="${2:?--target requires a value}"; shift 2 ;;
+      --llvm-version)            llvm_ver="${2:?--llvm-version requires a value}"; shift 2 ;;
+      --pgo)                     use_pgo=1; shift ;;
+      --skip-installer)          skip_installer=1; shift ;;
+      --skip-msix)               skip_msix=1; shift ;;
+      --msix-identity)           msix_identity="${2:?--msix-identity requires a value}"; shift 2 ;;
+      --msix-publisher)          msix_publisher="${2:?--msix-publisher requires a value}"; shift 2 ;;
+      --msix-publisher-display)  msix_publisher_display="${2:?--msix-publisher-display requires a value}"; shift 2 ;;
+      --smoke-install)           smoke_install=1; shift ;;
       *)
         echo "error[usage]: unknown option '$1'" >&2
         exit 2 ;;
@@ -502,14 +549,7 @@ cmd_build() {
   tar czf "$out_dir/$tarball_name" -C "$out_dir/_work/tar" "${tar_members[@]}"
   write_sha256_file "$out_dir" "$tarball_name"
 
-  if [ "$is_win" -eq 1 ] && [ "$skip_installer" -eq 0 ]; then
-    echo "[release_selfhost] 5. Building Windows NSIS installer via makensis (spid3r-self payload)..."
-    local makensis
-    makensis="$(find_makensis || true)"
-    if [ -z "$makensis" ]; then
-      echo "error[usage]: makensis.exe not found; pass --skip-installer or install NSIS" >&2
-      exit 2
-    fi
+  if [ "$is_win" -eq 1 ] && { [ "$skip_installer" -eq 0 ] || [ "$skip_msix" -eq 0 ]; }; then
     local llvm_dll="" llvm_lib=""
     for p in "C:/LLVM-23" "C:/Program Files/LLVM" "/c/LLVM-23" "/c/Program Files/LLVM"; do
       if [ -f "$p/bin/LLVM-C.dll" ] && [ -f "$p/lib/LLVM-C.lib" ]; then
@@ -524,100 +564,186 @@ cmd_build() {
     fi
 
     if [ -z "$stage0" ] || [ ! -x "$stage0" ]; then
-      echo "error[usage]: retained spid3r.exe (--stage0) required for NSIS installer payload" >&2
+      echo "error[usage]: retained spid3r.exe (--stage0) required for Windows installer/MSIX payload" >&2
       exit 2
     fi
 
-    local inst_name="Spid3r-Setup-${version}.exe"
-    local inst_out="$out_dir/$inst_name"
-    local nsis_args=(
-      /V2
-      "/DAPPVERSION=${version}"
-      "/DOUTFILE=$(to_win_path "$inst_out")"
-      /DWITH_NATIVE=1
-      "/DSPID3R_EXE=$(to_win_path "$stage0")"
-      "/DSPID3R_SELF_EXE=$(to_win_path "$stage2_bin")"
-      "/DRUNTIME_LIB=$(to_win_path "$rt_lib_copy")"
-      "/DRUNTIME_SHA256=$(to_win_path "$rt_sha_copy")"
-      "/DRUNTIME_MANIFEST=$(to_win_path "$rt_manifest")"
-      "/DLLVM_DLL=$(to_win_path "$llvm_dll")"
-      "/DLLVM_LIB=$(to_win_path "$llvm_lib")"
-    )
     if [ -z "$control_bin" ] && [ -f "$(dirname "$stage0")/spid3r-control.exe" ]; then
       control_bin="$(dirname "$stage0")/spid3r-control.exe"
     fi
     local with_gui=0
     if [ -n "$control_bin" ] && [ -f "$control_bin" ]; then
       with_gui=1
-      nsis_args+=("/DCONTROL_EXE=$(to_win_path "$control_bin")")
     fi
-    nsis_args+=("/DWITH_GUI=${with_gui}")
-    if [ "$has_vsix" -eq 1 ]; then
-      nsis_args+=("/DFORMATTER_VSIX=$(to_win_path "$ROOT/packaging/vscode/spid3r-formatter.vsix")")
-    else
-      nsis_args+=("/DFORMATTER_VSIX=")
-    fi
-    nsis_args+=("$(to_win_path "$ROOT/packaging/nsis/spid3r.nsi")")
 
-    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$makensis" "${nsis_args[@]}"
-    [ -s "$inst_out" ] || {
-      echo "FAIL: installer not created at $inst_out" >&2
-      exit 1
-    }
-    local isize
-    isize="$(wc -c < "$inst_out")"
-    echo "  Installer: $inst_name (${isize} bytes)"
-    if [ "$isize" -lt 15000000 ]; then
-      echo "FAIL: installer smaller than 15 MB ($isize bytes) — LLVM payload missing!" >&2
-      exit 1
-    fi
-    write_sha256_file "$out_dir" "$inst_name"
+    if [ "$skip_installer" -eq 0 ]; then
+      echo "[release_selfhost] 5. Building Windows NSIS installer via makensis (spid3r-self payload)..."
+      local makensis
+      makensis="$(find_makensis || true)"
+      if [ -z "$makensis" ]; then
+        echo "error[usage]: makensis.exe not found; pass --skip-installer or install NSIS" >&2
+        exit 2
+      fi
 
-    if [ "$smoke_install" -eq 1 ]; then
-      echo "[release_selfhost] Running silent NSIS install smoke test..."
-      local sin_dir="$out_dir/_work/installed"
-      mkdir -p "$sin_dir"
-      local win_sin
-      win_sin="$(to_win_path "$sin_dir")"
-      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$inst_out" /S /NOEDITOR "/D=${win_sin}"
-      for req in spid3r-self.exe spid3r.exe sp.exe yamc.exe yamcvm.exe spvm.exe spkg.exe spid3r_lang.lib spid3r_lang.lib.sha256 runtime-manifest.json LLVM-C.dll LLVM-C.lib; do
-        [ -f "$sin_dir/$req" ] || {
-          echo "FAIL: installed file missing: $sin_dir/$req" >&2
-          exit 1
-        }
-      done
-      # Verify multicall argv[0] persona dispatch and VM round-trip on installed copies.
-      for comp in yamc yamcvm spvm spkg; do
-        local comp_ver
-        comp_ver="$("$sin_dir/${comp}.exe" --version)"
-        case "$comp_ver" in
-          *"$comp"*) ;;
-          *)
-            echo "FAIL: installed ${comp}.exe --version unexpected: $comp_ver" >&2
-            exit 1
-            ;;
-        esac
-      done
-      local cli_smoke_src="$out_dir/_work/cli_smoke.mt"
-      local cli_smoke_bc="$out_dir/_work/cli_smoke.matrixc"
-      printf 'fn main() -> int { println("nsis-cli-ok"); return 0; }\n' > "$cli_smoke_src"
-      "$sin_dir/yamcvm.exe" "$cli_smoke_src" -o "$cli_smoke_bc" >/dev/null
-      local cli_smoke_out
-      cli_smoke_out="$("$sin_dir/spvm.exe" "$cli_smoke_bc" | tr -d '\r')"
-      if [ "$cli_smoke_out" != "nsis-cli-ok" ]; then
-        echo "FAIL: installed yamcvm/spvm smoke expected 'nsis-cli-ok', got '$cli_smoke_out'" >&2
+      local inst_name="Spid3r-Setup-${version}.exe"
+      local inst_out="$out_dir/$inst_name"
+      local nsis_args=(
+        /V2
+        "/DAPPVERSION=${version}"
+        "/DOUTFILE=$(to_win_path "$inst_out")"
+        /DWITH_NATIVE=1
+        "/DSPID3R_EXE=$(to_win_path "$stage0")"
+        "/DSPID3R_SELF_EXE=$(to_win_path "$stage2_bin")"
+        "/DRUNTIME_LIB=$(to_win_path "$rt_lib_copy")"
+        "/DRUNTIME_SHA256=$(to_win_path "$rt_sha_copy")"
+        "/DRUNTIME_MANIFEST=$(to_win_path "$rt_manifest")"
+        "/DLLVM_DLL=$(to_win_path "$llvm_dll")"
+        "/DLLVM_LIB=$(to_win_path "$llvm_lib")"
+      )
+      if [ "$with_gui" -eq 1 ]; then
+        nsis_args+=("/DCONTROL_EXE=$(to_win_path "$control_bin")")
+      fi
+      nsis_args+=("/DWITH_GUI=${with_gui}")
+      if [ "$has_vsix" -eq 1 ]; then
+        nsis_args+=("/DFORMATTER_VSIX=$(to_win_path "$ROOT/packaging/vscode/spid3r-formatter.vsix")")
+      else
+        nsis_args+=("/DFORMATTER_VSIX=")
+      fi
+      nsis_args+=("$(to_win_path "$ROOT/packaging/nsis/spid3r.nsi")")
+
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$makensis" "${nsis_args[@]}"
+      [ -s "$inst_out" ] || {
+        echo "FAIL: installer not created at $inst_out" >&2
+        exit 1
+      }
+      local isize
+      isize="$(wc -c < "$inst_out")"
+      echo "  Installer: $inst_name (${isize} bytes)"
+      if [ "$isize" -lt 15000000 ]; then
+        echo "FAIL: installer smaller than 15 MB ($isize bytes) — LLVM payload missing!" >&2
         exit 1
       fi
-      if [ "$has_vsix" -eq 1 ]; then
-        [ -f "$sin_dir/editor/spid3r-formatter.vsix" ] || {
-          echo "FAIL: installed offline formatter VSIX missing: $sin_dir/editor/spid3r-formatter.vsix" >&2
+      write_sha256_file "$out_dir" "$inst_name"
+
+      if [ "$smoke_install" -eq 1 ]; then
+        echo "[release_selfhost] Running silent NSIS install smoke test..."
+        local sin_dir="$out_dir/_work/installed"
+        mkdir -p "$sin_dir"
+        local win_sin
+        win_sin="$(to_win_path "$sin_dir")"
+        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$inst_out" /S /NOEDITOR "/D=${win_sin}"
+        for req in spid3r-self.exe spid3r.exe sp.exe yamc.exe yamcvm.exe spvm.exe spkg.exe spid3r_lang.lib spid3r_lang.lib.sha256 runtime-manifest.json LLVM-C.dll LLVM-C.lib; do
+          [ -f "$sin_dir/$req" ] || {
+            echo "FAIL: installed file missing: $sin_dir/$req" >&2
+            exit 1
+          }
+        done
+        # Verify multicall argv[0] persona dispatch and VM round-trip on installed copies.
+        for comp in yamc yamcvm spvm spkg; do
+          local comp_ver
+          comp_ver="$("$sin_dir/${comp}.exe" --version)"
+          case "$comp_ver" in
+            *"$comp"*) ;;
+            *)
+              echo "FAIL: installed ${comp}.exe --version unexpected: $comp_ver" >&2
+              exit 1
+              ;;
+          esac
+        done
+        local cli_smoke_src="$out_dir/_work/cli_smoke.mt"
+        local cli_smoke_bc="$out_dir/_work/cli_smoke.matrixc"
+        printf 'fn main() -> int { println("nsis-cli-ok"); return 0; }\n' > "$cli_smoke_src"
+        "$sin_dir/yamcvm.exe" "$cli_smoke_src" -o "$cli_smoke_bc" >/dev/null
+        local cli_smoke_out
+        cli_smoke_out="$("$sin_dir/spvm.exe" "$cli_smoke_bc" | tr -d '\r')"
+        if [ "$cli_smoke_out" != "nsis-cli-ok" ]; then
+          echo "FAIL: installed yamcvm/spvm smoke expected 'nsis-cli-ok', got '$cli_smoke_out'" >&2
           exit 1
-        }
+        fi
+        if [ "$has_vsix" -eq 1 ]; then
+          [ -f "$sin_dir/editor/spid3r-formatter.vsix" ] || {
+            echo "FAIL: installed offline formatter VSIX missing: $sin_dir/editor/spid3r-formatter.vsix" >&2
+            exit 1
+          }
+        fi
+        smoke_test_compiler_binary "$sin_dir/spid3r-self.exe" "$sin_dir" "installed spid3r-self.exe"
+        if [ -f "$sin_dir/uninstall.exe" ]; then
+          MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$sin_dir/uninstall.exe" /S _?="${win_sin}" || true
+        fi
       fi
-      smoke_test_compiler_binary "$sin_dir/spid3r-self.exe" "$sin_dir" "installed spid3r-self.exe"
-      if [ -f "$sin_dir/uninstall.exe" ]; then
-        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$sin_dir/uninstall.exe" /S _?="${win_sin}" || true
+    fi
+
+    if [ "$skip_msix" -eq 0 ]; then
+      echo "[release_selfhost] 5b. Building Microsoft Store MSIX package via makeappx..."
+      local makeappx
+      makeappx="$(find_makeappx || true)"
+      if [ -z "$makeappx" ]; then
+        echo "error[usage]: makeappx.exe not found; pass --skip-msix or install Windows SDK" >&2
+        exit 2
       fi
+
+      local msix_arch="x64"
+      case "$target" in
+        aarch64*) msix_arch="arm64" ;;
+      esac
+      local msix_ver
+      msix_ver="$(msix_four_part_version "$version")"
+      local msix_name="Spid3r-${version}-${msix_arch}.msix"
+      local msix_out="$out_dir/$msix_name"
+      local msix_stage="$out_dir/_work/msix"
+      rm -rf "$msix_stage"
+      mkdir -p "$msix_stage/Assets"
+
+      cp -f "$ROOT/packaging/msix/Assets"/*.png "$msix_stage/Assets/"
+      cp -f "$stage0" "$msix_stage/spid3r.exe"
+      for alias_bin in sp yamc yamcvm spvm spkg; do
+        cp -f "$stage0" "$msix_stage/${alias_bin}.exe"
+      done
+      cp -f "$stage2_bin" "$msix_stage/spid3r-self.exe"
+      cp -f "$llvm_dll" "$msix_stage/LLVM-C.dll"
+      cp -f "$llvm_lib" "$msix_stage/LLVM-C.lib"
+      cp -f "$rt_lib_copy" "$msix_stage/spid3r_lang.lib"
+      cp -f "$rt_sha_copy" "$msix_stage/spid3r_lang.lib.sha256"
+      cp -f "$rt_manifest" "$msix_stage/runtime-manifest.json"
+      if [ "$has_vsix" -eq 1 ]; then
+        mkdir -p "$msix_stage/editor"
+        cp -f "$ROOT/packaging/vscode/spid3r-formatter.vsix" "$msix_stage/editor/spid3r-formatter.vsix"
+      fi
+
+      local control_block="" cli_applist="" cli_default_tile=""
+      if [ "$with_gui" -eq 1 ]; then
+        cp -f "$control_bin" "$msix_stage/spid3r-control.exe"
+        control_block=$'    <Application\n      Id="Spid3rControl"\n      Executable="spid3r-control.exe"\n      EntryPoint="Windows.FullTrustApplication">\n      <uap:VisualElements\n        DisplayName="Spid3r"\n        Description="Spid3r Control Panel and language settings dashboard"\n        BackgroundColor="transparent"\n        Square150x150Logo="Assets\\Square150x150Logo.png"\n        Square44x44Logo="Assets\\Square44x44Logo.png">\n        <uap:DefaultTile\n          Wide310x150Logo="Assets\\Wide310x150Logo.png"\n          Square310x310Logo="Assets\\Square310x310Logo.png"\n          Square71x71Logo="Assets\\Square71x71Logo.png" />\n      </uap:VisualElements>\n      <Extensions>\n        <uap5:Extension Category="windows.appExecutionAlias" Executable="spid3r-control.exe" EntryPoint="Windows.FullTrustApplication">\n          <uap5:AppExecutionAlias>\n            <uap5:ExecutionAlias Alias="spid3r-control.exe" />\n          </uap5:AppExecutionAlias>\n        </uap5:Extension>\n      </Extensions>\n    </Application>\n\n'
+        cli_applist=$'\n        AppListEntry="none"'
+      else
+        cli_default_tile=$'\n        <uap:DefaultTile\n          Wide310x150Logo="Assets\\Wide310x150Logo.png"\n          Square310x310Logo="Assets\\Square310x310Logo.png"\n          Square71x71Logo="Assets\\Square71x71Logo.png" />\n      '
+      fi
+
+      local tpl
+      tpl="$(<"$ROOT/packaging/msix/AppxManifest.xml.in")"
+      tpl="${tpl//@MSIX_IDENTITY_NAME@/$msix_identity}"
+      tpl="${tpl//@MSIX_PUBLISHER@/$msix_publisher}"
+      tpl="${tpl//@MSIX_PUBLISHER_DISPLAY@/$msix_publisher_display}"
+      tpl="${tpl//@MSIX_VERSION@/$msix_ver}"
+      tpl="${tpl//@MSIX_ARCH@/$msix_arch}"
+      tpl="${tpl//@MSIX_CONTROL_BLOCK@/$control_block}"
+      tpl="${tpl//@MSIX_CLI_APPLIST@/$cli_applist}"
+      tpl="${tpl//@MSIX_CLI_DEFAULT_TILE@/$cli_default_tile}"
+      printf '%s\n' "$tpl" > "$msix_stage/AppxManifest.xml"
+
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$makeappx" pack /o /d "$(to_win_path "$msix_stage")" /p "$(to_win_path "$msix_out")"
+      [ -s "$msix_out" ] || {
+        echo "FAIL: MSIX package not created at $msix_out" >&2
+        exit 1
+      }
+      local msize
+      msize="$(wc -c < "$msix_out")"
+      echo "  MSIX Store package: $msix_name (${msize} bytes, Identity=${msix_identity}, Version=${msix_ver})"
+      if [ "$msize" -lt 15000000 ]; then
+        echo "FAIL: MSIX smaller than 15 MB ($msize bytes) — LLVM payload missing!" >&2
+        exit 1
+      fi
+      write_sha256_file "$out_dir" "$msix_name"
     fi
   fi
 
@@ -754,6 +880,11 @@ cmd_verify() {
     for inst_exe in "$out_dir"/Spid3r-Setup-*.exe; do
       [ -f "$inst_exe" ] || continue
       check_size_budget "$(basename "$inst_exe")" "$inst_exe" "${SPID3R_MAX_INSTALLER_BYTES:-48000000}"
+    done
+    local msix_pkg
+    for msix_pkg in "$out_dir"/Spid3r-*.msix; do
+      [ -f "$msix_pkg" ] || continue
+      check_size_budget "$(basename "$msix_pkg")" "$msix_pkg" "${SPID3R_MAX_MSIX_BYTES:-160000000}"
     done
   fi
 

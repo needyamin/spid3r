@@ -387,14 +387,14 @@ jobs:
           python3 tools/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run1.json
           python3 tools/phase0_bench.py --measure --variants native --bin target/release/spid3r --advisory --quick --out /tmp/hlc-run1.json
 
-          SH_BASE="benchmarks/selfhost/baseline.json"
+          SH_BASE="benchmarks/json/selfhost-baseline.json"
           if [ -f /tmp/perf-aot-cache/sh-prev.json ]; then
             SH_BASE="/tmp/perf-aot-cache/sh-prev.json"
           fi
           python3 tools/phase0_compare.py \
             --baseline "$SH_BASE" \
             --current /tmp/sh-run1.json \
-            --floors benchmarks/selfhost/baseline.json \
+            --floors benchmarks/json/selfhost-baseline.json \
             --state /tmp/perf-aot-cache/sh-state.json \
             --title "Selfhost Toolchain Perf (Phase 11 P-7)" \
             --github-summary --advisory --out /tmp/sh-cmp.json
@@ -403,12 +403,12 @@ jobs:
             python3 tools/phase0_compare.py \
               --baseline "$SH_BASE" \
               --current /tmp/sh-run1.json /tmp/sh-run2.json \
-              --floors benchmarks/selfhost/baseline.json \
+              --floors benchmarks/json/selfhost-baseline.json \
               --title "Selfhost Toolchain Perf Confirmation (2nd Run)" \
               --github-summary --advisory
           fi
 
-          HLC_BASE="benchmarks/reference.p1.json"
+          HLC_BASE="benchmarks/json/compute-baseline.json"
           if [ -f /tmp/perf-aot-cache/hlc-prev.json ]; then
             HLC_BASE="/tmp/perf-aot-cache/hlc-prev.json"
           fi
@@ -509,8 +509,8 @@ jobs:
         run: |
           mkdir -p /tmp/perf-phase0-cache
           python3 tools/bench_report.py --mode compute --measure --advisory --quick
-          cp -f benchmarks/results.phase0.ci-advisory.json /tmp/p0-run1.json
-          P0_BASE="benchmarks/reference.p1.json"
+          cp -f benchmarks/json/compute.ci-advisory.json /tmp/p0-run1.json
+          P0_BASE="benchmarks/json/compute-baseline.json"
           if [ -f /tmp/perf-phase0-cache/p0-prev.json ]; then
             P0_BASE="/tmp/perf-phase0-cache/p0-prev.json"
           fi
@@ -524,7 +524,7 @@ jobs:
             python3 tools/bench_report.py --mode compute --measure --advisory --quick
             python3 tools/phase0_compare.py \
               --baseline "$P0_BASE" \
-              --current /tmp/p0-run1.json benchmarks/results.phase0.ci-advisory.json \
+              --current /tmp/p0-run1.json benchmarks/json/compute.ci-advisory.json \
               --title "Phase 0 Core VM Perf Confirmation (2nd Run)" \
               --github-summary --advisory
           fi

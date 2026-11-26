@@ -11,28 +11,29 @@
 #   sh install.sh --source        # build from source via cargo instead
 #   sh install.sh --source --core # source build, no LLVM/WebKit needed
 #   sh install.sh --source --features native,gui
-#   sh install.sh --no-modify-path
-#   sh install.sh --no-editor-ext   # skip IDE extension install (or SPID3R_NO_EDITOR_EXT=1)
+#   sh install.sh --modify-path   # non-interactively add PATH even on a TTY
+#   sh install.sh --no-modify-path # skip PATH edits (or SPID3R_NO_PATH=1)
+#   sh install.sh --no-editor-ext # skip IDE extension install (or SPID3R_NO_EDITOR_EXT=1)
+#   sh install.sh --uninstall     # remove Spid3r binaries, symlinks, libs, and PATH edits
 #
 # What it does:
 #   1. Detects OS + architecture, picks the right release tarball.
 #   2. Downloads spid3r-<target>.tar.gz from GitHub releases.
-#   3. Installs the `spid3r` binary into $SPID3R_INSTALL_DIR (default ~/.spid3r/bin).
+#   3. Atomically installs `spid3r` (+ `spid3r-self`, `sp`, `yamc`, `yamcvm`,
+#      `spvm`, `spkg`, and bundled libs) into $SPID3R_INSTALL_DIR (default
+#      ~/.spid3r/bin) so running binaries are replaced cleanly without ETXTBSY.
 #   4. Removes a `stdlib/` directory left by an older version of this script
 #      (the standard library is compiled into the binary now).
 #   5. Adds that directory to your PATH in ~/.bashrc / ~/.zshrc / ~/.profile
-#      (only if not already present, skippable via --no-modify-path).
+#      (prompts interactively on a TTY unless --modify-path / --no-modify-path
+#      / SPID3R_NO_PATH=1 is set).
 #   6. Verifies and installs the bundled spid3r-formatter.vsix extension into any
 #      detected VS Code / Cursor / Windsurf / VSCodium CLI on PATH (offline,
 #      skippable via --no-editor-ext or SPID3R_NO_EDITOR_EXT=1).
 #
 # The standard library is not installed as files. Every stdlib module is
-# compiled into the `spid3r` binary, and all three backends (tree walker, VM,
-# AOT) fall back to that table, so `import "json"` works with the binary alone.
-# Older versions of this script copied 29 editable `.matrix` files into
-# ~/.spid3r/stdlib and ~/.spid3r/bin/stdlib; those outranked the built-in copy,
-# so a hand-edited (or maliciously edited) module silently changed the behaviour
-# of every program on the machine. They are removed on install now.
+# compiled into the `spid3r` binary, and all backends (tree walker, VM, AOT)
+# fall back to that table, so `import "json"` works with the binary alone.
 # ============================================================================
 set -eu
 
@@ -44,11 +45,16 @@ VERSION=""                 # empty = latest release
 FROM_SOURCE=0
 FEATURES=""                # empty = auto-detect (source builds only)
 CORE_ONLY=0
+MODIFY_PATH_OPT=0
 NO_MODIFY_PATH=0
+if [ "${SPID3R_NO_PATH:-0}" = "1" ]; then
+    NO_MODIFY_PATH=1
+fi
 INSTALL_EDITOR_EXT=1
 if [ "${SPID3R_NO_EDITOR_EXT:-0}" = "1" ]; then
     INSTALL_EDITOR_EXT=0
 fi
+DO_UNINSTALL=0
 INSTALL_DIR="${SPID3R_INSTALL_DIR:-$HOME/.spid3r/bin}"
 
 SCRIPT_DIR=""
@@ -73,14 +79,17 @@ Usage:
   sh install.sh [OPTIONS]
 
 Options:
-  --version <ver>         Install a specific release version (e.g. 1.0.0; default: latest)
-  --dir <path>            Target directory for the binary (default: ~/.spid3r/bin)
+  --version <ver>         Install a specific release version (e.g. 1.1.1; default: latest)
+  --dir <path>            Target directory for binaries (default: ~/.spid3r/bin)
   --source                Compile and build from source using cargo
   --core                  Source build with zero external dependencies (no LLVM/WebKit)
   --features <feat>       Comma-separated Cargo features (e.g. native,gui)
-  --no-modify-path        Do not append PATH exports to shell profiles (~/.bashrc, ~/.zshrc, etc.)
+  --modify-path, -y, --yes
+                          Add install directory to shell PATH without prompting
+  --no-modify-path        Do not append PATH exports to shell profiles (or set SPID3R_NO_PATH=1)
   --editor-ext            Install bundled IDE formatter extension into detected editors (default)
   --no-editor-ext         Skip IDE formatter extension install (or set SPID3R_NO_EDITOR_EXT=1)
+  --uninstall             Remove installed Spid3r binaries, symlinks, bundled libs, and PATH edits
   -h, --help              Show this help message
 EOF
 }
@@ -88,7 +97,7 @@ EOF
 # ---------------------------------------------------------------- arguments --
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version)          [ $# -ge 2 ] || die "--version needs a value (e.g. 1.0.0)"
+        --version)          [ $# -ge 2 ] || die "--version needs a value (e.g. 1.1.1)"
                             VERSION="$2"; shift 2 ;;
         --dir)              [ $# -ge 2 ] || die "--dir needs a value"
                             INSTALL_DIR="$2"; shift 2 ;;
@@ -96,20 +105,16 @@ while [ $# -gt 0 ]; do
         --features)         [ $# -ge 2 ] || die "--features needs a value (e.g. native,gui)"
                             FEATURES="$2"; shift 2 ;;
         --core)             CORE_ONLY=1; shift ;;
-        --no-modify-path)   NO_MODIFY_PATH=1; shift ;;
+        --modify-path|-y|--yes)
+                            MODIFY_PATH_OPT=1; NO_MODIFY_PATH=0; shift ;;
+        --no-modify-path)   NO_MODIFY_PATH=1; MODIFY_PATH_OPT=0; shift ;;
         --editor-ext)       INSTALL_EDITOR_EXT=1; shift ;;
         --no-editor-ext)    INSTALL_EDITOR_EXT=0; shift ;;
+        --uninstall)        DO_UNINSTALL=1; shift ;;
         -h|--help)          show_help; exit 0 ;;
         *)                  die "unknown option: $1 (try --help)" ;;
     esac
 done
-
-# ------------------------------------------------------------------- checks --
-command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
-    || die "curl or wget is required to download the installer payload"
-
-command -v tar >/dev/null 2>&1 \
-    || die "tar is required to extract the installer payload"
 
 fetch() { # fetch <url> <outfile>
     if command -v curl >/dev/null 2>&1; then
@@ -119,18 +124,30 @@ fetch() { # fetch <url> <outfile>
     fi
 }
 
+# Stage in the destination directory and rename(2) atomically so upgrading
+# over running `spid3r` or mapped shared libs never triggers ETXTBSY / SIGBUS.
+atomic_install_file() { # atomic_install_file <src> <dst> <mode>
+    aif_src="$1"
+    aif_dst="$2"
+    aif_mode="$3"
+    aif_dir="$(dirname "$aif_dst")"
+    aif_tmp="${aif_dir}/.$(basename "$aif_dst").new.$$"
+    mkdir -p "$aif_dir"
+    if cp -L -f "$aif_src" "$aif_tmp" && chmod "$aif_mode" "$aif_tmp" && mv -f "$aif_tmp" "$aif_dst"; then
+        return 0
+    fi
+    rm -f "$aif_tmp"
+    return 1
+}
+
+lib_dir_for_install() {
+    case "$(basename "$INSTALL_DIR")" in
+        bin) printf '%s\n' "$(dirname "$INSTALL_DIR")/lib" ;;
+        *)   printf '%s\n' "${INSTALL_DIR}/lib" ;;
+    esac
+}
+
 # Remove a `stdlib/` directory left behind by an older version of this script.
-#
-# Older installs copied 29 `.matrix` modules into BOTH "${INSTALL_DIR}/stdlib"
-# (beside the binary) and "$(dirname "$INSTALL_DIR")/stdlib"; both are searched
-# before the built-in copy, so they kept overriding it after an upgrade.
-#
-# Only a directory that actually contains `.matrix` modules is touched, so a
-# `stdlib` that belongs to something else (e.g. /usr/local/stdlib when the
-# binary went into /usr/local/bin) is left alone.
-#
-# The check is a plain glob rather than `find -maxdepth 1`: BSD find (macOS)
-# has no `-maxdepth`, and this script runs on both.
 remove_legacy_stdlib() {
     for dir in "${INSTALL_DIR}/stdlib" "$(dirname "$INSTALL_DIR")/stdlib"; do
         [ -d "$dir" ] || continue
@@ -253,7 +270,7 @@ install_editor_extension() { # install_editor_extension [extracted_tar_dir]
 
     iee_share="$(dirname "$INSTALL_DIR")/share/spid3r"
     iee_dest="$iee_vsix"
-    if mkdir -p "$iee_share" 2>/dev/null && cp -f "$iee_vsix" "${iee_share}/spid3r-formatter.vsix" 2>/dev/null; then
+    if atomic_install_file "$iee_vsix" "${iee_share}/spid3r-formatter.vsix" 0644 2>/dev/null; then
         iee_dest="${iee_share}/spid3r-formatter.vsix"
     fi
 
@@ -284,6 +301,148 @@ install_editor_extension() { # install_editor_extension [extracted_tar_dir]
     [ -n "$iee_tmp" ] && rm -rf "$iee_tmp"
     return 0
 }
+
+path_added=0
+path_already=0
+
+configure_path() {
+    if [ "$NO_MODIFY_PATH" -eq 1 ]; then
+        return 0
+    fi
+    case ":${PATH}:" in
+        *":${INSTALL_DIR}:"*)
+            path_already=1
+            return 0
+            ;;
+    esac
+
+    if [ "$MODIFY_PATH_OPT" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+        printf 'Add %s to PATH in your shell profile (~/.bashrc, ~/.zshrc, ~/.profile)? [Y/n] ' "$INSTALL_DIR"
+        IFS= read -r cp_reply || cp_reply="y"
+        case "$cp_reply" in
+            n|N|no|NO|No)
+                say "Skipped PATH setup."
+                return 0
+                ;;
+        esac
+    fi
+
+    cp_comment='# Spid3r (installed by install.sh)'
+    cp_export="export PATH=\"${INSTALL_DIR}:\$PATH\""
+
+    if [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.profile" ]; then
+        touch "$HOME/.profile"
+    fi
+
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        [ -f "$rc" ] || continue
+        if ! grep -qF "$cp_export" "$rc" 2>/dev/null && ! grep -qF "${INSTALL_DIR}" "$rc" 2>/dev/null; then
+            {
+                printf '\n%s\n' "$cp_comment"
+                printf '%s\n' "$cp_export"
+            } >> "$rc"
+            say "PATH updated: added ${INSTALL_DIR} to ${rc}"
+            path_added=1
+        fi
+    done
+}
+
+remove_path_from_rc() { # remove_path_from_rc <rc_file>
+    rpf_rc="$1"
+    [ -f "$rpf_rc" ] || return 0
+    rpf_comment='# Spid3r (installed by install.sh)'
+    rpf_export="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    grep -qF "$rpf_comment" "$rpf_rc" 2>/dev/null || grep -qF "$rpf_export" "$rpf_rc" 2>/dev/null || return 0
+
+    rpf_tmp="${rpf_rc}.spid3r_uninst.$$"
+    if awk -v cmt="$rpf_comment" -v exp_line="$rpf_export" '
+        $0 == cmt { skip_next = 1; next }
+        skip_next == 1 && $0 == exp_line { skip_next = 0; next }
+        { skip_next = 0 }
+        $0 == exp_line { next }
+        { print }
+    ' "$rpf_rc" > "$rpf_tmp" && mv -f "$rpf_tmp" "$rpf_rc"; then
+        say "Removed Spid3r PATH entry from ${rpf_rc}"
+    else
+        rm -f "$rpf_tmp"
+    fi
+}
+
+do_uninstall() {
+    say "Uninstalling Spid3r from ${INSTALL_DIR}..."
+    for bin_name in spid3r sp yamc yamcvm spvm spkg spid3r-self spid3r-control; do
+        target_p="${INSTALL_DIR}/${bin_name}"
+        if [ -e "$target_p" ] || [ -L "$target_p" ]; then
+            rm -f "$target_p"
+        fi
+    done
+    rm -f "${INSTALL_DIR}"/.*.new.* 2>/dev/null || true
+
+    remove_legacy_stdlib
+
+    parent_dir="$(dirname "$INSTALL_DIR")"
+    share_dir="${parent_dir}/share/spid3r"
+    if [ -e "${share_dir}/spid3r-formatter.vsix" ]; then
+        rm -f "${share_dir}/spid3r-formatter.vsix"
+    fi
+    rmdir "$share_dir" 2>/dev/null || true
+    rmdir "${parent_dir}/share" 2>/dev/null || true
+
+    lib_dir="$(lib_dir_for_install)"
+    case "$lib_dir" in
+        "${INSTALL_DIR}/lib"|*/.spid3r/lib|*/spid3r/lib)
+            if [ -d "$lib_dir" ]; then
+                for lf in "$lib_dir"/*.so "$lib_dir"/*.so.* "$lib_dir"/*.dylib; do
+                    [ -e "$lf" ] || [ -L "$lf" ] || continue
+                    rm -f "$lf"
+                done
+                rmdir "$lib_dir" 2>/dev/null || true
+            fi
+            ;;
+    esac
+
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        remove_path_from_rc "$rc"
+    done
+
+    rmdir "$INSTALL_DIR" 2>/dev/null || true
+    case "$parent_dir" in
+        */.spid3r|*/spid3r)
+            rmdir "$parent_dir" 2>/dev/null || true
+            ;;
+    esac
+
+    say "Spid3r uninstall complete."
+}
+
+print_post_install_hint() {
+    say ""
+    if [ "$path_added" -eq 1 ]; then
+        say "Open a new terminal (or run: source ~/.bashrc) and then try:"
+    elif [ "$path_already" -eq 1 ]; then
+        say "PATH already configured. Try:"
+    else
+        say "PATH was not modified. Add ${INSTALL_DIR} to PATH or run ${INSTALL_DIR}/spid3r:"
+    fi
+    say "    spid3r --help              # or: sp --help"
+    say "    spid3r run hello.matrix    # or: sp run hello.mt  /  spvm hello.mt"
+    say "    yamc hello.mt -o hello     # native AOT build (YamLLVM)"
+    say "    yamcvm hello.mt            # compile .matrixc bytecode"
+    say "    spkg init myapp            # package & project commands"
+    say "    spid3r control status      # runtime dashboard (config, safety, logs)"
+
+    if [ -n "${GITHUB_PATH-}" ]; then
+        say ""
+        say "GitHub Actions detected: ${INSTALL_DIR} is not on PATH for the current step."
+        say "To expose it to subsequent steps of this job, run before the next step:"
+        say "    echo \"${INSTALL_DIR}\" >> \"\$GITHUB_PATH\""
+    fi
+}
+
+if [ "$DO_UNINSTALL" -eq 1 ]; then
+    do_uninstall
+    exit 0
+fi
 
 # ------------------------------------------------------ build from source ----
 if [ "$FROM_SOURCE" -eq 1 ]; then
@@ -333,9 +492,9 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
     fi
 
     if [ -f "${PARENT_DIR}/bin/spid3r" ] && [ "${INSTALL_DIR}" != "${PARENT_DIR}/bin" ]; then
-        cp -f "${PARENT_DIR}/bin/spid3r" "${INSTALL_DIR}/spid3r"
+        atomic_install_file "${PARENT_DIR}/bin/spid3r" "${INSTALL_DIR}/spid3r" 0755
         if [ -f "${PARENT_DIR}/bin/spid3r-control" ]; then
-            cp -f "${PARENT_DIR}/bin/spid3r-control" "${INSTALL_DIR}/spid3r-control"
+            atomic_install_file "${PARENT_DIR}/bin/spid3r-control" "${INSTALL_DIR}/spid3r-control" 0755
         fi
     fi
     if [ -x "${INSTALL_DIR}/spid3r" ]; then
@@ -344,21 +503,25 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
         done
     fi
 
-    # A source build is a single self-contained binary too: the stdlib is
-    # compiled in by build.rs, so there is nothing to fetch or copy.
     remove_legacy_stdlib
+    configure_path
 
-    # Pack the default spid3r.ini so the machine starts with a visible,
-    # editable configuration file (idempotent: refuses to overwrite one that
-    # already exists).
     "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
         || warn "could not write the default spid3r.ini (run: spid3r control ini --init)"
 
     install_editor_extension ""
 
     say "Done. spid3r is installed into ${INSTALL_DIR}."
+    print_post_install_hint
     exit 0
 fi
+
+# ------------------------------------------------------------------- checks --
+command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
+    || die "curl or wget is required to download the installer payload"
+
+command -v tar >/dev/null 2>&1 \
+    || die "tar is required to extract the installer payload"
 
 # ------------------------------------------------------------ detect target --
 OS="$(uname -s)"
@@ -413,74 +576,33 @@ SELF_SRC="$(find "$TMPDIR_DL" -type f -name spid3r-self | head -n 1 || true)"
 
 # ----------------------------------------------------------------- install ---
 mkdir -p "$INSTALL_DIR"
-chmod +x "$BIN_SRC"
-mv -f "$BIN_SRC" "${INSTALL_DIR}/spid3r"
+atomic_install_file "$BIN_SRC" "${INSTALL_DIR}/spid3r" 0755 \
+    || die "failed to install spid3r into ${INSTALL_DIR}"
 for alias_bin in sp yamc yamcvm spvm spkg; do
     ln -sf spid3r "${INSTALL_DIR}/${alias_bin}"
 done
 if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ]; then
-    chmod +x "$SELF_SRC"
-    mv -f "$SELF_SRC" "${INSTALL_DIR}/spid3r-self"
+    atomic_install_file "$SELF_SRC" "${INSTALL_DIR}/spid3r-self" 0755 \
+        || die "failed to install spid3r-self into ${INSTALL_DIR}"
 fi
 # Install any bundled shared libraries (e.g. libLLVM.so.23.1 and its bundled
-# transitive deps on Linux) into the $ORIGIN-relative lib directory searched
-# by spid3r and spid3r-self DT_RPATH ($ORIGIN:$ORIGIN/lib:$ORIGIN/../lib).
-case "$(basename "$INSTALL_DIR")" in
-    bin) LIB_DIR="$(dirname "$INSTALL_DIR")/lib" ;;
-    *)   LIB_DIR="${INSTALL_DIR}/lib" ;;
-esac
+# transitive deps on Linux) atomically into the $ORIGIN-relative lib directory.
+LIB_DIR="$(lib_dir_for_install)"
 BUNDLED_LIBS="$(find "$TMPDIR_DL" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) 2>/dev/null || true)"
 if [ -n "$BUNDLED_LIBS" ]; then
     mkdir -p "$LIB_DIR"
     printf '%s\n' "$BUNDLED_LIBS" | while IFS= read -r lib_f; do
         [ -e "$lib_f" ] || continue
-        cp -L -f "$lib_f" "${LIB_DIR}/$(basename "$lib_f")"
+        atomic_install_file "$lib_f" "${LIB_DIR}/$(basename "$lib_f")" 0755 \
+            || die "failed to install bundled library $(basename "$lib_f")"
     done
 fi
 
 # ---------------------------------------------------------- stdlib cleanup ---
-# The tarball carries the binary only; any `stdlib/` it happens to contain is
-# ignored (only `spid3r` is moved out of the extracted tree). What must go is
-# the writable copy an older install left on disk, because that one outranks
-# the built-in modules.
 remove_legacy_stdlib
 
 # --------------------------------------------------------------- PATH set ----
-path_added=0
-if [ "$NO_MODIFY_PATH" -eq 0 ]; then
-    case ":${PATH}:" in
-        *":${INSTALL_DIR}:"*)
-            # Directory is already in PATH
-            ;;
-        *)
-            path_line='# Spid3r (installed by install.sh)'
-            export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
-
-            candidates=""
-            for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-                if [ -f "$rc" ]; then
-                    candidates="${candidates} $rc"
-                fi
-            done
-
-            if [ -z "$candidates" ]; then
-                candidates="$HOME/.profile"
-                touch "$HOME/.profile"
-            fi
-
-            for rc in $candidates; do
-                if ! grep -qF "$export_line" "$rc" 2>/dev/null && ! grep -qF "${INSTALL_DIR}" "$rc" 2>/dev/null; then
-                    {
-                        printf '\n%s\n' "$path_line"
-                        printf '%s\n' "$export_line"
-                    } >> "$rc"
-                    say "PATH updated: added ${INSTALL_DIR} to ${rc}"
-                    path_added=1
-                fi
-            done
-            ;;
-    esac
-fi
+configure_path
 
 # -------------------------------------------------------------- verify -------
 if [ -x "${INSTALL_DIR}/spid3r" ]; then
@@ -493,8 +615,6 @@ if [ -x "${INSTALL_DIR}/spid3r" ]; then
     say ""
     say "Spid3r installed successfully:"
     printf '%s\n' "$VERSION_OUT"
-    # Default runtime configuration: a commented spid3r.ini the user can edit
-    # (idempotent — an existing ini is never overwritten).
     "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
         || warn "could not write the default spid3r.ini (run: spid3r control ini --init)"
 else
@@ -502,27 +622,4 @@ else
 fi
 
 install_editor_extension "$TMPDIR_DL"
-
-say ""
-if [ "$path_added" -eq 1 ]; then
-    say "Open a new terminal (or run: source ~/.bashrc) and then try:"
-else
-    say "PATH already configured. Try:"
-fi
-say "    spid3r --help              # or: sp --help"
-say "    spid3r run hello.matrix    # or: sp run hello.mt  /  spvm hello.mt"
-say "    yamc hello.mt -o hello     # native AOT build (YamLLVM)"
-say "    yamcvm hello.mt            # compile .matrixc bytecode"
-say "    spkg init myapp            # package & project commands"
-say "    spid3r control status      # runtime dashboard (config, safety, logs)"
-
-# On GitHub Actions the PATH edits above only reach NEW shells; the current
-# job step (and often the whole job, if it uses a pre-set PATH) still cannot
-# find spid3r. GITHUB_PATH is exported by the Actions runner, so when it is
-# present give the caller the one-liner that fixes the remaining steps.
-if [ -n "${GITHUB_PATH-}" ]; then
-    say ""
-    say "GitHub Actions detected: ${INSTALL_DIR} is not on PATH for the current step."
-    say "To expose it to subsequent steps of this job, run before the next step:"
-    say '    echo "$HOME/.spid3r/bin" >> "$GITHUB_PATH"'
-fi
+print_post_install_hint

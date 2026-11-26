@@ -2,7 +2,7 @@
 // Exercises: Sieve, BigInt (123n), 3-level OOP + named args + defaults + super(),
 // ADTs + pattern matching, Linear Algebra, MessagePack/CBOR + SHA-256, Regex, and Generators.
 
-import "gen";
+import "gen" as gen;
 
 enum Expr {
     Lit(val: int),
@@ -189,7 +189,7 @@ fn main() {
     println("regex:" + string(m_digits) + ":" + "{true}-{false}-{null}");
 
     // 8. Coroutine Generator Pipeline
-    let fibs = collect(fib_gen(12));
+    let fibs = gen.collect(fib_gen(12));
     println("gen:" + string(fibs));
 
     return 0;

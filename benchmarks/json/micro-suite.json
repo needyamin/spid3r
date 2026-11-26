@@ -1,0 +1,369 @@
+{
+  "generated": "2026-11-26 12:15:03",
+  "git_sha": "df5b1bc",
+  "host": {
+    "os": "Windows-11-10.0.26300-SP0",
+    "cpu": "Intel(R) Core(TM) Ultra 7 265K",
+    "cores": 20,
+    "python": "3.15.0"
+  },
+  "runs": {
+    "spid3r": 5,
+    "aot": 5,
+    "tree": 3,
+    "other": 5
+  },
+  "spid3r_version": "spid3r 1.1.1 (language 1.1.1)",
+  "startup": {
+    "spid3r": 8.133099996484816,
+    "nodejs": 29.17570000863634,
+    "php": 22.492599993711337,
+    "python": 15.464700001757592,
+    "aot": 5.6517000193707645
+  },
+  "startup_mad": {
+    "spid3r": 0.33179999445565045,
+    "nodejs": 1.0247999744024128,
+    "php": 0.2108000044245273,
+    "python": 0.2512999635655433,
+    "aot": 0.06670001312159002
+  },
+  "resolution": {
+    "spid3r": 0.6635999889113009,
+    "nodejs": 2.0495999488048255,
+    "php": 0.5,
+    "python": 0.5025999271310866,
+    "aot": 0.5
+  },
+  "vm": {
+    "arith": 20.907,
+    "closures": 12.376,
+    "equality": 20.469,
+    "json": 13.117,
+    "list": 27.842,
+    "map": 21.184,
+    "methods": 21.381,
+    "set": 10.751,
+    "stress_suite": 34.783,
+    "strings": 112.892,
+    "tasks": 12.093
+  },
+  "aot": {
+    "arith": 6.9532000052277,
+    "closures": 9.714199986774474,
+    "json": 9.790900017833337,
+    "list": 12.89600000018254,
+    "map": 12.3862000182271,
+    "methods": 32.78739997767843,
+    "strings": 41.112400009296834,
+    "tasks": 7.610300002852455
+  },
+  "tree": {
+    "arith": 54.821,
+    "closures": 53.094,
+    "equality": 26.735,
+    "json": 14.004,
+    "list": 38.521,
+    "map": 24.155,
+    "methods": 106.772,
+    "set": 10.159,
+    "stress_suite": 39.434,
+    "strings": 107.495,
+    "tasks": 12.356
+  },
+  "nodejs": {
+    "arith": 42.88009999436326,
+    "closures": 34.83990000677295,
+    "json": 36.45179999875836,
+    "list": 37.26579999784008,
+    "map": 39.86409999197349,
+    "methods": 34.142699994845316,
+    "strings": 36.50550000020303,
+    "tasks": 50.3065999946557
+  },
+  "php": {
+    "arith": 42.35009997501038,
+    "closures": 23.989700013771653,
+    "json": 25.254300009692088,
+    "list": 27.407600020524114,
+    "map": 25.28040000470355,
+    "methods": 31.324799987487495,
+    "strings": 29.551200015703216,
+    "tasks": 24.572700000135228
+  },
+  "python": {
+    "arith": 55.51460001152009,
+    "closures": 17.552999983308837,
+    "json": 32.11220001685433,
+    "list": 22.042500000679865,
+    "map": 19.721199991181493,
+    "methods": 22.1472000121139,
+    "strings": 19.017600017832592,
+    "tasks": 26.107599987881258
+  },
+  "gate": [
+    {
+      "stem": "arith",
+      "rate": 95661740.0870522,
+      "floor": 6000000,
+      "margin": 15.943623347842033,
+      "pass": true
+    },
+    {
+      "stem": "closures",
+      "rate": 3232062.0555914673,
+      "floor": 170000,
+      "margin": 19.012129738773336,
+      "pass": true
+    },
+    {
+      "stem": "json",
+      "rate": 152473.88884653503,
+      "floor": 8000,
+      "margin": 19.05923610581688,
+      "pass": true
+    },
+    {
+      "stem": "list",
+      "rate": 7183391.997701315,
+      "floor": 800000,
+      "margin": 8.979239997126644,
+      "pass": true
+    },
+    {
+      "stem": "map",
+      "rate": 1888217.5226586103,
+      "floor": 160000,
+      "margin": 11.801359516616314,
+      "pass": true
+    },
+    {
+      "stem": "methods",
+      "rate": 9354099.434076983,
+      "floor": 500000,
+      "margin": 18.708198868153968,
+      "pass": true
+    },
+    {
+      "stem": "strings",
+      "rate": 265740.7079332459,
+      "floor": 140000,
+      "margin": 1.8981479138088995,
+      "pass": true
+    },
+    {
+      "stem": "tasks",
+      "rate": 165384.93343256428,
+      "floor": 6000,
+      "margin": 27.564155572094048,
+      "pass": true
+    }
+  ],
+  "node_version": "26.11.1",
+  "php_version": "8.3.33",
+  "compare": true,
+  "vm_raw": "spid3r bench - engine vm, best of 5 runs, tree vs vm compared\nbenchmark           iters      best time  iters/sec\narith             2000000       20.907ms   95663113\nclosures            40000       12.376ms    3232036\nequality           100000       20.469ms    4885413\njson                 2000       13.117ms     152472\nlist               200000       27.842ms    7183315\nmap                 40000       21.184ms    1888191\nmethods            200000       21.381ms    9353968\nset                  5000       10.751ms     465090\nstress_suite            -       34.783ms          -\nstrings             30000      112.892ms     265741\ntasks                2000       12.093ms     165385\n",
+  "tree_raw": "spid3r bench - engine tree, best of 3 runs\nbenchmark           iters      best time  iters/sec\narith             2000000       54.821ms   36482436\nclosures            40000       53.094ms     753388\nequality           100000       26.735ms    3740415\njson                 2000       14.004ms     142817\nlist               200000       38.521ms    5191946\nmap                 40000       24.155ms    1655944\nmethods            200000      106.772ms    1873156\nset                  5000       10.159ms     492189\nstress_suite            -       39.434ms          -\nstrings             30000      107.495ms     279083\ntasks                2000       12.356ms     161862\n",
+  "adj": {
+    "vm": {
+      "arith": 12.773900003515184,
+      "closures": 4.242900003515183,
+      "equality": 12.335900003515185,
+      "json": 4.983900003515185,
+      "list": 19.708900003515183,
+      "map": 13.050900003515185,
+      "methods": 13.247900003515184,
+      "set": 2.6179000035151834,
+      "stress_suite": 26.649900003515185,
+      "strings": 104.75890000351518,
+      "tasks": 3.959900003515184
+    },
+    "aot": {
+      "arith": 1.3014999858569354,
+      "closures": 4.06249996740371,
+      "json": 4.139199998462573,
+      "list": 7.244299980811775,
+      "map": 6.734499998856336,
+      "methods": 27.13569995830767,
+      "strings": 35.46069998992607,
+      "tasks": 1.9585999834816903
+    },
+    "tree": {
+      "arith": 46.68790000351518,
+      "closures": 44.960900003515185,
+      "equality": 18.601900003515183,
+      "json": 5.8709000035151835,
+      "list": 30.387900003515185,
+      "map": 16.021900003515185,
+      "methods": 98.63890000351519,
+      "set": 2.0259000035151846,
+      "stress_suite": 31.30090000351518,
+      "strings": 99.36190000351519,
+      "tasks": 4.222900003515184
+    },
+    "nodejs": {
+      "arith": 13.704399985726923,
+      "closures": 5.66419999813661,
+      "json": 7.27609999012202,
+      "list": 8.090099989203736,
+      "map": 10.688399983337149,
+      "methods": 4.966999986208975,
+      "strings": 7.329799991566688,
+      "tasks": 21.130899986019358
+    },
+    "php": {
+      "arith": 19.857499981299043,
+      "closures": 1.4971000200603157,
+      "json": 2.7617000159807503,
+      "list": 4.915000026812777,
+      "map": 2.787800010992214,
+      "methods": 8.832199993776157,
+      "strings": 7.058600021991879,
+      "tasks": 2.0801000064238906
+    },
+    "python": {
+      "arith": 40.049900009762496,
+      "closures": 2.088299981551245,
+      "json": 16.64750001509674,
+      "list": 6.5777999989222735,
+      "map": 4.256499989423901,
+      "methods": 6.682500010356307,
+      "strings": 3.552900016075,
+      "tasks": 10.642899986123666
+    }
+  },
+  "ratio_php": {
+    "vm": {
+      "arith": 0.6432783590857412,
+      "closures": 2.8340791841978894,
+      "json": 1.8046493010375981,
+      "list": 4.00994911413984,
+      "map": 4.681433371137049,
+      "methods": 1.4999547126254689,
+      "strings": 14.841314095872667,
+      "tasks": 1.9037065483803572
+    },
+    "aot": {
+      "arith": 0.0655419860044131,
+      "closures": 2.7135795290684976,
+      "json": 1.4987869698051317,
+      "list": 1.4739165699475032,
+      "map": 2.415704129529521,
+      "methods": 3.0723602247944517,
+      "strings": 5.023758235265377,
+      "tasks": 0.9415893358170393
+    },
+    "tree": {
+      "arith": 2.3511469242091843,
+      "closures": 30.031994790637825,
+      "json": 2.125828283138231,
+      "list": 6.182685623141447,
+      "map": 5.747148267573463,
+      "methods": 11.168100821202383,
+      "strings": 14.076714885946474,
+      "tasks": 2.03014277701734
+    }
+  },
+  "ratio_adj": {
+    "vm": {
+      "arith": 0.9321020998233523,
+      "closures": 2.8340791841978894,
+      "json": 1.8046493010375981,
+      "list": 4.00994911413984,
+      "map": 4.681433371137049,
+      "methods": 2.6671834186225842,
+      "strings": 29.48546244744754,
+      "tasks": 1.9037065483803572
+    },
+    "aot": {
+      "arith": 0.09496949791398693,
+      "closures": 2.7135795290684976,
+      "json": 1.4987869698051317,
+      "list": 1.4739165699475032,
+      "map": 2.415704129529521,
+      "methods": 5.463197107640579,
+      "strings": 9.980776219281458,
+      "tasks": 0.9415893358170393
+    },
+    "tree": {
+      "arith": 3.4067817673258545,
+      "closures": 30.031994790637825,
+      "json": 2.125828283138231,
+      "list": 6.182685623141447,
+      "map": 5.747148267573463,
+      "methods": 19.85884845528268,
+      "strings": 27.966421670735162,
+      "tasks": 2.03014277701734
+    }
+  },
+  "ratio_ref": {
+    "vm": {
+      "arith": "nodejs",
+      "closures": "php",
+      "json": "php",
+      "list": "php",
+      "map": "php",
+      "methods": "nodejs",
+      "strings": "python",
+      "tasks": "php"
+    },
+    "aot": {
+      "arith": "nodejs",
+      "closures": "php",
+      "json": "php",
+      "list": "php",
+      "map": "php",
+      "methods": "nodejs",
+      "strings": "python",
+      "tasks": "php"
+    },
+    "tree": {
+      "arith": "nodejs",
+      "closures": "php",
+      "json": "php",
+      "list": "php",
+      "map": "php",
+      "methods": "nodejs",
+      "strings": "python",
+      "tasks": "php"
+    }
+  },
+  "ratio_resolved": {
+    "vm": {
+      "arith": true,
+      "closures": true,
+      "equality": false,
+      "json": true,
+      "list": true,
+      "map": true,
+      "methods": true,
+      "set": false,
+      "stress_suite": false,
+      "strings": true,
+      "tasks": true
+    },
+    "aot": {
+      "arith": true,
+      "closures": true,
+      "json": true,
+      "list": true,
+      "map": true,
+      "methods": true,
+      "strings": true,
+      "tasks": true
+    },
+    "tree": {
+      "arith": true,
+      "closures": true,
+      "equality": false,
+      "json": true,
+      "list": true,
+      "map": true,
+      "methods": true,
+      "set": false,
+      "stress_suite": false,
+      "strings": true,
+      "tasks": true
+    }
+  }
+}

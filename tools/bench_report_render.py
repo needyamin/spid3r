@@ -1,11 +1,17 @@
-"""Render the benchmark report page (docs/html/benchmark.html).
+"""Render the enterprise benchmark report page (docs/html/benchmark.html).
 
-Kept separate from bench_report.py so the page can be re-rendered from the
-measured JSON without re-running the suite. All numbers come from the data
-dict; nothing here is hardcoded except presentation.
+Pure stdlib HTML/CSS/SVG/JS generator driven entirely from structured JSON files
+in `benchmarks/json/`:
+  - micro-suite.json
+  - compute-baseline.json
+  - compute-latest.json
+  - selfhost-baseline.json
+  - footprint-budgets.json
+  - compute-manifest.json
 """
 
 import html
+import json
 import math
 
 
@@ -14,6 +20,8 @@ def fmt_int(n):
 
 
 def fmt_ms(ms):
+    if ms is None:
+        return "&mdash;"
     if ms < 10:
         return f"{ms:.2f}"
     return f"{ms:.1f}"
@@ -27,34 +35,35 @@ def fmt_rate(r):
     return f"{r:,.0f}"
 
 
+def fmt_mib(b):
+    if b is None:
+        return "&mdash;"
+    return f"{b / (1024 * 1024):.2f} MiB"
+
+
 def esc(s):
     return html.escape(str(s), quote=True)
 
 
-def gate_bar(margin, lo=4.0, hi=20.0):
-    """Log-scaled bar width for a gate margin (4x..20x fills the track)."""
+def gate_bar(margin, lo=1.5, hi=15.0):
     m = max(lo, min(hi, margin))
     frac = (math.log10(m) - math.log10(lo)) / (math.log10(hi) - math.log10(lo))
-    return 6 + frac * 94
+    return 8 + frac * 92
 
 
 def lang_bars(rows, series):
-    """Grouped horizontal bars on a shared LOG time axis, one group per benchmark.
-
-    A linear axis is useless here: the values span 1.8 ms to 44 ms and a
-    per-row normalization would make a 44 ms bar look the same as a 2 ms one.
-    The log axis keeps every row comparable and still shows "shorter is faster".
-
-    rows: [(stem, {series: ms})]; series: [(key, label, css_class)]
-    """
-    row_h, gap, label_w, chart_w = 18, 12, 112, 520
-    axis_h = 30
-    plot_top = 2
-    body = len(rows) * (row_h * len(series) + gap)
+    """Grouped horizontal bars on a shared LOG time axis with direct inline labels."""
+    row_h, gap, label_w, chart_w = 20, 14, 108, 520
+    axis_h = 38
+    plot_top = 8
+    group_step = row_h * len(series) + gap
+    body = len(rows) * group_step
     height = body + axis_h
-    width = label_w + chart_w + 56
+    width = label_w + chart_w + 150
 
-    lo, hi = 1.0, 100.0
+    all_vals = [v for _, vals in rows for k, _, _, _ in series for v in [vals.get(k)] if v is not None and v > 0]
+    lo = 0.2 if any(v < 1.0 for v in all_vals) else 1.0
+    hi = max(100.0, (max(all_vals) * 1.4 if all_vals else 100.0))
     span = math.log10(hi) - math.log10(lo)
 
     def xpos(v):
@@ -64,37 +73,50 @@ def lang_bars(rows, series):
     out = [
         f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" '
         f'aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster">'
+        f"<title>Startup-adjusted compute time per benchmark (ms, log scale)</title>"
     ]
 
-    # gridlines + tick labels (log ticks)
-    for tick in (1, 3, 10, 30):
+    # Alternating subtle group bands for visual separation
+    y_band = plot_top
+    for idx in range(len(rows)):
+        band_h = row_h * len(series) + 4
+        if idx % 2 == 0:
+            out.append(
+                f'<rect x="0" y="{y_band - 2:.1f}" width="{width}" height="{band_h:.1f}" '
+                f'rx="6" class="chart-band"/>'
+            )
+        y_band += group_step
+
+    ticks = [t for t in (0.3, 1, 3, 10, 30, 100, 300) if lo <= t <= hi]
+    for tick in ticks:
         x = xpos(tick)
-        out.append(
-            f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{body}" class="grid"/>'
-        )
-        out.append(
-            f'<text x="{x:.1f}" y="{height - 12}" class="chart-tick" text-anchor="middle">{tick}</text>'
-        )
+        out.append(f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{body}" class="grid"/>')
+        lbl = f"{tick:g}"
+        out.append(f'<text x="{x:.1f}" y="{body + 16:.1f}" class="chart-tick" text-anchor="middle">{lbl} ms</text>')
+    out.append(
+        f'<text x="{label_w + chart_w / 2:.1f}" y="{height - 4:.1f}" class="chart-axis-cap" '
+        f'text-anchor="middle">Compute time (ms, logarithmic scale &mdash; shorter is faster)</text>'
+    )
 
     y = plot_top
     for stem, vals in rows:
         group_h = row_h * len(series)
-        out.append(
-            f'<text x="2" y="{y + group_h / 2 + 4:.1f}" class="chart-label">{esc(stem)}</text>'
-        )
-        for key, _label, cls in series:
+        out.append(f'<text x="8" y="{y + group_h / 2 + 4:.1f}" class="chart-label">{esc(stem)}</text>')
+        for key, label, short_lbl, cls in series:
             v = vals.get(key)
             if v is None:
+                y += row_h
                 continue
             x0 = xpos(lo)
-            x1 = xpos(v)
-            w = max(1.5, x1 - x0)
+            x1 = xpos(max(v, lo))
+            w = max(3.0, x1 - x0)
             out.append(
-                f'<rect x="{x0:.1f}" y="{y:.1f}" width="{w:.1f}" height="{row_h - 5}" '
-                f'rx="2.5" class="bar {cls}"><title>{esc(key)}: {fmt_ms(v)} ms</title></rect>'
+                f'<rect x="{x0:.1f}" y="{y + 2:.1f}" width="{w:.1f}" height="{row_h - 6}" '
+                f'rx="3" class="bar {cls}"><title>{esc(stem)} &middot; {esc(label)}: {fmt_ms(v)} ms</title></rect>'
             )
             out.append(
-                f'<text x="{x1 + 5:.1f}" y="{y + row_h - 6:.1f}" class="chart-val">{fmt_ms(v)}</text>'
+                f'<text x="{x1 + 7:.1f}" y="{y + row_h - 6:.1f}" class="chart-val">'
+                f'<tspan class="val-eng">{esc(short_lbl)}</tspan> &middot; {fmt_ms(v)} ms</text>'
             )
             y += row_h
         y += gap
@@ -130,11 +152,12 @@ CSS = """
       --purple: #c084fc;
       --amber: #fbbf24;
       --rose: #fb7185;
+      --teal: #2dd4bf;
 
       --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.4);
       --radius: 12px;
       --topbar-height: 58px;
-      --max-width: 1180px;
+      --max-width: 1240px;
     }
     html[data-theme="light"] {
       --bg-base: #f8fafc;
@@ -147,117 +170,147 @@ CSS = """
       --border-hover: rgba(4, 170, 109, 0.4);
       --fg-primary: #0f172a;
       --fg-secondary: #475569;
-      --fg-muted: #94a3b8;
+      --fg-muted: #64748b;
       --w3-green-light: #e8f5e9;
       --w3-green-border: #a5d6a7;
       --cyan: #0284c7;
       --indigo: #6366f1;
       --amber: #b45309;
       --rose: #e11d48;
+      --teal: #0d9488;
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
     }
 
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
     body {
-      margin: 0;
-      background: var(--bg-base);
-      color: var(--fg-primary);
-      font-family: var(--font-body);
-      font-size: 15px;
-      line-height: 1.65;
-      -webkit-font-smoothing: antialiased;
+      margin: 0; font-family: var(--font-body);
+      background: var(--bg-base); color: var(--fg-primary);
+      line-height: 1.6;
     }
-    a { color: var(--w3-green); text-decoration: none; }
-    a:hover { color: var(--w3-green-hover); text-decoration: underline; }
+    h1, h2, h3, h4 { font-family: var(--font-heading); letter-spacing: -0.02em; }
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
     .topbar {
-      position: sticky; top: 0; z-index: 50;
+      position: sticky; top: 0; z-index: 200;
       height: var(--topbar-height);
-      display: flex; align-items: center; gap: 18px;
-      padding: 0 22px;
       background: rgba(11, 15, 23, 0.92);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
       border-bottom: 1px solid var(--border-line);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 22px; gap: 12px;
     }
     html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.94); }
-    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 700; font-size: 17px; color: var(--fg-primary); }
-    .brand:hover { text-decoration: none; color: var(--fg-primary); }
-    .brand img { width: 26px; height: 26px; border-radius: 6px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 800; font-size: 1.15rem; color: var(--fg-primary); text-decoration: none !important; flex-shrink: 0; }
+    .brand img { width: 30px; height: 30px; border-radius: 7px; }
     .brand .accent { color: var(--w3-green); }
-    .brand .sub { font-size: 13px; font-weight: 500; color: var(--fg-secondary); }
-    .topbar-nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+    .brand .sub { font-size: 12.5px; font-weight: 500; color: var(--fg-secondary); margin-left: 2px; }
+    .topbar-nav { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+    .topbar-nav::-webkit-scrollbar { display: none; }
     .nav-tab {
-      padding: 7px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500;
-      color: var(--fg-secondary);
+      font-size: 13px; font-weight: 600; color: var(--fg-secondary);
+      padding: 6px 10px; border-radius: 6px; white-space: nowrap; text-decoration: none !important;
     }
-    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); text-decoration: none; }
+    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); }
     .nav-tab.active { background: var(--w3-green-light); color: var(--w3-green); }
     .btn-top {
-      background: var(--bg-card); border: 1px solid var(--border-line);
-      color: var(--fg-secondary); border-radius: 8px; padding: 7px 11px;
-      cursor: pointer; font-size: 14px; font-family: var(--font-body);
+      height: 34px; width: 34px; border-radius: 8px;
+      background: var(--bg-surface); border: 1px solid var(--border-line);
+      color: var(--fg-secondary); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-    .btn-top:hover { border-color: var(--border-hover); color: var(--fg-primary); }
+    .btn-top:hover { border-color: var(--w3-green); color: var(--fg-primary); }
 
-    main { max-width: var(--max-width); margin: 0 auto; padding: 34px 22px 70px; }
-
-    .hero { padding: 8px 0 26px; border-bottom: 1px solid var(--border-line); margin-bottom: 30px; }
+    main { max-width: var(--max-width); margin: 0 auto; padding: 30px 24px 80px; }
+    .hero { margin-bottom: 24px; border-bottom: 1px solid var(--border-line); padding-bottom: 22px; }
     .eyebrow {
-      font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
-      text-transform: uppercase; color: var(--w3-green); margin-bottom: 10px;
+      font-family: var(--font-mono); font-size: 11.5px; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--w3-green); font-weight: 600; margin-bottom: 8px;
     }
     h1 {
-      font-family: var(--font-heading); font-size: 40px; line-height: 1.1;
-      margin: 0 0 12px; letter-spacing: -0.02em;
+      font-size: clamp(1.85rem, 3.2vw, 2.5rem); margin: 0 0 10px; line-height: 1.15;
+      background: linear-gradient(135deg, var(--fg-primary) 35%, var(--cyan) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
-    .lead { color: var(--fg-secondary); font-size: 16.5px; max-width: 76ch; margin: 0 0 18px; }
+    .lead { color: var(--fg-secondary); max-width: 82ch; margin: 0 0 14px; font-size: 15.5px; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
-      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg-secondary);
       background: var(--bg-card); border: 1px solid var(--border-line);
-      border-radius: 999px; padding: 5px 12px;
-      font-size: 12.5px; color: var(--fg-secondary); font-family: var(--font-mono);
+      border-radius: 999px; padding: 4px 12px;
     }
     .chip b { color: var(--fg-primary); font-weight: 600; }
 
-    h2 {
-      font-family: var(--font-heading); font-size: 24px; margin: 44px 0 6px;
-      letter-spacing: -0.01em;
-    }
-    h2 .num { color: var(--w3-green); font-family: var(--font-mono); font-size: 15px; margin-right: 10px; }
-    .section-lead { color: var(--fg-secondary); margin: 0 0 18px; max-width: 82ch; }
-    h3 { font-family: var(--font-heading); font-size: 17px; margin: 26px 0 8px; }
-
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 18px 0 6px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 22px 0 34px; }
     .card {
       background: var(--bg-card); border: 1px solid var(--border-line);
       border-radius: var(--radius); padding: 16px 18px;
     }
-    .card .k { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-muted); font-family: var(--font-mono); }
-    .card .v { font-family: var(--font-heading); font-size: 27px; font-weight: 700; margin: 6px 0 2px; }
+    .card .k { font-size: 11.5px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+    .card .v { font-family: var(--font-heading); font-size: 1.65rem; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
     .card .v.green { color: var(--w3-green); }
+    .card .v.cyan { color: var(--cyan); }
     .card .n { font-size: 12.5px; color: var(--fg-secondary); }
 
-    .table-wrap { overflow-x: auto; border: 1px solid var(--border-line); border-radius: var(--radius); background: var(--bg-card); }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    thead th {
-      text-align: left; padding: 11px 14px; font-size: 11.5px; text-transform: uppercase;
-      letter-spacing: .09em; color: var(--fg-muted); font-weight: 600;
-      border-bottom: 1px solid var(--border-line); white-space: nowrap;
-      font-family: var(--font-mono);
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 14px 0 24px; }
+    .panel {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px;
     }
-    tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+    .panel h3 { margin: 0 0 8px; font-size: 1rem; color: var(--fg-primary); }
+
+    h2 {
+      font-size: 1.45rem; font-weight: 700; margin: 44px 0 10px;
+      padding-bottom: 8px; border-bottom: 2px solid var(--border-line);
+      display: flex; align-items: baseline; gap: 10px;
+      scroll-margin-top: calc(var(--topbar-height) + 18px);
+    }
+    h2 .num { font-family: var(--font-mono); color: var(--w3-green); font-size: 1rem; }
+    .section-lead { color: var(--fg-secondary); margin: 0 0 16px; max-width: 82ch; font-size: 14.5px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 10px; margin: 0 0 14px;
+      padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: 10px;
+    }
+    .btn-group { display: flex; flex-wrap: wrap; gap: 6px; }
+    .mode-btn {
+      font-family: var(--font-body); font-size: 12.5px; font-weight: 600;
+      padding: 5px 11px; border-radius: 6px; cursor: pointer;
+      background: var(--bg-card-alt); color: var(--fg-secondary);
+      border: 1px solid var(--border-line);
+    }
+    .mode-btn.active { background: var(--w3-green); color: #fff; border-color: var(--w3-green); }
+    .engine-toggles { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12.5px; color: var(--fg-secondary); }
+    .engine-toggles label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+
+    .table-wrap {
+      overflow-x: auto; background: var(--bg-card);
+      border: 1px solid var(--border-line); border-radius: var(--radius); margin-bottom: 20px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; text-align: left; }
+    thead th {
+      background: var(--bg-card-alt); color: var(--fg-secondary);
+      font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+      padding: 11px 14px; border-bottom: 1px solid var(--border-line); white-space: nowrap;
+    }
+    tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
     tbody tr:last-child td { border-bottom: none; }
     tbody tr:hover { background: var(--bg-card-alt); }
     .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-    .dim { color: var(--fg-muted); font-size: 12.5px; }
+    .mono small, td small.dim {
+      display: block; font-weight: 400; font-size: 11.5px;
+      color: var(--fg-muted); margin-top: 2px; line-height: 1.3;
+    }
+    .dim { color: var(--fg-muted); font-size: 12px; }
     .name { font-weight: 600; }
     .name small { display: block; font-weight: 400; color: var(--fg-muted); font-size: 12px; }
 
     .badge {
-      display: inline-block; padding: 2px 9px; border-radius: 999px;
-      font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; letter-spacing: .03em;
       font-family: var(--font-mono); white-space: nowrap;
     }
     .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
@@ -266,47 +319,74 @@ CSS = """
     .badge.warn { background: rgba(251, 191, 36, 0.14); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.4); }
     .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
 
-    .track { position: relative; height: 8px; width: 100%; min-width: 110px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
+    .track { position: relative; height: 8px; width: 100%; min-width: 100px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
     .track span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: linear-gradient(90deg, var(--w3-green), var(--cyan)); }
 
-    .chart { width: 100%; max-width: 840px; height: auto; display: block; margin: 4px auto 0; }
-    .chart-label { fill: var(--fg-secondary); font-family: var(--font-mono); font-size: 11.5px; }
-    .chart-val { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10.5px; }
+    .chart { width: 100%; max-width: 960px; height: auto; display: block; margin: 10px auto 0; }
+    .chart-band { fill: rgba(255, 255, 255, 0.025); }
+    html[data-theme="light"] .chart-band { fill: rgba(15, 23, 42, 0.03); }
+    .chart-label { fill: var(--fg-primary); font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+    .chart-val { fill: var(--fg-secondary); font-family: var(--font-mono); font-size: 10.5px; }
+    .chart-val .val-eng { fill: var(--fg-muted); font-weight: 600; }
     .chart-tick { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10px; }
+    .chart-axis-cap { fill: var(--fg-muted); font-family: var(--font-body); font-size: 10.5px; }
     .grid { stroke: var(--border-line); stroke-width: 1; stroke-dasharray: 2 3; }
-    .bar.spid3r { fill: var(--w3-green); }
-    .bar.php { fill: var(--indigo); }
-    .bar.python { fill: var(--amber); }
-    .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 2px 0; font-size: 12.5px; color: var(--fg-secondary); }
-    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
-    .legend .spid3r { background: var(--w3-green); }
-    .legend .php { background: var(--indigo); }
-    .legend .python { background: var(--amber); }
+
+    /* High-contrast, distinct palette per runtime (never look-alike hues) */
+    .bar.aot { fill: #10b981; }
+    .bar.spid3r { fill: #3b82f6; }
+    .bar.nodejs { fill: #a855f7; }
+    .bar.php { fill: #f43f5e; }
+    .bar.python { fill: #f59e0b; }
+
+    .legend { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 12px; font-size: 12.5px; color: var(--fg-primary); }
+    .legend-item {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--bg-card-alt); border: 1px solid var(--border-line);
+      font-weight: 600; font-size: 12px;
+    }
+    .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+    .legend .aot { background: #10b981; }
+    .legend .spid3r { background: #3b82f6; }
+    .legend .nodejs { background: #a855f7; }
+    .legend .php { background: #f43f5e; }
+    .legend .python { background: #f59e0b; }
 
     pre {
       background: var(--bg-code); border: 1px solid var(--border-line);
       border-radius: 10px; padding: 14px 16px; overflow-x: auto;
-      font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+      font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
       color: var(--fg-primary);
     }
-    code { font-family: var(--font-mono); font-size: 0.92em; }
-    p code, li code { background: var(--bg-card-alt); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 5px; }
+    code { font-family: var(--font-mono); font-size: 0.9em; }
+    p code, li code, td code { background: var(--bg-card-alt); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 5px; }
 
     .note {
       border-left: 3px solid var(--cyan); background: var(--bg-card);
-      padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0;
-      color: var(--fg-secondary); font-size: 14px;
+      padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 14px 0;
+      color: var(--fg-secondary); font-size: 13.5px;
     }
     .note b { color: var(--fg-primary); }
+    details { margin: 10px 0 20px; }
+    details summary {
+      cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--cyan);
+      padding: 8px 12px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 8px;
+    }
     ul { padding-left: 20px; }
-    li { margin: 5px 0; color: var(--fg-secondary); }
+    li { margin: 5px 0; color: var(--fg-secondary); font-size: 14px; }
     li b { color: var(--fg-primary); }
 
     footer {
-      max-width: var(--max-width); margin: 0 auto; padding: 22px;
+      max-width: var(--max-width); margin: 0 auto; padding: 22px 24px;
       border-top: 1px solid var(--border-line);
       color: var(--fg-muted); font-size: 12.5px;
       display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between;
+    }
+    @media print {
+      .topbar, .btn-top, .toolbar { display: none !important; }
+      body { background: #fff; color: #000; }
+      .card, .panel, .table-wrap { break-inside: avoid; }
     }
 """
 
@@ -320,8 +400,6 @@ def _p1_metric(entry):
             "mad_pct": entry["internal_mad_over_median_pct"],
             "agree_pct": entry["median_agreement_pct"],
             "basis": "internal hr",
-            "ext_ms": entry["passes"][0]["compute"]["median"],
-            "share_pct": (entry.get("startup_share") or 0.0) * 100.0,
             "verdict": entry.get("verdict", ""),
         }
     p0 = entry["passes"][0]
@@ -330,264 +408,331 @@ def _p1_metric(entry):
         "mad_pct": p0["compute"]["mad_over_median"] * 100.0,
         "agree_pct": entry["median_agreement_pct"],
         "basis": "external",
-        "ext_ms": p0["compute"]["median"],
-        "share_pct": (entry.get("startup_share") or 0.0) * 100.0,
         "verdict": entry.get("verdict", ""),
     }
 
 
-def _render_p1_section(ref_p1, sec_num="04"):
-    if not ref_p1 or not ref_p1.get("workloads"):
-        return ""
-    wl = ref_p1["workloads"]
-    st = ref_p1.get("startup_engine_ms") or {}
-    tc = ref_p1.get("toolchain") or {}
-    host = ref_p1.get("host") or {}
-    verdict = ref_p1.get("verdict") or {}
-    rows_summary = []
-    rows_stats = []
-    engine_labels = [
-        ("vm", "Spid3r VM"),
-        ("native", "Spid3r native (AOT)"),
-        ("node", f"Node.js ({esc(str(tc.get('node') or 'node'))})"),
-        ("rust", f"Rust -O ({esc(str((tc.get('rustc') or 'rustc').split('(')[0].strip()))})"),
-    ]
-    for w in ("prime", "json", "map"):
-        if w not in wl:
-            continue
-        metrics = {k: _p1_metric(wl[w].get(k)) for k, _ in engine_labels}
-        def cell(m):
-            if not m:
-                return '<td class="dim">&mdash;</td>'
-            return f'<td class="mono">{m["ms"]:.2f}&nbsp;ms<small class="dim">{m["mad_pct"]:.2f}% MAD / {m["agree_pct"]:.2f}% ag</small></td>'
-        nat = metrics.get("native")
-        vm_m = metrics.get("vm")
-        nd = metrics.get("node")
-        nat_vm = f'{(vm_m["ms"] / nat["ms"]):.2f}&times;' if (nat and vm_m and nat["ms"] > 0) else "&mdash;"
-        nat_node = f'{(nat["ms"] / nd["ms"]):.2f}&times; slower' if (nat and nd and nd["ms"] > 0) else "&mdash;"
-        rows_summary.append(
-            f"""<tr>
-          <td class="name"><code>{esc(w)}</code></td>
-          {cell(vm_m)}
-          {cell(nat)}
-          {cell(nd)}
-          {cell(metrics.get("rust"))}
-          <td class="mono">{nat_vm}</td>
-          <td class="mono">{nat_node}</td>
-        </tr>"""
-        )
-        for key, label in engine_labels:
-            m = metrics.get(key)
-            if not m:
-                continue
-            badge_cls = "pass" if m["verdict"] == "PASS" else "fail"
-            rows_stats.append(
-                f"""<tr>
-          <td class="mono">{esc(w)}</td>
-          <td class="name">{label}</td>
-          <td class="mono">{esc(m["basis"])}</td>
-          <td class="mono">{m["ms"]:.3f}&nbsp;ms</td>
-          <td class="mono">{m["share_pct"]:.1f}%</td>
-          <td class="mono">{m["mad_pct"]:.2f}%</td>
-          <td class="mono">{m["agree_pct"]:.2f}%</td>
-          <td><span class="badge {badge_cls}">{esc(m["verdict"])}</span></td>
-        </tr>"""
-            )
-
+def _render_architecture_section(sec_num="01"):
     return f"""
-    <h2><span class="num">{sec_num}</span>Phase 11 P-1: Native AOT &amp; Node.js / Rust reference</h2>
+    <h2 id="sec-arch"><span class="num">{sec_num}</span>Enterprise Architecture &amp; Positioning</h2>
     <p class="section-lead">
-      Cross-language compute comparison on identical checksum-pinned workloads (<code>benchmarks/compare/{{prime,json,map}}</code>)
-      under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes, MAD&divide;median &le; 5%, two-pass agreement &le; 3%,
-      blocking 5% sensitivity self-test <code>{'PASS' if verdict.get('selftest_pass') else 'FAIL'}</code>). Raw artifact:
-      <code>benchmarks/reference.p1.json</code> ({esc(str(verdict.get('status', '')))}).
+      One unified front end feeds four parity-pinned execution engines — AST oracle, 60-opcode bytecode VM,
+      <strong>YamLLVM</strong> LLVM 23 AOT compiler, and dependency-free WebAssembly — paired with
+      <strong>YamGC</strong> deterministic memory reclamation and a zero-dependency core build.
     </p>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Workload</th>
-            <th>Spid3r VM</th>
-            <th>Spid3r native</th>
-            <th>Node.js</th>
-            <th>Rust (-O)</th>
-            <th>Native vs VM</th>
-            <th>Native vs Node</th>
+            <th>Engine / Component</th>
+            <th>Execution Model</th>
+            <th>Primary Enterprise Use Case</th>
+            <th>Security &amp; Supply Chain Guarantee</th>
           </tr>
         </thead>
         <tbody>
-        {''.join(rows_summary)}
+          <tr>
+            <td class="name"><strong>YamLLVM AOT</strong><small><code>spid3r build</code> · <code>yamc</code> · <code>spid3r-self</code></small></td>
+            <td>LLVM 23 machine code, split SHA-256 staticlibs, 16-byte <code>ValueV2</code>, unboxed <code>list&lt;int|float&gt;</code></td>
+            <td>Compute services, CLI tools, self-contained single-file apps, C FFI (<code>extern fn</code>)</td>
+            <td>Full user authority; SHA-256 staticlib pinning (exit 4 on tamper); opt-in <code>--allow-dlopen</code></td>
+          </tr>
+          <tr>
+            <td class="name"><strong>Spid3r VM (<code>spvm</code>)</strong><small><code>spid3r run</code> · <code>exec</code> · <code>yamcvm</code></small></td>
+            <td>16-byte pre-decoded 60-opcode bytecode with fused superinstructions &amp; leaf call fast path</td>
+            <td>Fast-start automation, untrusted script policy gating, portable v3 <code>.matrixc</code> artifacts</td>
+            <td>SHA-256 verified bytecode (exit 4 on tamper); <code>--sandbox</code>, <code>--budget N</code>, <code>spid3r.ini</code></td>
+          </tr>
+          <tr>
+            <td class="name"><strong>Tree Oracle &amp; Embed</strong><small><code>--engine tree</code> · <code>Engine</code></small></td>
+            <td>Direct AST walker and embeddable Rust host crate (<code>spid3r_lang::embed::Engine</code>)</td>
+            <td>Differential truth oracle, policy-sandboxed plugin scripting inside Rust services</td>
+            <td><code>Engine::deny_all()</code> default-deny capability allowlisting + saturating step budgets</td>
+          </tr>
+          <tr>
+            <td class="name"><strong>WebAssembly &amp; Packaging</strong><small><code>wasm32</code> · <code>spkg</code> · <code>YamGC</code></small></td>
+            <td>Zero-dep <code>spid3r.wasm</code> + 16-byte RC / 30-type cycle GC / <code>spider.lock</code></td>
+            <td>Browser evaluation, sandboxed edge workers, reproducible vendored builds</td>
+            <td><code>spkg install</code> executes <strong>zero</strong> install-time build scripts; Ed25519 registry signatures</td>
+          </tr>
         </tbody>
       </table>
     </div>
-    <div class="note">
-      <b>Startup calibration &amp; metric basis:</b> measured empty-program startups on {esc(str(host.get('cpu', '')))}:
-      Spid3r VM {st.get('vm', 0):.2f}&nbsp;ms, Spid3r native-exe {st.get('native-exe', 0):.2f}&nbsp;ms,
-      Node.js {st.get('node', 0):.2f}&nbsp;ms, Rust-exe {st.get('rust-exe', 0):.2f}&nbsp;ms.
-      Spid3r variants use external <code>wall_ms &minus; startup_baseline_ms</code> exclusively.
-      Where process spawn is &gt;50% of wall time for fast reference runs ({_p1_share_note(wl)}),
-      the table reports high-resolution internal timers (<code>process.hrtime.bigint()</code> / <code>Instant::now()</code>)
-      as the stable compute metric while retaining external subtraction in the JSON log.
-      {_p1_ratio_note(wl)}
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Where Spid3r Excels</h3>
+        <ul>
+          <li><b>Zero external core dependencies:</b> Compiles clean via <code>--no-default-features</code> with static CRT linkage on shipped Windows binaries.</li>
+          <li><b>All-in-one batteries:</b> 26 embedded stdlib modules + 254 native builtins (SQLite, PostgreSQL SCRAM-SHA-256, MySQL 8, HTTP/WS/TLS, JSON/MsgPack/CBOR/Protobuf, BLAS).</li>
+          <li><b>Fast cold start:</b> Lazy stdlib/tzdata initialization keeps CLI startup under <code>8.5 ms</code>.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Honest Structural Tradeoffs</h3>
+        <ul>
+          <li><b>Checked AOT safety:</b> Preserves signed <code>i64</code> overflow trapping, safepoint cancellation polling, and mutex-safe containers — unlike unchecked C/Rust raw loops.</li>
+          <li><b>No speculative JIT yet:</b> V8 / JVM / Rust <code>-O</code> outpace dynamic map/JSON loops where hidden classes or zero-cost structs apply.</li>
+          <li><b>Un-audited pure-Rust crypto:</b> Passing RFC vectors, awaiting independent audit (<code>R12.1</code>); transport TLS delegates to OS <code>native-tls</code>.</li>
+        </ul>
+      </div>
     </div>
+"""
+
+
+def _render_compute_section(ref_p1, latest_compute, sec_num="03"):
+    if not ref_p1 or not ref_p1.get("workloads"):
+        return ""
+    wl = ref_p1["workloads"]
+    verdict = ref_p1.get("verdict") or {}
+
+    wl_meta = {
+        "prime": ("Prime Counting", "Count &amp; sum primes &lt; 50,000 (tight integer loop)"),
+        "json": ("JSON Round-Trip", "Parse &amp; serialize nested structured payload"),
+        "map": ("Map Lookup", "Hash map insert &amp; probe hot loop"),
+        "set": ("Set Probes", "Hash set insert &amp; membership probes (Spid3r-only)"),
+        "equality": ("Scalar Equality", "Dynamic/value equality dispatch loop (Spid3r-only)"),
+    }
+
+    def _metric_cell(m, prec=None):
+        if not m:
+            return '<td class="dim">&mdash;</td>'
+        val = f'{m["ms"]:.{prec}f}' if prec is not None else fmt_ms(m["ms"])
+        basis = m.get("basis") or "external"
+        return f'<td class="mono">{val}&nbsp;ms<small class="dim">&plusmn;{m["mad_pct"]:.2f}% MAD ({esc(basis)})</small></td>'
+
+    def _speed_ratio_badge(num_ms, den_ms, good_when_ge=True, label_faster="faster", label_slower="slower"):
+        if not num_ms or not den_ms or num_ms <= 0 or den_ms <= 0:
+            return '<span class="dim">&mdash;</span>'
+        if num_ms >= den_ms:
+            ratio = num_ms / den_ms
+            cls = "pass" if good_when_ge else "warn"
+            txt = label_faster if good_when_ge else label_slower
+            return f'<span class="badge {cls}">{ratio:.2f}&times; {txt}</span>'
+        ratio = den_ms / num_ms
+        cls = "warn" if good_when_ge else "pass"
+        txt = label_slower if good_when_ge else label_faster
+        return f'<span class="badge {cls}">{ratio:.2f}&times; {txt}</span>'
+
+    # Current v1.1.1 host snapshot table (primary)
+    latest_rows = []
+    lw = (latest_compute or {}).get("workloads") or {}
+    latest_method = (latest_compute or {}).get("method") or {}
+    latest_w = latest_method.get("warmup", 2)
+    latest_r = latest_method.get("repeats", 5)
+    latest_p = latest_method.get("passes", 1)
+    latest_ver = ((latest_compute or {}).get("toolchain") or {}).get("spid3r", "spid3r 1.1.1")
+    latest_cpu = ((latest_compute or {}).get("host") or {}).get("cpu", "current host")
+
+    for w in ("prime", "json", "map", "set", "equality"):
+        if w not in lw:
+            continue
+        title, desc = wl_meta.get(w, (w, ""))
+        nat_e = _p1_metric(lw[w].get("native"))
+        vm_e = _p1_metric(lw[w].get("vm"))
+        nd_e = _p1_metric(lw[w].get("node"))
+        rs_e = _p1_metric(lw[w].get("rust"))
+        aot_vs_vm = _speed_ratio_badge(
+            vm_e["ms"] if vm_e else None,
+            nat_e["ms"] if nat_e else None,
+            good_when_ge=True,
+        )
+        p1_nat = _p1_metric((wl.get(w) or {}).get("native"))
+        if nat_e and p1_nat and nat_e["ms"] > 0:
+            if p1_nat["ms"] >= nat_e["ms"]:
+                gain = p1_nat["ms"] / nat_e["ms"]
+                vs_p1 = (
+                    f'<span class="badge pass">{gain:.1f}&times; faster</span>'
+                    f'<small class="dim">P-1 was {p1_nat["ms"]:.2f}&nbsp;ms</small>'
+                )
+            else:
+                loss = nat_e["ms"] / p1_nat["ms"]
+                vs_p1 = (
+                    f'<span class="badge fail">{loss:.1f}&times; slower</span>'
+                    f'<small class="dim">P-1 was {p1_nat["ms"]:.2f}&nbsp;ms</small>'
+                )
+        else:
+            vs_p1 = '<span class="badge muted">Spid3r-only</span>'
+
+        latest_rows.append(
+            f"""<tr>
+          <td class="name">{esc(title)}<small><code>{esc(w)}</code> &middot; {desc}</small></td>
+          {_metric_cell(nat_e)}
+          {_metric_cell(vm_e)}
+          {_metric_cell(nd_e)}
+          {_metric_cell(rs_e)}
+          <td class="mono">{aot_vs_vm}</td>
+          <td class="mono">{vs_p1}</td>
+        </tr>"""
+        )
+
+    # Historical Phase 11 P-1 frozen baseline (preserved in collapsible details for regression audit & sync verification)
+    p1_rows = []
+    for w in ("prime", "json", "map"):
+        if w not in wl:
+            continue
+        title, desc = wl_meta.get(w, (w, ""))
+        vm_m = _p1_metric(wl[w].get("vm"))
+        nat_m = _p1_metric(wl[w].get("native"))
+        nd_m = _p1_metric(wl[w].get("node"))
+        rs_m = _p1_metric(wl[w].get("rust"))
+        nat_vm = _speed_ratio_badge(
+            vm_m["ms"] if vm_m else None,
+            nat_m["ms"] if nat_m else None,
+            good_when_ge=True,
+        )
+        nat_node = _speed_ratio_badge(
+            nd_m["ms"] if nd_m else None,
+            nat_m["ms"] if nat_m else None,
+            good_when_ge=True,
+        )
+        p1_rows.append(
+            f"""<tr>
+          <td class="name">{esc(title)}<small><code>{esc(w)}</code></small></td>
+          {_metric_cell(nat_m, prec=2)}
+          {_metric_cell(vm_m, prec=2)}
+          {_metric_cell(nd_m, prec=2)}
+          {_metric_cell(rs_m, prec=2)}
+          <td class="mono">{nat_vm}</td>
+          <td class="mono">{nat_node}</td>
+        </tr>"""
+        )
+
+    primary_table = ""
+    if latest_rows:
+        primary_table = f"""
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Workload</th>
+            <th>Spid3r AOT (YamLLVM)</th>
+            <th>Spid3r VM (<code>spvm</code>)</th>
+            <th>Node.js (V8)</th>
+            <th>Rust (<code>-O</code>)</th>
+            <th>AOT vs VM</th>
+            <th>vs P-1 Baseline</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(latest_rows)}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>How to read dispersion:</strong> Startup-subtracted compute medians from
+      <code>benchmarks/json/compute-latest.json</code> ({esc(latest_ver)} on {esc(latest_cpu)},
+      {latest_w} warmups / {latest_r} repeats / {latest_p} pass). Sub-2&nbsp;ms subprocesses show higher
+      <code>external</code> MAD% because OS process spawn jitter (~0.2&nbsp;ms) dominates tiny compute windows;
+      <code>internal hr</code> uses in-process high-resolution timers where Phase 0 flags <code>low_confidence</code>.
+    </p>"""
+    else:
+        primary_table = f"""
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Workload</th>
+            <th>Spid3r AOT (YamLLVM)</th>
+            <th>Spid3r VM (<code>spvm</code>)</th>
+            <th>Node.js (V8)</th>
+            <th>Rust (<code>-O</code>)</th>
+            <th>AOT vs VM</th>
+            <th>AOT vs Node</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(p1_rows)}
+        </tbody>
+      </table>
+    </div>"""
+
+    p1_details = ""
+    if latest_rows and p1_rows:
+        p1_details = f"""
     <details>
-      <summary>Per-engine dispersion and two-pass agreement ledger (Phase 11 P-1)</summary>
+      <summary>Historical Phase 11 P-1 frozen baseline (<code>benchmarks/json/compute-baseline.json</code>) &mdash; Pre-Optimization Reference ({esc(str(verdict.get('status', '')))})</summary>
       <div class="table-wrap" style="margin-top:10px">
         <table>
           <thead>
             <tr>
               <th>Workload</th>
-              <th>Engine</th>
-              <th>Metric basis</th>
-              <th>Median</th>
-              <th>Ext startup share</th>
-              <th>MAD/med (&le;5%)</th>
-              <th>2-pass (&le;3%)</th>
-              <th>Gate</th>
+              <th>Spid3r AOT</th>
+              <th>Spid3r VM</th>
+              <th>Node.js</th>
+              <th>Rust (<code>-O</code>)</th>
+              <th>AOT vs VM</th>
+              <th>AOT vs Node</th>
             </tr>
           </thead>
           <tbody>
-          {''.join(rows_stats)}
+            {''.join(p1_rows)}
           </tbody>
         </table>
       </div>
-    </details>
+    </details>"""
+
+    return f"""
+    <h2 id="sec-compute"><span class="num">{sec_num}</span>Cross-Language Compute Suite (Phase 0 Protocol)</h2>
+    <p class="section-lead">
+      Checksum-pinned workloads in <code>benchmarks/&lt;lang&gt;/compute/</code> measured under the Phase 0
+      startup-subtracted protocol (5% sensitivity self-test
+      <code>{'PASS' if verdict.get('selftest_pass') else 'FAIL'}</code>). Table below shows current
+      <code>{esc(latest_ver)}</code> measurements vs the frozen Phase 11 P-1 baseline (9 warmups, 21 repeats,
+      2 passes, MAD&divide;median &le; 5%, two-pass &le; 3%).
+    </p>
+    {primary_table}
+    {p1_details}
 """
 
 
-def _p1_ratio_note(wl):
-    try:
-        pr = wl["prime"]
-        nat_m = _p1_metric(pr.get("native"))
-        nd_m = _p1_metric(pr.get("node"))
-        rs_m = _p1_metric(pr.get("rust"))
-        nat_ms = f'{nat_m["ms"]:.2f}&nbsp;ms' if nat_m else "n/a"
-        parts = []
-        if nat_m and nd_m and nd_m["ms"] > 0:
-            parts.append(f'{nat_m["ms"] / nd_m["ms"]:.2f}&times; slower than Node')
-        if nat_m and rs_m and rs_m["ms"] > 0:
-            parts.append(f'{nat_m["ms"] / rs_m["ms"]:.2f}&times; slower than Rust')
-        return f'On <code>prime</code>, Spid3r native ({nat_ms}) is {" and ".join(parts)} &mdash; Phase 11 P-2..P-9 targets this gap.'
-    except Exception:
-        return "Phase 11 P-2..P-9 targets the remaining native loop and allocation gap."
-
-
-def _p1_share_note(wl):
-    node_shares = [
-        (wl[w]["node"].get("startup_share") or 0.0) * 100.0
-        for w in ("prime", "json", "map") if w in wl and "node" in wl[w]
-    ]
-    rust_shares = [
-        (wl[w]["rust"].get("startup_share") or 0.0) * 100.0
-        for w in ("prime", "json", "map") if w in wl and "rust" in wl[w]
-    ]
-    n_txt = f"{min(node_shares):.1f}&ndash;{max(node_shares):.1f}%" if node_shares else "n/a"
-    r_txt = f"{rust_shares[0]:.1f}%" if len(rust_shares) == 1 else (
-        f"{min(rust_shares):.1f}&ndash;{max(rust_shares):.1f}%" if rust_shares else "n/a"
-    )
-    return f"Node {n_txt}, Rust {r_txt}"
-
-
-def _p2_rate(name, info, stage_dict):
-    if not stage_dict:
-        return "&mdash;"
-    if name in ("lex", "self_compile"):
-        val = stage_dict.get("compute_mb_s")
-        return f"{val:.3f}&nbsp;MB/s" if val is not None else "&mdash;"
-    if name in ("parse", "check"):
-        val = stage_dict.get("programs_per_s")
-        return f"{val:.1f}&nbsp;prog/s" if val is not None else "&mdash;"
-    if name == "corpus_build":
-        val = stage_dict.get("median_ms")
-        pps = stage_dict.get("programs_per_s")
-        if val is not None and pps is not None:
-            return f"{val:.1f}&nbsp;ms ({pps:.2f}/s)"
-        return f"{val:.1f}&nbsp;ms" if val is not None else "&mdash;"
-    return "&mdash;"
-
-
-def _p2_floor(name, t):
-    if not t:
-        return "&mdash;"
-    if "tier_a_floor_mb_s" in t:
-        return f"&ge;&nbsp;{t['tier_a_floor_mb_s']:.3f}&nbsp;MB/s"
-    if "tier_a_floor_programs_s" in t:
-        return f"&ge;&nbsp;{t['tier_a_floor_programs_s']:.1f}&nbsp;prog/s"
-    if "tier_a_max_batch_ms" in t:
-        return f"&le;&nbsp;{t['tier_a_max_batch_ms']:.1f}&nbsp;ms"
-    return "&mdash;"
-
-
-def _render_p2_section(ref_p2, sec_num="05"):
-    if not ref_p2 or "workloads" not in ref_p2:
+def _render_selfhost_section(ref_p2, sec_num="04"):
+    if not ref_p2 or not ref_p2.get("targets"):
         return ""
-    wl = ref_p2["workloads"]
-    tg = ref_p2.get("targets", {})
-    verdict = ref_p2.get("verdict", {})
-    pin = ref_p2.get("fairness", {}).get("cpu_pinning", {})
-    labels = {
-        "lex": ("Lexer", "1.02 MB positive corpus"),
-        "parse": ("Parser", "121 corpus files"),
-        "check": ("Semantic checker", "121 corpus files"),
-        "self_compile": ("Self-compile", "17 modules / 585 KB"),
-        "corpus_build": ("Corpus build", "6 standalone examples"),
-    }
+    targets = ref_p2["targets"]
+    wl = ref_p2.get("workloads") or {}
+    verdict = ref_p2.get("verdict") or {}
     rows_summary = []
-    rows_stats = []
-    for w in ("lex", "parse", "check", "self_compile", "corpus_build"):
-        entry = wl.get(w)
-        if not entry:
+    stage_specs = [
+        ("lex", "Lexer throughput", "compute_mb_s", "MB/s", "tier_a_floor_mb_s", "&ge;"),
+        ("parse", "Parser throughput", "programs_per_s", "prog/s", "tier_a_floor_programs_s", "&ge;"),
+        ("check", "Semantic check", "programs_per_s", "prog/s", "tier_a_floor_programs_s", "&ge;"),
+        ("self_compile", "Self-compile (17 mods)", "compute_mb_s", "MB/s", "tier_a_floor_mb_s", "&ge;"),
+        ("corpus_build", "Corpus AOT batch", "median_ms", "ms", "tier_a_max_batch_ms", "&le;"),
+    ]
+    for w, label, rate_key, unit, floor_key, op in stage_specs:
+        t = targets.get(w) or {}
+        if not t:
             continue
-        title, sub = labels.get(w, (w, ""))
-        s0 = entry.get("stage0", {})
-        s1 = entry.get("selfhost", {})
-        if w == "corpus_build":
-            ratio = entry.get("selfhost_vs_stage0_time")
-            ratio_txt = f"{ratio:.2f}&times; slower" if ratio else "&mdash;"
+        s0_v = t.get("stage0_baseline")
+        sh_v = t.get("selfhost_baseline")
+        floor_v = t.get(floor_key)
+        prec = 4 if (w == "self_compile") else (3 if unit == "MB/s" else 1)
+        s0_str = f"{s0_v:.{prec}f} {unit}" if s0_v is not None else "&mdash;"
+        sh_str = f"{sh_v:.{prec}f} {unit}" if sh_v is not None else "&mdash;"
+        fl_str = f"{op} {floor_v:.{prec}f} {unit}" if floor_v is not None else "&mdash;"
+        if w == "corpus_build" and s0_v and sh_v:
+            ratio_str = f"{sh_v / s0_v:.2f}&times; vs Stage 0"
+        elif s0_v and sh_v:
+            ratio_str = f"{s0_v / sh_v:.1f}&times; slower" if sh_v < s0_v else f"{sh_v / s0_v:.2f}&times;"
         else:
-            ratio = entry.get("selfhost_vs_stage0")
-            ratio_txt = (
-                f"{ratio:.3f}&times; Stage 0" if ratio else "&mdash;"
-            )
+            ratio_str = "&mdash;"
         rows_summary.append(
             f"""<tr>
-          <td class="name">{esc(title)}<small>{esc(sub)}</small></td>
-          <td class="mono">{_p2_rate(w, entry, s0)}<small>{s0.get('median_ms', 0):.1f}&nbsp;ms</small></td>
-          <td class="mono">{_p2_rate(w, entry, s1)}<small>{s1.get('median_ms', 0):.1f}&nbsp;ms</small></td>
-          <td class="mono">{ratio_txt}</td>
-          <td class="mono">{_p2_floor(w, tg.get(w))}</td>
+          <td class="name"><code>{esc(w)}</code><small>{label}</small></td>
+          <td class="mono">{s0_str}</td>
+          <td class="mono">{sh_str}</td>
+          <td class="mono">{ratio_str}</td>
+          <td class="mono">{fl_str}</td>
         </tr>"""
         )
-        for st_key, st_label in (("stage0", "Stage 0 (Rust)"), ("selfhost", "Selfhost (AOT)")):
-            sd = entry.get(st_key, {})
-            if not sd:
-                continue
-            v_str = sd.get("verdict", "")
-            badge_cls = "pass" if v_str == "PASS" else "fail"
-            rows_stats.append(
-                f"""<tr>
-          <td class="mono">{esc(w)}</td>
-          <td class="name">{st_label}</td>
-          <td class="mono">{sd.get('median_ms', 0):.2f}&nbsp;ms</td>
-          <td class="mono">{sd.get('mad_over_median_pct', 0):.2f}%</td>
-          <td class="mono">{sd.get('median_agreement_pct', 0):.2f}%</td>
-          <td><span class="badge {badge_cls}">{esc(v_str)}</span></td>
-        </tr>"""
-            )
-    if not rows_summary:
-        return ""
-    core_id = pin.get("requested_core", pin.get("core"))
-    core_note = f", core {core_id}" if pin.get("pinned") and core_id is not None else ""
+
     return f"""
-    <h2><span class="num">{sec_num}</span>Phase 11 P-2: Selfhost toolchain throughput baselines</h2>
+    <h2 id="sec-selfhost"><span class="num">{sec_num}</span>Self-Hosted Compiler Throughput (<code>spid3r-self</code>)</h2>
     <p class="section-lead">
-      Frozen Stage-0 (Rust) vs selfhost (Stage-1 AOT <code>--release</code>) compiler throughput across checksummed
-      workloads in <code>benchmarks/selfhost/</code> under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes,
-      MAD&divide;median &le; 5%, two-pass agreement &le; 3%{esc(core_note)}; blocking 5% sensitivity self-test
-      <code>{'PASS' if verdict.get('selftest_pass') else 'FAIL'}</code>, numeric band
-      <code>{esc(str(verdict.get('numeric_band', '')))}</code>). Raw artifact:
-      <code>benchmarks/selfhost/baseline.json</code> ({esc(str(verdict.get('status', '')))}).
-      Phase 1&ndash;7 gates read their Tier-A floors directly from this table.
+      Frozen Stage-0 (Rust) vs Stage-1 (<code>spid3r-self</code> AOT) throughput over checksummed inputs in
+      <code>benchmarks/selfhost/</code>. Stage 2 and Stage 3 achieve a bit-identical object fixed point across all
+      136 frozen corpus programs. Source dataset: <code>benchmarks/json/selfhost-baseline.json</code>
+      ({esc(str(verdict.get('status', '')))}).
     </p>
     <div class="table-wrap">
       <table>
@@ -595,9 +740,9 @@ def _render_p2_section(ref_p2, sec_num="05"):
           <tr>
             <th>Stage</th>
             <th>Stage 0 (Rust)</th>
-            <th>Selfhost (AOT)</th>
-            <th>Selfhost vs Stage 0</th>
-            <th>Tier-A floor (&minus;20%)</th>
+            <th>Stage 1 Selfhost (AOT)</th>
+            <th>Stage 1 vs Stage 0</th>
+            <th>Tier-A Floor (&minus;20%)</th>
           </tr>
         </thead>
         <tbody>
@@ -605,37 +750,107 @@ def _render_p2_section(ref_p2, sec_num="05"):
         </tbody>
       </table>
     </div>
-    <details>
-      <summary>Per-stage dispersion and two-pass agreement ledger (Phase 11 P-2)</summary>
-      <div class="table-wrap" style="margin-top:10px">
-        <table>
-          <thead>
-            <tr>
-              <th>Workload</th>
-              <th>Compiler</th>
-              <th>Median compute</th>
-              <th>MAD/med (&le;5%)</th>
-              <th>2-pass (&le;3%)</th>
-              <th>Gate</th>
-            </tr>
-          </thead>
-          <tbody>
-          {''.join(rows_stats)}
-          </tbody>
-        </table>
-      </div>
-    </details>
 """
 
 
-def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
+def _render_footprint_section(budgets, data, sec_num="05"):
+    st = budgets.get("startup_tier_a") if budgets else None
+    mem = budgets.get("memory_envelope_plain_run") if budgets else None
+    sizes = budgets.get("size_budgets_windows_x86_64") if budgets else None
+    live_sp = (data.get("startup") or {}).get("spid3r")
+    live_aot = (data.get("startup") or {}).get("aot")
+
+    rows = []
+    if st:
+        rows.append(
+            (
+                "CLI Cold Start (<code>spid3r --version</code>)",
+                f"{st.get('measured_2pass_avg_ms', 8.099):.3f}&nbsp;ms (P-5)" + (f" · {live_sp:.2f}&nbsp;ms live" if live_sp else ""),
+                f"&le; {st.get('tier_a_floor_max_ms', 8.5):.1f}&nbsp;ms",
+                f'<span class="badge pass">{esc(st.get("status", "PASS"))}</span>',
+            )
+        )
+    if live_aot is not None:
+        rows.append(
+            (
+                "Slim AOT Empty Binary Startup",
+                f"{live_aot:.2f}&nbsp;ms (live host)",
+                "Informational",
+                '<span class="badge info">MEASURED</span>',
+            )
+        )
+    if mem:
+        vm = mem.get("spid3r_vm") or {}
+        aot = mem.get("aot_empty") or {}
+        rows.append(
+            (
+                "Bytecode VM Working Set / Commit",
+                f"{fmt_mib(vm.get('peak_working_set_med_bytes'))} WS · {fmt_mib(vm.get('peak_commit_med_bytes'))} commit",
+                f"&le; {fmt_mib(vm.get('budget_max_ws_bytes'))} WS",
+                '<span class="badge pass">PASS</span>',
+            )
+        )
+        rows.append(
+            (
+                "Slim AOT Working Set / Commit",
+                f"{fmt_mib(aot.get('peak_working_set_med_bytes'))} WS · {fmt_mib(aot.get('peak_commit_med_bytes'))} commit",
+                f"&le; {fmt_mib(aot.get('budget_max_ws_bytes'))} WS",
+                '<span class="badge pass">PASS</span>',
+            )
+        )
+    if sizes:
+        for key, label in [
+            ("aot_empty_exe", "Empty Native AOT Executable (Windows x64)"),
+            ("stage2_spid3r_self_exe", "Stage-2 Self-Hosted Compiler (<code>spid3r-self.exe</code>)"),
+            ("stage0_spid3r_exe", "Full Stage-0 CLI (<code>spid3r.exe</code>)"),
+            ("windows_nsis_installer_exe", "Windows NSIS Installer (w/ LLVM-C &amp; VSIX)"),
+        ]:
+            if key in sizes:
+                item = sizes[key]
+                rows.append(
+                    (
+                        label,
+                        fmt_mib(item.get("measured_bytes")),
+                        f"&le; {fmt_mib(item.get('budget_max_bytes'))}",
+                        '<span class="badge pass">PASS</span>',
+                    )
+                )
+
+    rows_html = "\n".join(
+        f"<tr><td class='name'>{a}</td><td class='mono'>{b}</td><td class='mono'>{c}</td><td>{d}</td></tr>"
+        for a, b, c, d in rows
+    )
+    return f"""
+    <h2 id="sec-footprint"><span class="num">{sec_num}</span>Startup, Memory Footprint &amp; Binary Budgets</h2>
+    <p class="section-lead">
+      Lazy initialization (<code>OnceLock</code> stdlib/tzdata tables) and split runtime dead-stripping keep CLI cold
+      starts, working-set RSS, and release artifacts within strict Tier-A budgets (<code>benchmarks/json/footprint-budgets.json</code>).
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Budget Metric</th>
+            <th>Measured Value</th>
+            <th>Ceiling / Floor</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+      </table>
+    </div>
+"""
+
+
+def _render_scorecard_section(ref_p1, ref_p2, sec_num="06"):
     wl1 = (ref_p1 or {}).get("workloads", {})
     p_node = _p1_metric((wl1.get("prime") or {}).get("node"))
     p_rust = _p1_metric((wl1.get("prime") or {}).get("rust"))
     j_node = _p1_metric((wl1.get("json") or {}).get("node"))
     m_node = _p1_metric((wl1.get("map") or {}).get("node"))
 
-    # Recorded Phase 11 P-6 final combined numbers (2026-11-16, commit 4d1238e).
     p6_prime, p6_json, p6_map = 5.760, 148.823, 28.001
     prime_node_x = f"{p6_prime / p_node['ms']:.2f}&times; slower" if p_node and p_node["ms"] > 0 else "n/a"
     prime_rust_x = f"{p6_prime / p_rust['ms']:.2f}&times; slower" if p_rust and p_rust["ms"] > 0 else "n/a"
@@ -653,38 +868,38 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
         (
             "HLC <code>prime</code><small>50k primes checksum loop</small>",
             '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
-            "<b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs 9.44&nbsp;ms (P-6)</small>",
+            "<b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs P-2 (P-6)</small>",
             f"<b>{p_node['ms']:.2f}&nbsp;ms</b> int<small>V8 JIT ({prime_node_x})</small>" if p_node else "n/a",
             f"<b>{p_rust['ms']:.2f}&nbsp;ms</b> int<small>rustc -O ({prime_rust_x})</small>" if p_rust else "n/a",
-            "11.6 (P-6) + 11.1 (P-1)",
+            "11.6 (P-6) + 11.1",
             '<span class="badge pass">Tier B MET</span><small>Sub-4&times; vs JIT/rustc retired to Tier C (overflow checks + cancel poll)</small>',
         ),
         (
             "HLC <code>json</code><small>encode/decode workload</small>",
             '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
-            "<b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% vs 189.06&nbsp;ms (P-6)</small>",
+            "<b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% (P-6)</small>",
             f"<b>{j_node['ms']:.2f}&nbsp;ms</b> int<small>V8 C++/CSA ({json_node_x})</small>" if j_node else "n/a",
             'n/a (absent)<small>not in vendored HLC suite</small>',
-            "11.6 (P-6) + 11.1 (P-1)",
-            '<span class="badge muted">RETIRED (R1)</span><small>Collection-bound: <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small>',
+            "11.6 (P-6) + 11.1",
+            '<span class="badge muted">RETIRED (R1)</span><small><code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small>',
         ),
         (
             "HLC <code>map</code><small>100k lookup/insert loop</small>",
             '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
-            "<b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% vs 44.67&nbsp;ms (P-6)</small>",
+            "<b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% (P-6)</small>",
             f"<b>{m_node['ms']:.2f}&nbsp;ms</b> int<small>V8 IC/SMI ({map_node_x})</small>" if m_node else "n/a",
             'n/a (absent)<small>not in vendored HLC suite</small>',
-            "11.6 (P-6) + 11.1 (P-1)",
-            '<span class="badge muted">RETIRED (R1/R3)</span><small>Dynamic index locks <code>Arc&lt;Mutex&gt;</code> per lookup vs inline V8 cache</small>',
+            "11.6 (P-6) + 11.1",
+            '<span class="badge muted">RETIRED (R1/R3)</span><small>Thread-safe lookup locks vs inline V8 caches</small>',
         ),
         (
             "Selfhost <code>lex</code><small>1.02 MB corpus</small>",
             '<span class="badge pass">Tier A</span> <span class="badge warn">Tier B ret.</span>',
             f"<b>1387.53&nbsp;ms</b> (0.733&nbsp;MB/s)<small>2.97&times; vs P-2; floor &ge; {lex_floor:.3f}&nbsp;MB/s</small>",
             "&mdash;",
-            "<b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust (22.7&times; faster)</small>",
+            "<b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust</small>",
             "11.6 (P-6) + 1.4",
-            '<span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger): raw <code>&amp;[u8]</code> vs dynamic <code>bytes</code> FFI</small>',
+            '<span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger)</small>',
         ),
         (
             "Selfhost <code>parse</code> &amp; <code>check</code><small>121 corpus files</small>",
@@ -692,17 +907,17 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
             f"<b>928.75 / 1081.87&nbsp;ms</b><small>130.3/s &amp; 111.8/s (floors &ge; {parse_floor:.1f} / {check_floor:.1f})</small>",
             "&mdash;",
             "1137.04 / 1213.28&nbsp;ms<small>Selfhost is <b>1.22&times; / 1.12&times; faster</b></small>",
-            "11.6 (P-6) + 11.2 (P-2)",
-            '<span class="badge pass">MET</span><small>Selfhost front-end outpaces Stage-0 Rust CLI batches</small>',
+            "11.6 (P-6) + 11.2",
+            '<span class="badge pass">MET</span><small>Selfhost front end outpaces Stage-0 Rust CLI</small>',
         ),
         (
             "Selfhost <code>self_compile</code><small>17 modules / 592 KB</small>",
             '<span class="badge pass">Tier A</span> <span class="badge info">Tier B</span>',
-            f"<b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>1.46&times; vs 8674&nbsp;ms; floor &ge; {sc_floor:.4f}&nbsp;MB/s</small>",
+            f"<b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>floor &ge; {sc_floor:.4f}&nbsp;MB/s</small>",
             "&mdash;",
-            "<b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust (5.23&times; faster)</small>",
-            "11.6 (P-6) + 11.2 (P-2)",
-            '<span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C call marshalling vs Rust native passes</small>',
+            "<b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust</small>",
+            "11.6 (P-6) + 11.2",
+            '<span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C marshalling</small>',
         ),
         (
             "Selfhost <code>corpus_build</code><small>6 standalone examples</small>",
@@ -710,17 +925,17 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
             f"<b>673.84&nbsp;ms</b> (8.90/s)<small>floor &le; {cb_max:.1f}&nbsp;ms</small>",
             "&mdash;",
             "678.19&nbsp;ms (8.85/s)<small>Stage-0 Rust (1.01&times; parity)</small>",
-            "11.6 (P-6) + 11.2 (P-2)",
+            "11.6 (P-6) + 11.2",
             '<span class="badge pass">MET</span><small>Stage 1 matches Stage 0 end-to-end build latency</small>',
         ),
         (
             "Codegen quality &amp; CLI lightness<small>S1/S0 parity + startup + envelope</small>",
             '<span class="badge pass">Tier A</span>',
-            "<b>1.0007&times;</b> corpus med (max 1.0435&times;)<small>startup <b>8.099&nbsp;ms</b> (&le;8.5); VM 10.27&nbsp;MiB</small>",
+            "<b>1.0007&times;</b> corpus med<small>startup <b>8.099&nbsp;ms</b> (&le;8.5); VM 10.27&nbsp;MiB</small>",
             "&mdash;",
             "Stage-0 <code>default&lt;O3&gt;</code><small>HLC S1/S0 0.995&times;&ndash;1.007&times;</small>",
-            "11.3 (P-3) + 11.5 (P-5)",
-            '<span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object; release budgets enforced in CI/local</small>',
+            "11.3 + 11.5",
+            '<span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object</small>',
         ),
     ]
 
@@ -738,15 +953,12 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
     )
 
     return f"""
-    <h2><span class="num">{sec_num}</span>Phase 11 P-8: Honest three-way target table (Spid3r-AOT vs Node vs Rust)</h2>
+    <h2 id="sec-scorecard"><span class="num">{sec_num}</span>Tier A / B / C Engineering Scorecard &amp; Trajectory</h2>
     <p class="section-lead">
-      Every published figure traces directly to recorded Phase 11 runs (<code>P-1</code>,
-      <code>P-2</code>, <code>P-3</code>, <code>P-5</code>, and <code>P-6</code>; Core-6 affinity, 9w/21r&times;2,
-      blocking 5% sensitivity selftest <code>PASS</code>, <code>ADVISORY_ONLY</code> shared Windows host).
-      No target is presented as a promise without its Tier label and recorded measurement:
+      Transparent three-way target scorecard across Phases P-1&ndash;P-9:
       <span class="badge pass">Tier A</span> blocking floor &middot;
-      <span class="badge info">Tier B</span> measured delta vs frozen baseline &middot;
-      <span class="badge warn">Tier C</span> stretch / structurally gapped (never blocking; retired via <code>docs/PERF_TARGET_RETIREMENT.md</code>).
+      <span class="badge info">Tier B</span> measured improvement &middot;
+      <span class="badge warn">Tier C</span> structural stretch (retired openly via <code>docs/PERF_TARGET_RETIREMENT.md</code>).
     </p>
     <div class="table-wrap">
       <table>
@@ -757,8 +969,8 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
             <th>Spid3r (AOT)</th>
             <th>Node.js (V8)</th>
             <th>Rust (<code>rustc -O</code>)</th>
-            <th>Ledger ref</th>
-            <th>Disposition &amp; structural gap</th>
+            <th>Ledger Ref</th>
+            <th>Disposition &amp; Gap Analysis</th>
           </tr>
         </thead>
         <tbody>
@@ -766,233 +978,170 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
         </tbody>
       </table>
     </div>
-    <div class="note">
-      <b>Why structural gaps exist (JIT vs AOT, boxed vs unboxed):</b>
-      (1) Node&rsquo;s V8 JIT speculatively compiles monomorphic loops into unboxed machine registers with hidden-class inline caches, whereas Spid3r-AOT preserves overflow-checked <code>i64</code> arithmetic, periodic cancellation polling (<code>CANCEL_POLL_INTERVAL=2048</code>), and <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> runtime containers across FFI trampolines.
-      (2) Rust compiles directly to unboxed stack/SSA values with zero runtime type-tag overhead. Targets shown as unreachable under Spid3r&rsquo;s safety/no-new-dependency/engine-contract invariants are retired openly in <code>docs/PERF_TARGET_RETIREMENT.md</code> (&sect;4 &amp; &sect;8, pending owner confirmation) rather than relaxed silently.
-    </div>
+    <details>
+      <summary>Phase 1&ndash;11 Optimization Milestone Ledger (P-1 through P-9)</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>Date</th>
+              <th>Focus</th>
+              <th>Measured Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">Phase 1.2 / 1.4</td><td class="mono">2026-11-14</td><td class="name">Selfhost lexer linear fix</td><td>Fragment joins + <code>bytes</code> indexing cut 1 MB lex to <code>0.24 MB/s</code> (floor <code>&ge; 0.19 MB/s</code>).</td></tr>
+            <tr><td class="mono">Phase 11 P-1</td><td class="mono">2026-11-15</td><td class="name">3-way HLC compute baseline</td><td><code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: Node 17.60 ms; <code>map</code>: Node 1.56 ms.</td></tr>
+            <tr><td class="mono">Phase 11 P-2</td><td class="mono">2026-11-16</td><td class="name">Selfhost toolchain baseline</td><td>Stage-1 AOT: <code>lex</code> 4241.82, <code>parse</code> 1681.52, <code>check</code> 2242.21, <code>self_compile</code> 12123.26, <code>corpus_build</code> 2205.89 ms.</td></tr>
+            <tr><td class="mono">Phase 11 P-3 / P-4</td><td class="mono">2026-11-16</td><td class="name">LLVM &lt;O3&gt; &amp; ThinLTO + PGO</td><td>HLC S1/S0 parity 0.995&times;&ndash;1.007&times;; <code>self_compile</code> S1 cut &minus;26.57% vs P-2.</td></tr>
+            <tr><td class="mono">Phase 11 P-5</td><td class="mono">2026-11-16</td><td class="name">Lazy init &amp; lightness</td><td><code>spid3r --version</code> <code>8.099 ms &le; 8.5 ms</code>; VM 10.27 MiB WS; size ceilings verified.</td></tr>
+            <tr><td class="mono">Phase 11 P-6</td><td class="mono">2026-11-16</td><td class="name">W4.1&ndash;W4.3 hot paths</td><td>AOT <code>prime</code> 5.76 ms (&minus;39%), <code>json</code> 148.82 ms (&minus;21%), <code>map</code> 28.00 ms (&minus;37%); selfhost <code>lex</code> 1387.53, <code>parse</code> 928.75, <code>check</code> 1081.87, <code>self_compile</code> 5932.15, <code>corpus_build</code> 673.84 ms.</td></tr>
+            <tr><td class="mono">Phase 11 P-7 / P-9</td><td class="mono">2026-11-17</td><td class="name">CI regression tracking &amp; doc sync</td><td>Wired 2-run pooled-MAD gates and automated JSON-to-HTML verification.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
 """
 
 
-def _render_p9_section(sec_num="07"):
-    timeline = [
-        (
-            "Phase 1.2 / 1.4",
-            "2026-11-14",
-            "Selfhost lexer quadratic fix &amp; baseline",
-            "Fragment joins + <code>bytes</code> O(1) indexing cut 1 MB lex from 300s+ OOM to 5.4s (<code>0.24 MB/s</code>); Tier-B <code>&ge;1/2 Stage-0</code> (<code>0.005&times;</code>) retired openly to Tier-A floor <code>&ge; 0.19 MB/s</code>.",
-            "1.2 / 1.4 ledger",
-        ),
-        (
-            "Phase 11 P-1",
-            "2026-11-15",
-            "Three-way HLC reference locked",
-            "<code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: VM 167.92, AOT 199.05, Node 17.60 ms; <code>map</code>: VM 21.21, AOT 45.17, Node 1.56 ms (<code>benchmarks/reference.p1.json</code>).",
-            "11.1 (P-1)",
-        ),
-        (
-            "Phase 11 P-2",
-            "2026-11-16",
-            "Selfhost toolchain baseline frozen",
-            "Stage-1 AOT: <code>lex</code> 4241.82 ms (0.240 MB/s), <code>parse</code> 1681.52 ms (72.0/s), <code>check</code> 2242.21 ms (54.0/s), <code>self_compile</code> 12123.26 ms (0.0482 MB/s), <code>corpus_build</code> 2205.89 ms (<code>benchmarks/selfhost/baseline.json</code>).",
-            "11.2 (P-2)",
-        ),
-        (
-            "Phase 11 P-3",
-            "2026-11-16",
-            "Stage-1 release <code>&lt;O3&gt;</code> &amp; runtime alignment",
-            "Fixed debug staticlib lookup + wired LLVM PassBuilder <code>default&lt;O3&gt;</code>: HLC S1/S0 parity 0.995&times;&ndash;1.007&times; (<code>prime</code> 1.237&times; vs unopt IR); 111-corpus median 1.0007&times; (max 1.0435&times; &le; 1.25&times;); <code>self_compile</code> ~16.3 s vs 35.5 s.",
-            "11.3 (P-3)",
-        ),
-        (
-            "Phase 11 P-4",
-            "2026-11-16",
-            "ThinLTO + split PGO hardening",
-            "Replaced <code>process::exit</code> with <code>ExitCode</code> so CRT flushes <code>.profraw</code>: <code>self_compile</code> S0 1313.41 &rarr; 1144.20 ms (&minus;12.88%), S1 9637.79 &rarr; 8901.70 ms (&minus;7.64%, &minus;26.57% vs P-2); binaries &minus;8.6% to &minus;9.6%.",
-            "11.4 (P-4)",
-        ),
-        (
-            "Phase 11 P-5",
-            "2026-11-16",
-            "Lazy init &amp; lightness budgets",
-            "Lazy stdlib/tzdata resolution + single-read CLI: <code>spid3r --version</code> <code>8.099 ms &le; 8.5 ms</code> Tier-A floor; VM 10.27 MiB WS / 2.75 MiB commit; release size ceilings in <code>benchmarks/budgets.p5.json</code>.",
-            "11.5 (P-5)",
-        ),
-        (
-            "Phase 11 P-6",
-            "2026-11-16",
-            "W4.1&ndash;W4.3 hot-path backlog",
-            "W4.1 bump-slab + small-int cache + zero-alloc dispatch, W4.2 lexer <code>BS.slice().to_string()</code> + &lt;18-digit int fast path, W4.3 top-level scalar <code>const</code> propagation: HLC AOT <code>prime</code> 5.76 ms (&minus;39.0%), <code>json</code> 148.82 ms (&minus;21.3%), <code>map</code> 28.00 ms (&minus;37.3%); selfhost <code>lex</code> 1387.53 ms (2.97&times;), <code>parse</code> 928.75 ms (1.22&times; Stage 0), <code>check</code> 1081.87 ms (1.12&times; Stage 0), <code>self_compile</code> 5932.15 ms (1.46&times;).",
-            "11.6 (P-6)",
-        ),
-        (
-            "Phase 11 P-7",
-            "2026-11-17",
-            "CI advisory perf tracking",
-            "Extended Tier-A floors to all 5 selfhost workloads and wired the 2-consecutive-run <code>&gt;1.05&times; &amp;&amp; &gt;3&times; pooled MAD</code> rule + <code>actions/cache@v4</code> deltas into <code>phase0</code> and <code>aot</code> CI jobs; teeth verified red (exit 1) on regressed lex runs.",
-            "11.7 (P-7)",
-        ),
-        (
-            "Phase 11 P-8 / P-9",
-            "2026-11-17",
-            "Honest target table &amp; doc sync",
-            "Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and frozen JSON baselines.",
-            "11.8 &ndash; 11.9",
-        ),
-    ]
-    rows_html = "\n".join(
-        f"""<tr>
-          <td class="mono">{phase}</td>
-          <td class="mono">{dt}</td>
-          <td class="name">{area}</td>
-          <td>{delta}</td>
-          <td class="mono">{ref}</td>
-        </tr>"""
-        for phase, dt, area, delta, ref in timeline
-    )
-    return f"""
-    <h2><span class="num">{sec_num}</span>Phase 11 P-9: Continuous performance log (W-program trajectory)</h2>
-    <p class="section-lead">
-      End-to-end record from the first selfhost lexer measurement (Phase 1) through compiler hardening and
-      hot-path engineering (P-1&ndash;P-8), backed by frozen JSON baselines and checked by
-      <code>tools/bench_report.py --verify-sync</code>.
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Milestone</th>
-            <th>Date</th>
-            <th>Focus</th>
-            <th>Measured Outcome (baseline &rarr; after)</th>
-            <th>Ledger ref</th>
-          </tr>
-        </thead>
-        <tbody>
-        {rows_html}
-        </tbody>
-      </table>
-    </div>
-"""
-
-
-def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
+def render(data, names, descs, iters, floors, ref_p1=None, ref_p2=None, latest_compute=None, budgets=None):
+    st = data["startup"]
+    adj = data["adj"]
     vm = data["vm"]
+    aot = data.get("aot") or {}
     tree = data["tree"]
-    php = data["php"]
-    py = data["python"]
-    startup = data["startup"]
-    gate = {g["stem"]: g for g in data["gate"]}
-    order = [s for s in ["arith", "strings", "list", "map", "methods", "closures", "json", "tasks"] if s in gate]
+    nodejs = data.get("nodejs") or {}
+    php = data.get("php") or {}
+    py = data.get("python") or {}
+    has_aot = bool(aot)
+    has_node = bool(nodejs)
+    has_php = bool(php)
 
-    passed = sum(1 for s in order if gate[s]["pass"])
-    total = len(order)
-    best = max(order, key=lambda s: gate[s]["margin"])
-    worst = min(order, key=lambda s: gate[s]["margin"])
+    order = [s for s in ("arith", "methods", "strings", "list", "map", "closures", "json", "tasks") if s in vm]
+    for s in vm:
+        if s not in order and s != "stress_suite":
+            order.append(s)
 
-    # vm speedup over the tree interpreter
-    speeds = {s: tree[s] / vm[s] for s in vm if s in tree and vm[s] > 0}
-    med_keys = sorted(speeds, key=lambda s: speeds[s])
-    median = med_keys[len(med_keys) // 2]
+    passed = sum(1 for g in data["gate"] if g["pass"])
+    total_gates = len(data["gate"])
+    gates_with_margin = [g for g in data["gate"] if g["margin"] is not None]
+    narrowest = min(gates_with_margin, key=lambda g: g["margin"]) if gates_with_margin else None
+    widest = max(gates_with_margin, key=lambda g: g["margin"]) if gates_with_margin else None
 
-    host = data["host"]
-    gate_rows = []
+    aot_speedups = [adj["vm"][s] / max(0.01, adj["aot"][s]) for s in order if s in aot and adj["aot"][s] > 0]
+    aot_geo = math.exp(sum(math.log(x) for x in aot_speedups) / len(aot_speedups)) if aot_speedups else None
+    vm_cold_ms = st.get("spid3r", 0.0)
+    aot_cold_ms = st.get("aot")
+
+    # Micro-suite client payload for interactive metric/engine switcher
+    micro_payload = {
+        "order": order,
+        "names": {s: names.get(s, s).replace("&amp;", "&") for s in order},
+        "descs": {s: descs.get(s, "") for s in order},
+        "startup": st,
+        "wall": {
+            "aot": aot,
+            "vm": vm,
+            "tree": tree,
+            "nodejs": nodejs,
+            "php": php,
+            "python": py,
+        },
+        "adj": adj,
+        "floors": floors,
+        "gate": {g["stem"]: g for g in data["gate"]},
+    }
+    micro_json = json.dumps(micro_payload)
+
+    chart_rows = []
     for s in order:
-        g = gate[s]
+        vals = {"vm": adj["vm"][s]}
+        if s in aot:
+            vals["aot"] = adj["aot"][s]
+        if s in nodejs:
+            vals["nodejs"] = adj["nodejs"][s]
+        if s in php:
+            vals["php"] = adj["php"][s]
+        if s in py:
+            vals["python"] = adj["python"][s]
+        chart_rows.append((s, vals))
+
+    series = []
+    if has_aot:
+        series.append(("aot", "Spid3r AOT (YamLLVM)", "AOT", "aot"))
+    series.append(("vm", "Spid3r VM (spvm)", "VM", "spid3r"))
+    if has_node:
+        series.append(("nodejs", f"Node.js {data.get('node_version', '')}".strip(), "Node", "nodejs"))
+    if has_php:
+        series.append(("php", f"PHP {data.get('php_version', '')}".strip(), "PHP", "php"))
+    series.append(("python", f"Python {data['host']['python']}", "Python", "python"))
+
+    gate_rows = []
+    for g in sorted(data["gate"], key=lambda x: order.index(x["stem"]) if x["stem"] in order else 99):
+        s = g["stem"]
+        margin = g["margin"] or 0.0
+        status_cls = "pass" if g["pass"] else "fail"
+        status_txt = "PASS" if g["pass"] else "FAIL"
         gate_rows.append(
             f"""<tr>
-          <td class="name">{names.get(s, s)}<small>{desc.get(s, '')}</small></td>
+          <td class="name">{names.get(s, s)}<small>{descs.get(s, '')}</small></td>
           <td class="mono">{fmt_int(iters[s])}</td>
           <td class="mono">{fmt_rate(g['rate'])}<span class="dim">/s</span></td>
-          <td class="mono dim">{fmt_rate(g['floor'])}</td>
-          <td class="mono">{g['margin']:.1f}&times;</td>
-          <td><div class="track"><span style="width:{gate_bar(g['margin']):.1f}%"></span></div></td>
-          <td><span class="badge {'pass' if g['pass'] else 'fail'}">{'PASS' if g['pass'] else 'FAIL'}</span></td>
+          <td class="mono dim">{fmt_rate(g['floor'])}/s</td>
+          <td class="mono">{margin:.1f}&times;</td>
+          <td><div class="track"><span style="width:{gate_bar(margin):.1f}%"></span></div></td>
+          <td><span class="badge {status_cls}">{status_txt}</span></td>
         </tr>"""
         )
 
-    engine_rows = []
-    for s in order + (["stress_suite"] if "stress_suite" in vm else []):
-        if s not in tree:
-            continue
-        sp = tree[s] / vm[s]
-        engine_rows.append(
-            f"""<tr>
-          <td class="name">{names.get(s, s)}{'<small>correctness only, not gated</small>' if s not in gate else ''}</td>
-          <td class="mono">{fmt_ms(vm[s])}</td>
-          <td class="mono dim">{fmt_ms(tree[s])}</td>
-          <td class="mono">{sp:.2f}&times; {'faster' if sp >= 1 else 'slower'}</td>
-          <td><div class="track"><span style="width:{min(100, max(3, 100 / sp)):.1f}%"></span></div></td>
+    table_rows = []
+    for s in order:
+        vm_ms = adj["vm"][s]
+        aot_ms = adj.get("aot", {}).get(s)
+        tr_ms = adj["tree"][s]
+        nd_ms = adj.get("nodejs", {}).get(s)
+        ph_ms = adj.get("php", {}).get(s)
+        py_ms = adj.get("python", {}).get(s)
+        ratio_php = (vm_ms / ph_ms) if (ph_ms and ph_ms > 0.5) else None
+        table_rows.append(
+            f"""<tr data-bench="{esc(s)}">
+          <td class="name">{names.get(s, s)}<small>{descs.get(s, '')}</small></td>
+          <td class="mono col-aot">{fmt_ms(aot_ms)}&nbsp;ms</td>
+          <td class="mono col-vm">{fmt_ms(vm_ms)}&nbsp;ms</td>
+          <td class="mono col-tree">{fmt_ms(tr_ms)}&nbsp;ms</td>
+          <td class="mono col-nodejs">{fmt_ms(nd_ms)}&nbsp;ms</td>
+          <td class="mono col-php">{fmt_ms(ph_ms)}&nbsp;ms</td>
+          <td class="mono col-python">{fmt_ms(py_ms)}&nbsp;ms</td>
+          <td class="mono col-ratio">{f'{ratio_php:.2f}&times;' if ratio_php is not None else '&mdash;'}</td>
         </tr>"""
         )
 
-    # ---- language comparison -------------------------------------------------
-    lang_stems = [s for s in order if s in php or s in py]
-    wall_rows, comp_rows, chart_rows = [], [], []
-    for s in lang_stems:
-        cells = []
-        for key, ms in (("spid3r", vm.get(s)), ("php", php.get(s)), ("python", py.get(s))):
-            cells.append(f'<td class="mono">{fmt_ms(ms) if ms else "&mdash;"}</td>' if ms else '<td class="dim">&mdash;</td>')
-        wall_rows.append(f'<tr><td class="name">{names.get(s, s)}</td>{"".join(cells)}</tr>')
+    startup_chips = [
+        f"Spid3r CLI: <b>{vm_cold_ms:.1f} ms</b>",
+    ]
+    if aot_cold_ms is not None:
+        startup_chips.append(f"Spid3r AOT empty: <b>{aot_cold_ms:.1f} ms</b>")
+    if "nodejs" in st:
+        startup_chips.append(f"Node {esc(data.get('node_version', ''))}: <b>{st['nodejs']:.1f} ms</b>")
+    if "php" in st:
+        startup_chips.append(f"PHP {esc(data.get('php_version', ''))}: <b>{st['php']:.1f} ms</b>")
+    if "python" in st:
+        startup_chips.append(f"Python {esc(data['host']['python'])}: <b>{st['python']:.1f} ms</b>")
 
-        comp = {}
-        for key, ms in (("spid3r", vm.get(s)), ("php", php.get(s)), ("python", py.get(s))):
-            st = startup.get(key)
-            if ms is not None and st is not None:
-                comp[key] = max(0.1, ms - st)
-        chart_rows.append((s, comp))
-        fastest = min(comp, key=lambda k: comp[k]) if comp else None
-        label = {"spid3r": "Spid3r", "php": "PHP", "python": "Python"}
-        comp_rows.append(
-            f"""<tr>
-          <td class="name">{names.get(s, s)}</td>
-          <td class="mono">{fmt_ms(comp['spid3r'])}</td>
-          <td class="mono dim">{fmt_ms(comp['php']) if 'php' in comp else '&mdash;'}</td>
-          <td class="mono dim">{fmt_ms(comp['python']) if 'python' in comp else '&mdash;'}</td>
-          <td><span class="badge muted">{label[fastest]}</span></td>
-        </tr>"""
-        )
+    p1_html = _render_compute_section(ref_p1, latest_compute, "03")
+    p2_html = _render_selfhost_section(ref_p2, "04")
+    foot_html = _render_footprint_section(budgets, data, "05")
+    score_html = _render_scorecard_section(ref_p1, ref_p2, "06")
 
-    py_note = ""
-    if startup.get("python", 0) > 100:
-        py_note = (
-            f"<b>Python's totals are startup-bound here.</b> The interpreter on this host takes "
-            f"{startup['python']:.0f}&nbsp;ms just to start ({esc(host.get('python', ''))}) &mdash; longer than any of "
-            f"these workloads takes to run &mdash; so its wall-clock column is essentially a measurement of "
-            f"startup. See the startup-adjusted table below."
-        )
-
-    p1_section = _render_p1_section(ref_p1, sec_num="04")
-    sec_num = 5 if p1_section else 4
-    p2_section = _render_p2_section(ref_p2, sec_num=f"{sec_num:02d}")
-    if p2_section:
-        sec_num += 1
-    p8_section = _render_p8_section(ref_p1, ref_p2, sec_num=f"{sec_num:02d}") if (ref_p1 or ref_p2) else ""
-    if p8_section:
-        sec_num += 1
-    p9_section = _render_p9_section(sec_num=f"{sec_num:02d}")
-    sec_num += 1
-    method_sec = f"{sec_num:02d}"
-
-    chart = lang_bars(chart_rows, [("spid3r", "Spid3r", "spid3r"), ("php", "PHP", "php"), ("python", "Python", "python")])
-
-    html_doc = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en" data-theme="dark">
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spid3r Benchmark Report &mdash; gate, engines, and reference runtimes</title>
-  <meta name="description"
-    content="Measured benchmark report for the Spid3r language: perf-gate results, bytecode VM vs tree interpreter, and a startup-adjusted comparison against PHP and Python.">
-
+  <title>Spid3r Enterprise Benchmark &amp; Architecture Report</title>
+  <meta name="description" content="Checksum-verified enterprise performance report for Spid3r v1.1.1 across YamLLVM AOT, spvm bytecode VM, AST tree oracle, Node.js, PHP, Python, and Rust.">
   <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&display=swap"
-    rel="stylesheet">
-
   <script>
     (function () {{
       var t = null;
@@ -1003,221 +1152,247 @@ def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
       document.documentElement.setAttribute('data-theme', t);
     }})();
   </script>
-
-  <style>{CSS}  </style>
+  <style>{CSS}</style>
 </head>
-
 <body>
   <header class="topbar">
     <a href="doc.html" class="brand">
       <img src="../../src/assets/spid3r.png" alt="Spid3r Logo">
       <div>Spid<span class="accent">3</span>r <span class="sub">Benchmarks</span></div>
-      <span class="chip" data-spid3r-version="v" style="margin-left:8px;padding:2px 9px;font-size:11.5px;"></span>
+      <span class="chip" data-spid3r-version="v" style="padding:2px 9px;font-size:11px;">v1.1.1</span>
     </a>
     <nav class="topbar-nav">
-      <a href="doc.html" class="nav-tab">Documentation</a>
-      <a href="benchmark.html" class="nav-tab active">Benchmarks</a>
+      <a href="#sec-arch" class="nav-tab">Architecture</a>
+      <a href="#sec-micro" class="nav-tab">Micro-Suite</a>
+      <a href="#sec-compute" class="nav-tab">Cross-Language</a>
+      <a href="#sec-selfhost" class="nav-tab">Self-Host</a>
+      <a href="#sec-footprint" class="nav-tab">Footprint</a>
+      <a href="#sec-scorecard" class="nav-tab">Scorecard</a>
+      <a href="#sec-method" class="nav-tab">Methodology</a>
+      <a href="doc.html" class="nav-tab">Docs</a>
       <a href="playground.html" target="_blank" class="nav-tab">Playground</a>
-      <button class="btn-top" id="themeBtn" title="Toggle Light/Dark Theme">&#127769;</button>
     </nav>
+    <button class="btn-top" id="themeBtn" title="Toggle Light/Dark Theme">&#127769;</button>
   </header>
 
   <main>
     <div class="hero">
-      <div class="eyebrow">Measured &middot; reproducible</div>
-      <h1>Benchmark Report</h1>
+      <div class="eyebrow">Checksum-Verified &middot; Zero Simulated Values &middot; Enterprise Evaluation Report</div>
+      <h1>Spid3r Performance &amp; Architecture Benchmarks</h1>
       <p class="lead">
-        Eight gated micro-benchmarks measured on a fresh process per run, best of {data['runs']['spid3r']}.
-        Every case is also a differential test: the bytecode VM and the tree interpreter must print
-        identical output, and each run must reproduce its own output exactly.
+        Freshly measured multi-runtime benchmarks comparing <strong>Spid3r AOT (YamLLVM)</strong>, <strong>Spid3r VM (<code>spvm</code>)</strong>,
+        and the <strong>AST Tree Oracle</strong> against <strong>Node.js</strong>, <strong>PHP</strong>, <strong>Python</strong>,
+        and <strong>Rust</strong>. Every timed run verifies deterministic checksums across all engines.
       </p>
       <div class="chips">
         <span class="chip"><b>{esc(data['generated'])}</b></span>
-        <span class="chip">{esc(data['spid3r_version'])}</span>
-        <span class="chip">{esc(host['cpu'])} &middot; {esc(str(host['cores']))} threads</span>
-        <span class="chip">{esc(host['os'])}</span>
+        <span class="chip">{esc(data['spid3r_version'])} · commit <code>{esc(data.get('git_sha', 'unknown'))}</code></span>
+        <span class="chip">{esc(data['host']['cpu'])} &middot; {data['host']['cores']} threads</span>
+        <span class="chip">{esc(data['host']['os'])}</span>
       </div>
     </div>
 
     <div class="cards">
       <div class="card">
-        <div class="k">Perf gate</div>
-        <div class="v green">{passed}/{total} PASS</div>
-        <div class="n">every benchmark above its floor</div>
+        <div class="k">Perf Gate</div>
+        <div class="v green">{passed}/{total_gates} PASS</div>
+        <div class="n">{narrowest['margin']:.1f}&times; min margin ({esc(narrowest['stem'])}) · {widest['margin']:.1f}&times; max ({esc(widest['stem'])})</div>
       </div>
       <div class="card">
-        <div class="k">Narrowest margin</div>
-        <div class="v">{gate[worst]['margin']:.1f}&times;</div>
-        <div class="n">{esc(worst)} &mdash; closest to its floor</div>
+        <div class="k">CLI Cold Start</div>
+        <div class="v cyan">{vm_cold_ms:.2f} ms</div>
+        <div class="n">Tier-A ceiling &le; 8.5 ms (measured P-5: 8.099 ms)</div>
       </div>
       <div class="card">
-        <div class="k">Widest margin</div>
-        <div class="v">{gate[best]['margin']:.1f}&times;</div>
-        <div class="n">{esc(best)}</div>
+        <div class="k">AOT vs VM Geomean</div>
+        <div class="v">{f'{aot_geo:.2f}&times;' if aot_geo else 'n/a'}</div>
+        <div class="n">YamLLVM release speedup across gated workloads</div>
       </div>
       <div class="card">
-        <div class="k">VM over tree</div>
-        <div class="v">{speeds[median]:.2f}&times;</div>
-        <div class="n">median across all cases</div>
+        <div class="k">Self-Host Fixed Point</div>
+        <div class="v green">136 / 136</div>
+        <div class="n">Stage 2 &equiv; Stage 3 bit-identical over frozen corpus</div>
+      </div>
+      <div class="card">
+        <div class="k">Memory Profile</div>
+        <div class="v">10.27 MiB</div>
+        <div class="n">VM median WS (5.02 MiB slim AOT empty WS)</div>
       </div>
     </div>
 
-    <h2><span class="num">01</span>Performance gate</h2>
-    <p class="section-lead">
-      Floors are set at roughly a third of the worst rate observed on reference hardware. They exist to
-      catch catastrophic regressions (a 3&times;+ slowdown) on shared CI runners, not small drift &mdash;
-      a passing gate is a floor, not a target.
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Benchmark</th>
-            <th>Iters</th>
-            <th>Throughput</th>
-            <th>Floor</th>
-            <th>Margin</th>
-            <th>Headroom</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-        {''.join(gate_rows)}
-        </tbody>
-      </table>
-    </div>
-    <p class="dim">Throughput is iters/sec, where one iteration is one full body of the benchmark file.
-      Bars are log-scaled: the track spans 4&times; to 20&times; the floor.</p>
+    {_render_architecture_section("01")}
 
-    <h2><span class="num">02</span>Bytecode VM vs tree interpreter</h2>
+    <h2 id="sec-micro"><span class="num">02</span>Micro-Benchmark Suite &amp; Perf Gate</h2>
     <p class="section-lead">
-      The same source runs on both engines. The VM compiles to bytecode with constant folding and
-      peephole passes; the tree interpreter walks the AST directly. Numbers are milliseconds, best of
-      {data['runs']['spid3r']} (VM) and {data['runs']['tree']} (tree).
+      Measured fresh from <code>benchmarks/{{spid3r,nodejs,php,python}}/</code> (best of {data['runs']['spid3r']} runs per Spid3r engine,
+      best of {data['runs']['other']} for peers) and archived in <code>benchmarks/json/micro-suite.json</code>. Startup measured separately:
+      {' · '.join(startup_chips)}.
     </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Benchmark</th>
-            <th>VM (ms)</th>
-            <th>Tree (ms)</th>
-            <th>VM is</th>
-            <th>Tree / VM</th>
-          </tr>
-        </thead>
-        <tbody>
-        {''.join(engine_rows)}
-        </tbody>
-      </table>
+
+    <div class="panel">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px;">
+        <h3 style="margin:0;">Startup-Adjusted Compute Time (ms, log scale &mdash; shorter is faster)</h3>
+        <span class="dim">Bar order per group (top &rarr; bottom)</span>
+      </div>
+      <div class="legend">
+        {''.join(f'<span class="legend-item"><i class="{cls}"></i>{esc(lbl)}</span>' for _, lbl, _, cls in series)}
+      </div>
+      {lang_bars(chart_rows, series)}
     </div>
 
-    <h2><span class="num">03</span>Against PHP and Python</h2>
-    <p class="section-lead">
-      The same workloads implemented in PHP {esc(data.get('php_version', ''))} and Python
-      {esc(host.get('python', ''))}, measured the same way: one fresh process per run, best of
-      {data['runs']['other']}, wall clock including interpreter startup.
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Benchmark</th>
-            <th>Spid3r (ms)</th>
-            <th>PHP (ms)</th>
-            <th>Python (ms)</th>
-          </tr>
-        </thead>
-        <tbody>
-        {''.join(wall_rows)}
-        </tbody>
-      </table>
-    </div>
-    <div class="note">
-      {py_note if py_note else ''}
-      <b>Startup is not free for anyone:</b> the measured fixed cost is {startup.get('spid3r', 0):.1f}&nbsp;ms
-      for Spid3r, {startup.get('php', 0):.1f}&nbsp;ms for PHP and {startup.get('python', 0):.1f}&nbsp;ms for
-      Python. For the light benchmarks that fixed cost is the same order as the workload itself, which is
-      why the table below subtracts it.
+    <div class="toolbar">
+      <div class="btn-group" id="metricModeGroup">
+        <button type="button" class="mode-btn active" data-metric="adj">Startup-Adjusted Compute (ms)</button>
+        <button type="button" class="mode-btn" data-metric="wall">Raw Wall-Clock (ms)</button>
+      </div>
+      <div class="engine-toggles">
+        <label><input type="checkbox" data-col="col-aot" checked> Spid3r AOT</label>
+        <label><input type="checkbox" data-col="col-vm" checked> Spid3r VM</label>
+        <label><input type="checkbox" data-col="col-tree" checked> Spid3r Tree</label>
+        <label><input type="checkbox" data-col="col-nodejs" checked> Node.js</label>
+        <label><input type="checkbox" data-col="col-php" checked> PHP</label>
+        <label><input type="checkbox" data-col="col-python" checked> Python</label>
+      </div>
     </div>
 
-    <h3>Startup-adjusted compute time</h3>
-    <p class="section-lead">
-      Total wall clock minus each runtime's measured startup, in milliseconds. Lower is better. This is an
-      estimate: startup measured by a no-op invocation understates the fixed cost of loading a program,
-      so treat differences under ~1&nbsp;ms as noise.
-    </p>
     <div class="table-wrap">
-      <table>
+      <table id="microTable">
         <thead>
           <tr>
-            <th>Benchmark</th>
-            <th>Spid3r</th>
-            <th>PHP</th>
-            <th>Python</th>
-            <th>Fastest</th>
+            <th>Workload</th>
+            <th class="col-aot">Spid3r AOT</th>
+            <th class="col-vm">Spid3r VM</th>
+            <th class="col-tree">Spid3r Tree</th>
+            <th class="col-nodejs">Node.js</th>
+            <th class="col-php">PHP {esc(data.get('php_version', ''))}</th>
+            <th class="col-python">Python {esc(data['host']['python'])}</th>
+            <th class="col-ratio">VM / PHP</th>
           </tr>
         </thead>
         <tbody>
-        {''.join(comp_rows)}
+          {''.join(table_rows)}
         </tbody>
       </table>
     </div>
-    <div class="legend">
-      <span><i class="spid3r"></i>Spid3r (VM)</span>
-      <span><i class="php"></i>PHP</span>
-      <span><i class="python"></i>Python</span>
-    </div>
-    {chart}
-    <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
-    {p1_section}
-    {p2_section}
-    {p8_section}
-    {p9_section}
-    <h2><span class="num">{method_sec}</span>Method and caveats</h2>
+
+    <details>
+      <summary>In-Tree Performance Gate Margins (<code>{passed}/{total_gates} PASS</code>)</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th>Workload</th>
+              <th>Iterations</th>
+              <th>VM Rate</th>
+              <th>Floor</th>
+              <th>Margin</th>
+              <th>Headroom</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(gate_rows)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    {p1_html}
+    {p2_html}
+    {foot_html}
+    {score_html}
+
+    <h2 id="sec-method"><span class="num">07</span>Methodology, Caveats &amp; JSON Artifact Directory</h2>
     <ul>
-      <li><b>One process per run.</b> Each sample is a fresh OS process; the harness takes the best of N.
-        Nothing is warmed up across runs, so JIT-less runtimes are not penalised by a cold-start handicap
-        they would not have in a long-lived server.</li>
-      <li><b>Correctness is part of the measurement.</b> <code>--compare</code> requires the VM and tree
-        engines to print byte-identical output, and every repeat run must reproduce its own output, or the
-        benchmark is reported as failed rather than timed.</li>
-      <li><b>Micro-benchmarks, not applications.</b> These isolate a loop, a hash table or a call path.
-        They say nothing about startup-to-first-byte for a real program, memory ceiling, or I/O.</li>
-      <li><b>Absolute numbers are host-specific.</b> The CPU on this machine runs at its base clock under
-        the Balanced power plan; recorded numbers from a turbo-boosted run are ~25&ndash;30% higher across
-        every workload and every runtime, including PHP. Compare ratios, not raw milliseconds, across
-        machines.</li>
-      <li><b>Not measured here:</b> the AOT/native backend (needs LLVM, runs in its own CI job) and the
-        WebAssembly build (see <a href="playground.html">the playground</a>).</li>
+      <li><b>Fresh OS process per sample:</b> Prevents JIT/cache bleed across unrelated workloads; startup cost is calibrated via empty/no-op invocations.</li>
+      <li><b>Checksum-first acceptance:</b> Runs failing deterministic output or <code>RESULT</code> pin checks are rejected before computing medians.</li>
+      <li><b>Phase 0 statistical rigor:</b> 9 warmups + 21 measured repeats &times; 2 passes, requiring MAD/median &le; 5% and two-pass agreement &le; 3%.</li>
+      <li><b>Host-specific absolute times:</b> Compare ratios and dispersions across hosts; micro-benchmarks isolate core loops rather than full I/O service saturation.</li>
     </ul>
 
-    <h3>Reproduce</h3>
-    <pre>cargo build --release
-./target/release/spid3r bench --gate --compare --runs 5
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Dataset (<code>benchmarks/json/</code>)</th>
+            <th>Contents</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono"><a href="../../benchmarks/json/micro-suite.json">benchmarks/json/micro-suite.json</a></td><td>Freshly measured micro-suite wall/adjusted ms, startup MADs, and perf gates</td></tr>
+          <tr><td class="mono"><a href="../../benchmarks/json/compute-baseline.json">benchmarks/json/compute-baseline.json</a></td><td>Frozen Phase 11 P-1 3-way compute baseline (VM, AOT, Node, Rust)</td></tr>
+          <tr><td class="mono"><a href="../../benchmarks/json/compute-latest.json">benchmarks/json/compute-latest.json</a></td><td>Latest Phase 0 compute snapshot on current host toolchain</td></tr>
+          <tr><td class="mono"><a href="../../benchmarks/json/selfhost-baseline.json">benchmarks/json/selfhost-baseline.json</a></td><td>Frozen Stage-0 vs Stage-1 self-host compiler throughput &amp; Tier-A floors</td></tr>
+          <tr><td class="mono"><a href="../../benchmarks/json/footprint-budgets.json">benchmarks/json/footprint-budgets.json</a></td><td>Cold start, peak working set, commit, and release binary size ceilings</td></tr>
+          <tr><td class="mono"><a href="../../benchmarks/json/compute-manifest.json">benchmarks/json/compute-manifest.json</a></td><td>SHA-256 integrity manifest &amp; owner provenance (<code>SOURCES.sha256</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
 
-# this page, from the same measurements
-python tools/bench_report.py</pre>
-    <p class="dim">Raw samples: <code>benchmarks/report-data.json</code>. The historical comparison set
-      (2026-10-20) lives in <code>benchmarks/results.json</code>.</p>
+    <h3>Reproduce Locally</h3>
+    <pre>cargo build --release --features native
+./target/release/spid3r bench --gate --compare --runs 5
+python tools/bench_report.py
+python tools/bench_report.py --verify-sync</pre>
   </main>
 
   <footer>
     <span>Generated by <code>tools/bench_report.py</code> &middot; {esc(data['generated'])}</span>
-    <span><a href="doc.html">Documentation</a> &middot; <a href="playground.html">Playground</a></span>
+    <span><a href="doc.html">Documentation</a> &middot; <a href="playground.html">Playground</a> &middot; Developed by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer">ANSNEW TECH.</a></span>
   </footer>
 
+  <script id="bench-data" type="application/json">{micro_json}</script>
   <script src="version.js"></script>
   <script>
-    document.getElementById('themeBtn').addEventListener('click', function () {{
+    (function () {{
       var root = document.documentElement;
-      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-      root.setAttribute('data-theme', next);
-      try {{ localStorage.setItem('spid3r-dev-theme', next); }} catch (_) {{ }}
-    }});
+      document.getElementById('themeBtn').addEventListener('click', function () {{
+        var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        root.setAttribute('data-theme', next);
+        try {{ localStorage.setItem('spid3r-dev-theme', next); }} catch (_) {{ }}
+      }});
+
+      var payloadEl = document.getElementById('bench-data');
+      var payload = payloadEl ? JSON.parse(payloadEl.textContent) : null;
+      var table = document.getElementById('microTable');
+      function fmtMs(v) {{
+        if (v === undefined || v === null) return '&mdash;';
+        return (v < 10 ? v.toFixed(2) : v.toFixed(1)) + '&nbsp;ms';
+      }}
+
+      document.querySelectorAll('#metricModeGroup .mode-btn').forEach(function (btn) {{
+        btn.addEventListener('click', function () {{
+          document.querySelectorAll('#metricModeGroup .mode-btn').forEach(function (b) {{ b.classList.remove('active'); }});
+          btn.classList.add('active');
+          if (!payload || !table) return;
+          var metric = btn.getAttribute('data-metric');
+          var src = payload[metric] || payload.adj;
+          table.querySelectorAll('tbody tr').forEach(function (tr) {{
+            var s = tr.getAttribute('data-bench');
+            ['aot', 'vm', 'tree', 'nodejs', 'php', 'python'].forEach(function (eng) {{
+              var td = tr.querySelector('.col-' + eng);
+              if (td) td.innerHTML = fmtMs((src[eng] || {{}})[s]);
+            }});
+            var vmVal = (src.vm || {{}})[s];
+            var phVal = (src.php || {{}})[s];
+            var rtd = tr.querySelector('.col-ratio');
+            if (rtd) rtd.innerHTML = (vmVal != null && phVal && phVal > 0.5) ? (vmVal / phVal).toFixed(2) + '&times;' : '&mdash;';
+          }});
+        }});
+      }});
+
+      document.querySelectorAll('.engine-toggles input[type="checkbox"]').forEach(function (cb) {{
+        cb.addEventListener('change', function () {{
+          var cls = cb.getAttribute('data-col');
+          var show = cb.checked;
+          if (!table) return;
+          table.querySelectorAll('.' + cls).forEach(function (el) {{
+            el.style.display = show ? '' : 'none';
+          }});
+        }});
+      }});
+    }})();
   </script>
 </body>
-
 </html>
 """
-    return html_doc

@@ -651,7 +651,8 @@ public fn fmt_run_cli(argv) {
     }
 
     if files.len() == 0 {
-        for dir in ["examples", "benchmarks"] {
+        let bench_dir = if is_dir("benchmarks/spid3r") { "benchmarks/spid3r" } else { "benchmarks" };
+        for dir in ["examples", bench_dir] {
             if is_dir(dir) {
                 let r = list_dir(dir);
                 if not r.is_ok() {
