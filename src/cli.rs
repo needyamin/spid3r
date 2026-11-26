@@ -4435,19 +4435,7 @@ fn cmd_tool(args: &[String]) -> Result<i32, Diagnostic> {
                 report.bin_dir.display(),
                 report.bins.join(", ")
             );
-            let on_path = std::env::var_os("PATH").is_some_and(|pv| {
-                std::env::split_paths(&pv).any(|entry| {
-                    let a = entry.to_string_lossy();
-                    let a = a.trim_end_matches(['/', '\\']);
-                    let b = report.bin_dir.to_string_lossy();
-                    let b = b.trim_end_matches(['/', '\\']);
-                    if cfg!(windows) {
-                        a.eq_ignore_ascii_case(b)
-                    } else {
-                        a == b
-                    }
-                })
-            });
+            let on_path = is_dir_on_path(&report.bin_dir, std::env::var_os("PATH").as_deref());
             if !on_path {
                 eprintln!(
                     "note: '{}' is not on your PATH; add it to run `{}` directly",
@@ -4458,6 +4446,9 @@ fn cmd_tool(args: &[String]) -> Result<i32, Diagnostic> {
                         .map(String::as_str)
                         .unwrap_or(&report.package)
                 );
+                if let Some(hint) = state_dir_override_note() {
+                    eprintln!("{}", hint);
+                }
             }
             Ok(EXIT_OK)
         }
@@ -4466,6 +4457,106 @@ fn cmd_tool(args: &[String]) -> Result<i32, Diagnostic> {
             other
         ))),
     }
+}
+
+fn normalize_path_for_cmp(p: &Path) -> String {
+    let raw = p.to_string_lossy();
+    if cfg!(windows) {
+        let mut s = raw.replace('/', "\\");
+        if let Some(rest) = s
+            .strip_prefix(r"\\?\UNC\")
+            .or_else(|| s.strip_prefix(r"\\?\unc\"))
+        {
+            s = format!(r"\\{}", rest);
+        } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            s = stripped.to_string();
+        }
+        let is_unc = s.starts_with(r"\\");
+        let mut collapsed = String::with_capacity(s.len());
+        let mut prev_sep = false;
+        for (idx, ch) in s.chars().enumerate() {
+            if ch == '\\' {
+                if (is_unc && idx < 2) || !prev_sep {
+                    collapsed.push('\\');
+                }
+                prev_sep = true;
+            } else {
+                collapsed.push(ch);
+                prev_sep = false;
+            }
+        }
+        while collapsed.len() > 3 && collapsed.ends_with('\\') {
+            collapsed.pop();
+        }
+        collapsed.to_ascii_lowercase()
+    } else {
+        let mut collapsed = String::with_capacity(raw.len());
+        let mut prev_sep = false;
+        for ch in raw.chars() {
+            if ch == '/' {
+                if !prev_sep {
+                    collapsed.push('/');
+                }
+                prev_sep = true;
+            } else {
+                collapsed.push(ch);
+                prev_sep = false;
+            }
+        }
+        let trimmed = collapsed.trim_end_matches('/');
+        if trimmed.is_empty() && !collapsed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+}
+
+fn is_dir_on_path(dir: &Path, path_env: Option<&std::ffi::OsStr>) -> bool {
+    let Some(pv) = path_env else {
+        return false;
+    };
+    let target_norm = normalize_path_for_cmp(dir);
+    let target_canon = std::fs::canonicalize(dir).ok();
+    std::env::split_paths(pv).any(|entry| {
+        if entry.as_os_str().is_empty() {
+            return false;
+        }
+        if normalize_path_for_cmp(&entry) == target_norm {
+            return true;
+        }
+        if let Some(ref tc) = target_canon {
+            if let Ok(ec) = std::fs::canonicalize(&entry) {
+                return &ec == tc;
+            }
+        }
+        false
+    })
+}
+
+fn state_dir_override_note() -> Option<String> {
+    if std::env::var_os("SPID3R_STATE_DIR").is_some_and(|v| !v.is_empty()) {
+        return Some(
+            "note: tool directory is overridden by the SPID3R_STATE_DIR environment variable"
+                .to_string(),
+        );
+    }
+    if std::env::var_os("SPID3R_PATHS_STATE_DIR").is_some_and(|v| !v.is_empty()) {
+        return Some(
+            "note: tool directory is overridden by the SPID3R_PATHS_STATE_DIR environment variable"
+                .to_string(),
+        );
+    }
+    let cfg = crate::config::snapshot();
+    if cfg.get("paths.state_dir").is_some_and(|v| !v.is_empty()) {
+        if let Some(ref ini_path) = cfg.path {
+            return Some(format!(
+                "note: tool directory comes from paths.state_dir in '{}' (run `spid3r control config reset paths.state_dir` to use the default)",
+                ini_path.display()
+            ));
+        }
+    }
+    None
 }
 
 /// `spid3r info [--json|--html] [--no-redact] [--out <path>]`
@@ -5371,7 +5462,12 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::{differ_report, is_dispatchable_name, normalize_tool_command, CliTool, EXIT_USAGE};
+    use std::path::Path;
+
+    use super::{
+        differ_report, is_dir_on_path, is_dispatchable_name, normalize_tool_command, CliTool,
+        EXIT_USAGE,
+    };
 
     #[test]
     fn cli_tool_from_argv0_handles_paths_case_and_exe() {
@@ -5574,5 +5670,63 @@ mod tests {
             "no blank separator: {:?}",
             msg
         );
+    }
+
+    #[test]
+    fn is_dir_on_path_handles_separators_case_and_empty() {
+        assert!(!is_dir_on_path(Path::new("/tmp/bin"), None));
+        assert!(!is_dir_on_path(
+            Path::new("/tmp/bin"),
+            Some(std::ffi::OsStr::new(""))
+        ));
+
+        if cfg!(windows) {
+            let pv = std::env::join_paths([
+                Path::new(r"C:\Windows\System32"),
+                Path::new(r"C:\Users\Alice\AppData\Local\Spid3r\state\bin\"),
+                Path::new(r"\\server\share\tools\bin"),
+            ])
+            .unwrap();
+            assert!(is_dir_on_path(
+                Path::new("C:/Users/alice//AppData/Local/Spid3r/state\\bin"),
+                Some(pv.as_os_str())
+            ));
+            assert!(is_dir_on_path(
+                Path::new(r"\\?\C:\Users\Alice\AppData\Local\Spid3r\state\bin"),
+                Some(pv.as_os_str())
+            ));
+            assert!(is_dir_on_path(
+                Path::new(r"\\?\UNC\server\share\tools\bin\"),
+                Some(pv.as_os_str())
+            ));
+            assert!(!is_dir_on_path(
+                Path::new(r"C:\Users\Alice\AppData\Local\Spid3r\bin"),
+                Some(pv.as_os_str())
+            ));
+        } else {
+            let pv = std::env::join_paths([
+                Path::new("/usr/bin"),
+                Path::new("/home/alice/.local/state/spid3r/bin/"),
+            ])
+            .unwrap();
+            assert!(is_dir_on_path(
+                Path::new("/home/alice//.local/state/spid3r/bin"),
+                Some(pv.as_os_str())
+            ));
+            assert!(!is_dir_on_path(
+                Path::new("/home/alice/.local/state/spid3r"),
+                Some(pv.as_os_str())
+            ));
+        }
+
+        // Canonicalization fallback matches real paths with dot-segments (`..`).
+        let tmp = std::env::temp_dir();
+        if let Some(parent) = tmp.parent() {
+            if let Some(name) = tmp.file_name() {
+                let via_dotdot = tmp.join("..").join(name);
+                let pv = std::env::join_paths([parent, via_dotdot.as_path()]).unwrap();
+                assert!(is_dir_on_path(&tmp, Some(pv.as_os_str())));
+            }
+        }
     }
 }

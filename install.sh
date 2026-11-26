@@ -24,9 +24,10 @@
 #      ~/.spid3r/bin) so running binaries are replaced cleanly without ETXTBSY.
 #   4. Removes a `stdlib/` directory left by an older version of this script
 #      (the standard library is compiled into the binary now).
-#   5. Adds that directory to your PATH in ~/.bashrc / ~/.zshrc / ~/.profile
-#      (prompts interactively on a TTY unless --modify-path / --no-modify-path
-#      / SPID3R_NO_PATH=1 is set).
+#   5. Adds that directory and the spkg tool bin directory
+#      (${XDG_STATE_HOME:-$HOME/.local/state}/spid3r/bin) to your PATH in
+#      ~/.bashrc / ~/.zshrc / ~/.profile (prompts interactively on a TTY
+#      unless --modify-path / --no-modify-path / SPID3R_NO_PATH=1 is set).
 #   6. Verifies and installs the bundled spid3r-formatter.vsix extension into any
 #      detected VS Code / Cursor / Windsurf / VSCodium CLI on PATH (offline,
 #      skippable via --no-editor-ext or SPID3R_NO_EDITOR_EXT=1).
@@ -55,7 +56,7 @@ if [ "${SPID3R_NO_EDITOR_EXT:-0}" = "1" ]; then
     INSTALL_EDITOR_EXT=0
 fi
 DO_UNINSTALL=0
-INSTALL_DIR="${SPID3R_INSTALL_DIR:-$HOME/.spid3r/bin}"
+INSTALL_DIR="${SPID3R_INSTALL_DIR:-}"
 
 SCRIPT_DIR=""
 case "$0" in
@@ -85,7 +86,7 @@ Options:
   --core                  Source build with zero external dependencies (no LLVM/WebKit)
   --features <feat>       Comma-separated Cargo features (e.g. native,gui)
   --modify-path, -y, --yes
-                          Add install directory to shell PATH without prompting
+                          Add install and spkg tool bin directories to shell PATH without prompting
   --no-modify-path        Do not append PATH exports to shell profiles (or set SPID3R_NO_PATH=1)
   --editor-ext            Install bundled IDE formatter extension into detected editors (default)
   --no-editor-ext         Skip IDE formatter extension install (or set SPID3R_NO_EDITOR_EXT=1)
@@ -99,7 +100,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)          [ $# -ge 2 ] || die "--version needs a value (e.g. 1.1.1)"
                             VERSION="$2"; shift 2 ;;
-        --dir)              [ $# -ge 2 ] || die "--dir needs a value"
+        --dir)              [ $# -ge 2 ] && [ -n "$2" ] || die "--dir needs a value"
                             INSTALL_DIR="$2"; shift 2 ;;
         --source)           FROM_SOURCE=1; shift ;;
         --features)         [ $# -ge 2 ] || die "--features needs a value (e.g. native,gui)"
@@ -115,6 +116,35 @@ while [ $# -gt 0 ]; do
         *)                  die "unknown option: $1 (try --help)" ;;
     esac
 done
+
+strip_trailing_slashes() { # strip_trailing_slashes <path>
+    sts_p="$1"
+    while [ "$sts_p" != "/" ]; do
+        case "$sts_p" in
+            */) sts_p="${sts_p%/}" ;;
+            *)  break ;;
+        esac
+    done
+    printf '%s\n' "$sts_p"
+}
+
+HOME_NORM="$(strip_trailing_slashes "${HOME:-}")"
+if [ "$HOME_NORM" = "/" ]; then
+    HOME_PREFIX=""
+else
+    HOME_PREFIX="$HOME_NORM"
+fi
+if [ -z "$INSTALL_DIR" ]; then
+    INSTALL_DIR="${HOME_PREFIX}/.spid3r/bin"
+else
+    INSTALL_DIR="$(strip_trailing_slashes "$INSTALL_DIR")"
+fi
+STATE_BASE="$(strip_trailing_slashes "${XDG_STATE_HOME:-${HOME_PREFIX}/.local/state}")"
+if [ "$STATE_BASE" = "/" ]; then
+    TOOL_BIN_DIR="/spid3r/bin"
+else
+    TOOL_BIN_DIR="${STATE_BASE}/spid3r/bin"
+fi
 
 fetch() { # fetch <url> <outfile>
     if command -v curl >/dev/null 2>&1; then
@@ -304,20 +334,122 @@ install_editor_extension() { # install_editor_extension [extracted_tar_dir]
 
 path_added=0
 path_already=0
+path_in_rc=0
+
+write_rc_inplace() { # write_rc_inplace <tmp_file> <rc_file>
+    wri_tmp="$1"
+    wri_rc="$2"
+    if [ -w "$wri_rc" ] && cat "$wri_tmp" > "$wri_rc"; then
+        rm -f "$wri_tmp"
+        return 0
+    fi
+    rm -f "$wri_tmp"
+    return 1
+}
+
+rc_has_path_dir() { # rc_has_path_dir <rc_file> <dir>
+    [ -f "$1" ] && [ -n "$2" ] || return 1
+    SPID3R_AWK_DIR="$2" awk '
+        BEGIN {
+            dir = ENVIRON["SPID3R_AWK_DIR"]
+            dlen = length(dir)
+            if (dlen == 0) exit 1
+            sq = sprintf("%c", 39)
+            found = 0
+        }
+        {
+            line = $0
+            code = ""
+            in_sq = 0
+            in_dq = 0
+            n = length(line)
+            for (i = 1; i <= n; i++) {
+                c = substr(line, i, 1)
+                if (c == "\\" && in_dq && i < n) {
+                    code = code substr(line, i, 2)
+                    i++
+                    continue
+                }
+                if (c == sq && !in_dq) {
+                    in_sq = !in_sq
+                } else if (c == "\"" && !in_sq) {
+                    in_dq = !in_dq
+                } else if (c == "#" && !in_sq && !in_dq) {
+                    if (i == 1 || substr(line, i - 1, 1) ~ /[ \t;|&(]/) {
+                        break
+                    }
+                }
+                code = code c
+            }
+            if (code !~ /(^|[ \t;|&(])(PATH|path)[ \t]*[+]?=/) next
+            s = code
+            while ((idx = index(s, dir)) > 0) {
+                pre = (idx == 1) ? "" : substr(s, idx - 1, 1)
+                post = substr(s, idx + dlen, 1)
+                post2 = substr(s, idx + dlen + 1, 1)
+                pre_ok = (pre == "" || pre == ":" || pre == "\"" || pre == sq || pre == "=" || pre == " " || pre == "\t" || pre == "(")
+                post_ok = (post == "" || post == ":" || post == "\"" || post == sq || post == " " || post == "\t" || post == ";" || post == ")" || (post == "/" && (post2 == "" || post2 == ":" || post2 == "\"" || post2 == sq || post2 == " " || post2 == "\t" || post2 == ";" || post2 == ")")))
+                if (pre_ok && post_ok) { found = 1; exit 0 }
+                s = substr(s, idx + 1)
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null
+}
 
 configure_path() {
     if [ "$NO_MODIFY_PATH" -eq 1 ]; then
         return 0
     fi
-    case ":${PATH}:" in
-        *":${INSTALL_DIR}:"*)
-            path_already=1
-            return 0
-            ;;
+
+    cp_need_inst=1
+    cp_need_tool=1
+    case ":${PATH:-}:" in
+        *":${INSTALL_DIR}:"*|*":${INSTALL_DIR}/:"*) cp_need_inst=0 ;;
     esac
+    case ":${PATH:-}:" in
+        *":${TOOL_BIN_DIR}:"*|*":${TOOL_BIN_DIR}/:"*) cp_need_tool=0 ;;
+    esac
+    if [ "$INSTALL_DIR" = "$TOOL_BIN_DIR" ]; then
+        cp_need_tool=0
+    fi
+    if [ "$cp_need_inst" -eq 0 ] && [ "$cp_need_tool" -eq 0 ]; then
+        path_already=1
+        return 0
+    fi
+
+    cp_rc_exists=0
+    cp_any_need_inst=0
+    cp_any_need_tool=0
+    for rc in "${HOME_PREFIX}/.bashrc" "${HOME_PREFIX}/.zshrc" "${HOME_PREFIX}/.profile"; do
+        [ -f "$rc" ] || continue
+        cp_rc_exists=1
+        if [ "$cp_need_inst" -eq 1 ] && ! rc_has_path_dir "$rc" "$INSTALL_DIR"; then
+            cp_any_need_inst=1
+        fi
+        if [ "$cp_need_tool" -eq 1 ] && ! rc_has_path_dir "$rc" "$TOOL_BIN_DIR"; then
+            cp_any_need_tool=1
+        fi
+    done
+    if [ "$cp_rc_exists" -eq 1 ] && [ "$cp_any_need_inst" -eq 0 ] && [ "$cp_any_need_tool" -eq 0 ]; then
+        path_in_rc=1
+        return 0
+    fi
+    if [ "$cp_rc_exists" -eq 0 ]; then
+        cp_any_need_inst="$cp_need_inst"
+        cp_any_need_tool="$cp_need_tool"
+    fi
+
+    if [ "$cp_any_need_inst" -eq 1 ] && [ "$cp_any_need_tool" -eq 1 ]; then
+        cp_prompt_dirs="${INSTALL_DIR} and ${TOOL_BIN_DIR}"
+    elif [ "$cp_any_need_inst" -eq 1 ]; then
+        cp_prompt_dirs="${INSTALL_DIR}"
+    else
+        cp_prompt_dirs="${TOOL_BIN_DIR}"
+    fi
 
     if [ "$MODIFY_PATH_OPT" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
-        printf 'Add %s to PATH in your shell profile (~/.bashrc, ~/.zshrc, ~/.profile)? [Y/n] ' "$INSTALL_DIR"
+        printf 'Add %s to PATH in your shell profile (~/.bashrc, ~/.zshrc, ~/.profile)? [Y/n] ' "$cp_prompt_dirs"
         IFS= read -r cp_reply || cp_reply="y"
         case "$cp_reply" in
             n|N|no|NO|No)
@@ -328,22 +460,66 @@ configure_path() {
     fi
 
     cp_comment='# Spid3r (installed by install.sh)'
-    cp_export="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    cp_exp_inst="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    cp_exp_tool="export PATH=\"${TOOL_BIN_DIR}:\$PATH\""
+    cp_exp_both="export PATH=\"${INSTALL_DIR}:${TOOL_BIN_DIR}:\$PATH\""
 
-    if [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.profile" ]; then
-        touch "$HOME/.profile"
+    if [ ! -f "${HOME_PREFIX}/.bashrc" ] && [ ! -f "${HOME_PREFIX}/.zshrc" ] && [ ! -f "${HOME_PREFIX}/.profile" ]; then
+        touch "${HOME_PREFIX}/.profile"
     fi
 
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    for rc in "${HOME_PREFIX}/.bashrc" "${HOME_PREFIX}/.zshrc" "${HOME_PREFIX}/.profile"; do
         [ -f "$rc" ] || continue
-        if ! grep -qF "$cp_export" "$rc" 2>/dev/null && ! grep -qF "${INSTALL_DIR}" "$rc" 2>/dev/null; then
-            {
-                printf '\n%s\n' "$cp_comment"
-                printf '%s\n' "$cp_export"
-            } >> "$rc"
-            say "PATH updated: added ${INSTALL_DIR} to ${rc}"
-            path_added=1
+        cp_add_inst=0
+        cp_add_tool=0
+        if [ "$cp_need_inst" -eq 1 ] && ! rc_has_path_dir "$rc" "$INSTALL_DIR"; then
+            cp_add_inst=1
         fi
+        if [ "$cp_need_tool" -eq 1 ] && ! rc_has_path_dir "$rc" "$TOOL_BIN_DIR"; then
+            cp_add_tool=1
+        fi
+        if [ "$cp_add_inst" -eq 0 ] && [ "$cp_add_tool" -eq 0 ]; then
+            continue
+        fi
+
+        # Upgrade an existing install.sh single-directory export line in place
+        # so re-installing over an older version adds TOOL_BIN_DIR cleanly
+        # without leaving two separate installer blocks.
+        if [ "$cp_add_inst" -eq 0 ] && [ "$cp_add_tool" -eq 1 ] && grep -qFx -- "$cp_exp_inst" "$rc" 2>/dev/null; then
+            cp_tmp="${rc}.spid3r_path.$$"
+            if SPID3R_AWK_OLD="$cp_exp_inst" SPID3R_AWK_NEW="$cp_exp_both" awk '
+                BEGIN {
+                    old_line = ENVIRON["SPID3R_AWK_OLD"]
+                    new_line = ENVIRON["SPID3R_AWK_NEW"]
+                }
+                $0 == old_line { print new_line; next }
+                { print }
+            ' "$rc" > "$cp_tmp" && write_rc_inplace "$cp_tmp" "$rc"; then
+                say "PATH updated: added ${TOOL_BIN_DIR} to ${rc}"
+                path_added=1
+                continue
+            else
+                rm -f "$cp_tmp"
+            fi
+        fi
+
+        if [ "$cp_add_inst" -eq 1 ] && [ "$cp_add_tool" -eq 1 ]; then
+            cp_export="$cp_exp_both"
+            cp_added_desc="${INSTALL_DIR} and ${TOOL_BIN_DIR}"
+        elif [ "$cp_add_inst" -eq 1 ]; then
+            cp_export="$cp_exp_inst"
+            cp_added_desc="${INSTALL_DIR}"
+        else
+            cp_export="$cp_exp_tool"
+            cp_added_desc="${TOOL_BIN_DIR}"
+        fi
+
+        {
+            printf '\n%s\n' "$cp_comment"
+            printf '%s\n' "$cp_export"
+        } >> "$rc"
+        say "PATH updated: added ${cp_added_desc} to ${rc}"
+        path_added=1
     done
 }
 
@@ -351,18 +527,59 @@ remove_path_from_rc() { # remove_path_from_rc <rc_file>
     rpf_rc="$1"
     [ -f "$rpf_rc" ] || return 0
     rpf_comment='# Spid3r (installed by install.sh)'
-    rpf_export="export PATH=\"${INSTALL_DIR}:\$PATH\""
-    grep -qF "$rpf_comment" "$rpf_rc" 2>/dev/null || grep -qF "$rpf_export" "$rpf_rc" 2>/dev/null || return 0
+    rpf_exp_both="export PATH=\"${INSTALL_DIR}:${TOOL_BIN_DIR}:\$PATH\""
+    rpf_exp_inst="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    rpf_exp_tool="export PATH=\"${TOOL_BIN_DIR}:\$PATH\""
+    if ! grep -qFx -- "$rpf_comment" "$rpf_rc" 2>/dev/null \
+        && ! grep -qFx -- "$rpf_exp_both" "$rpf_rc" 2>/dev/null \
+        && ! grep -qFx -- "$rpf_exp_inst" "$rpf_rc" 2>/dev/null \
+        && ! grep -qFx -- "$rpf_exp_tool" "$rpf_rc" 2>/dev/null; then
+        return 0
+    fi
 
     rpf_tmp="${rpf_rc}.spid3r_uninst.$$"
-    if awk -v cmt="$rpf_comment" -v exp_line="$rpf_export" '
-        $0 == cmt { skip_next = 1; next }
-        skip_next == 1 && $0 == exp_line { skip_next = 0; next }
-        { skip_next = 0 }
-        $0 == exp_line { next }
-        { print }
-    ' "$rpf_rc" > "$rpf_tmp" && mv -f "$rpf_tmp" "$rpf_rc"; then
-        say "Removed Spid3r PATH entry from ${rpf_rc}"
+    if SPID3R_AWK_CMT="$rpf_comment" \
+       SPID3R_AWK_BOTH="$rpf_exp_both" \
+       SPID3R_AWK_INST="$rpf_exp_inst" \
+       SPID3R_AWK_TOOL="$rpf_exp_tool" \
+       awk '
+        BEGIN {
+            cmt = ENVIRON["SPID3R_AWK_CMT"]
+            exp_both = ENVIRON["SPID3R_AWK_BOTH"]
+            exp_inst = ENVIRON["SPID3R_AWK_INST"]
+            exp_tool = ENVIRON["SPID3R_AWK_TOOL"]
+            skip_next = 0
+            removed = 0
+        }
+        {
+            if (skip_next) {
+                skip_next = 0
+                if ($0 == exp_both || $0 == exp_inst || $0 == exp_tool || $0 ~ /^export PATH=".*:\$PATH"$/) {
+                    removed = 1
+                    next
+                }
+                print cmt
+            }
+            if ($0 == cmt) {
+                skip_next = 1
+                next
+            }
+            if ($0 == exp_both || $0 == exp_inst || $0 == exp_tool) {
+                removed = 1
+                next
+            }
+            print
+        }
+        END {
+            if (skip_next) {
+                print cmt
+            }
+            exit(removed ? 0 : 2)
+        }
+    ' "$rpf_rc" > "$rpf_tmp"; then
+        if write_rc_inplace "$rpf_tmp" "$rpf_rc"; then
+            say "Removed Spid3r PATH entry from ${rpf_rc}"
+        fi
     else
         rm -f "$rpf_tmp"
     fi
@@ -401,7 +618,7 @@ do_uninstall() {
             ;;
     esac
 
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    for rc in "${HOME_PREFIX}/.bashrc" "${HOME_PREFIX}/.zshrc" "${HOME_PREFIX}/.profile"; do
         remove_path_from_rc "$rc"
     done
 
@@ -421,6 +638,10 @@ print_post_install_hint() {
         say "Open a new terminal (or run: source ~/.bashrc) and then try:"
     elif [ "$path_already" -eq 1 ]; then
         say "PATH already configured. Try:"
+    elif [ "$path_in_rc" -eq 1 ]; then
+        say "PATH already configured in your shell profile. Open a new terminal (or run: source ~/.bashrc) and then try:"
+    elif [ "$TOOL_BIN_DIR" != "$INSTALL_DIR" ]; then
+        say "PATH was not modified. Add ${INSTALL_DIR} and ${TOOL_BIN_DIR} to PATH or run ${INSTALL_DIR}/spid3r:"
     else
         say "PATH was not modified. Add ${INSTALL_DIR} to PATH or run ${INSTALL_DIR}/spid3r:"
     fi
@@ -434,8 +655,11 @@ print_post_install_hint() {
     if [ -n "${GITHUB_PATH-}" ]; then
         say ""
         say "GitHub Actions detected: ${INSTALL_DIR} is not on PATH for the current step."
-        say "To expose it to subsequent steps of this job, run before the next step:"
+        say "To expose Spid3r and spkg tools to subsequent steps of this job, run before the next step:"
         say "    echo \"${INSTALL_DIR}\" >> \"\$GITHUB_PATH\""
+        if [ "$TOOL_BIN_DIR" != "$INSTALL_DIR" ]; then
+            say "    echo \"${TOOL_BIN_DIR}\" >> \"\$GITHUB_PATH\""
+        fi
     fi
 }
 

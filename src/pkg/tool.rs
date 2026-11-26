@@ -26,12 +26,22 @@ pub struct InstalledTool {
     pub bins: Vec<String>,
 }
 
+fn normalize_state_root(p: PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        let s = p.to_string_lossy();
+        if s.contains('/') {
+            return PathBuf::from(s.replace('/', "\\"));
+        }
+    }
+    p
+}
+
 pub fn tools_root() -> PathBuf {
-    crate::config::state_dir().join("tools")
+    normalize_state_root(crate::config::state_dir()).join("tools")
 }
 
 pub fn tool_bin_dir() -> PathBuf {
-    crate::config::state_dir().join("bin")
+    normalize_state_root(crate::config::state_dir()).join("bin")
 }
 
 fn compile_tool_entry(

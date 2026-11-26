@@ -2626,3 +2626,343 @@ fn yanked_latest_skipped_local_audit_remove_dev_and_json_escape() {
     assert_eq!(rc, 0, "remove dev-dep failed: {re}");
     assert!(!p.read("spider.toml").contains("devx ="));
 }
+
+#[test]
+fn tool_install_path_note_override_hint_and_nsis_bin_parity() {
+    let p = Project::new("tool_path_hint");
+    p.write_sibling(
+        "pathprobe/spider.toml",
+        "[package]\nname = \"pathprobe\"\nversion = \"0.1.0\"\n\n[bin]\npathprobe = \"src/cli.matrix\"\n",
+    );
+    p.write_sibling("pathprobe/src/cli.matrix", "fn main() { return 0; }\n");
+    let pkg_dir = p.base.join("pathprobe");
+
+    // 1. INI sets paths.state_dir (with forward slashes, like `phase4_paths`),
+    //    and bin_dir is NOT on PATH -> prints clean native separators on Windows,
+    //    the PATH note, and the INI provenance hint using `control config reset`.
+    let state_ini = p.base.join("state_from_ini");
+    let state_ini_fwd = state_ini.to_string_lossy().replace('\\', "/");
+    let ini = p.base.join("custom.ini");
+    std::fs::write(&ini, format!("[paths]\nstate_dir = {}\n", state_ini_fwd)).unwrap();
+
+    let out1 = Command::new(bin())
+        .args([
+            "tool",
+            "install",
+            "pathprobe",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+        ])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &ini)
+        .env_remove("SPID3R_STATE_DIR")
+        .env_remove("SPID3R_PATHS_STATE_DIR")
+        .env("PATH", "")
+        .output()
+        .expect("spawn");
+    assert!(
+        out1.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    let stdout1 = String::from_utf8_lossy(&out1.stdout);
+    let err1 = String::from_utf8_lossy(&out1.stderr);
+    if cfg!(windows) {
+        assert!(
+            !stdout1.contains('/') && !err1.contains("state/bin") && !err1.contains("/state\\bin"),
+            "Windows tool output must use native separators: stdout={stdout1} stderr={err1}"
+        );
+    }
+    assert!(
+        err1.contains("is not on your PATH"),
+        "expected PATH note: {err1}"
+    );
+    assert!(
+        err1.contains("paths.state_dir")
+            && err1.contains("custom.ini")
+            && err1.contains("spid3r control config reset paths.state_dir"),
+        "expected INI provenance hint with cross-shell reset command: {err1}"
+    );
+
+    // 2. Same INI state_dir (forward slashes), now WITH bin_dir on PATH
+    //    (native separators) -> PATH note must be suppressed.
+    let bin_native = state_ini.join("bin");
+    let path_with_bin = std::env::join_paths([&bin_native]).unwrap();
+    let out2 = Command::new(bin())
+        .args([
+            "tool",
+            "install",
+            "pathprobe",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+            "--force",
+        ])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &ini)
+        .env_remove("SPID3R_STATE_DIR")
+        .env_remove("SPID3R_PATHS_STATE_DIR")
+        .env("PATH", &path_with_bin)
+        .output()
+        .expect("spawn");
+    assert!(
+        out2.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let err2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        !err2.contains("is not on your PATH"),
+        "bin_dir is on PATH; unexpected warning: {err2}"
+    );
+
+    // 2b. On Windows, an 8.3 short path in PATH matches the long `bin_dir` via canonicalization.
+    if cfg!(windows) {
+        if let Ok(short_out) = Command::new("cmd")
+            .args([
+                "/c",
+                &format!("for %I in (\"{}\") do @echo %~sI", bin_native.display()),
+            ])
+            .output()
+        {
+            let short_str = String::from_utf8_lossy(&short_out.stdout)
+                .trim()
+                .to_string();
+            if !short_str.is_empty() && Path::new(&short_str).is_dir() {
+                let path_short = std::env::join_paths([Path::new(&short_str)]).unwrap();
+                let out_short = Command::new(bin())
+                    .args([
+                        "tool",
+                        "install",
+                        "pathprobe",
+                        "--path",
+                        pkg_dir.to_str().unwrap(),
+                        "--force",
+                    ])
+                    .current_dir(&p.root)
+                    .env("SPID3R_INI", &ini)
+                    .env_remove("SPID3R_STATE_DIR")
+                    .env_remove("SPID3R_PATHS_STATE_DIR")
+                    .env("PATH", &path_short)
+                    .output()
+                    .expect("spawn");
+                assert!(out_short.status.success());
+                let err_short = String::from_utf8_lossy(&out_short.stderr);
+                assert!(
+                    !err_short.contains("is not on your PATH"),
+                    "8.3 short PATH entry '{short_str}' must match '{}': {err_short}",
+                    bin_native.display()
+                );
+            }
+        }
+    }
+
+    // 2c. Executing the hinted reset command actually clears `paths.state_dir`.
+    let reset_out = Command::new(bin())
+        .args(["control", "config", "reset", "paths.state_dir"])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &ini)
+        .env_remove("SPID3R_STATE_DIR")
+        .env_remove("SPID3R_PATHS_STATE_DIR")
+        .output()
+        .expect("spawn");
+    assert!(
+        reset_out.status.success(),
+        "control config reset failed: out={} err={}",
+        String::from_utf8_lossy(&reset_out.stdout),
+        String::from_utf8_lossy(&reset_out.stderr)
+    );
+    let get_after = Command::new(bin())
+        .args(["config", "get", "paths.state_dir"])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &ini)
+        .env_remove("SPID3R_STATE_DIR")
+        .env_remove("SPID3R_PATHS_STATE_DIR")
+        .output()
+        .expect("spawn");
+    assert!(get_after.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&get_after.stdout).trim(),
+        "",
+        "paths.state_dir must be empty after reset"
+    );
+
+    // 3. Env overrides (`SPID3R_STATE_DIR` and `SPID3R_PATHS_STATE_DIR`) not on PATH
+    //    -> mention the exact overriding variable name.
+    let state_env = p.base.join("state_from_env");
+    let empty_ini = p.base.join("empty.ini");
+    std::fs::write(&empty_ini, "").unwrap();
+    let out3 = Command::new(bin())
+        .args([
+            "tool",
+            "install",
+            "pathprobe",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+        ])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &empty_ini)
+        .env("SPID3R_STATE_DIR", &state_env)
+        .env_remove("SPID3R_PATHS_STATE_DIR")
+        .env("PATH", "")
+        .output()
+        .expect("spawn");
+    assert!(
+        out3.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out3.stderr)
+    );
+    let err3 = String::from_utf8_lossy(&out3.stderr);
+    assert!(
+        err3.contains("SPID3R_STATE_DIR"),
+        "expected SPID3R_STATE_DIR provenance hint: {err3}"
+    );
+
+    let state_env2 = p.base.join("state_from_paths_env");
+    let out4 = Command::new(bin())
+        .args([
+            "tool",
+            "install",
+            "pathprobe",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+        ])
+        .current_dir(&p.root)
+        .env("SPID3R_INI", &empty_ini)
+        .env_remove("SPID3R_STATE_DIR")
+        .env("SPID3R_PATHS_STATE_DIR", &state_env2)
+        .env("PATH", "")
+        .output()
+        .expect("spawn");
+    assert!(
+        out4.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out4.stderr)
+    );
+    let err4 = String::from_utf8_lossy(&out4.stderr);
+    assert!(
+        err4.contains("SPID3R_PATHS_STATE_DIR"),
+        "expected SPID3R_PATHS_STATE_DIR provenance hint: {err4}"
+    );
+
+    // 4. Windows NSIS installer PATH must match Windows default `tool_bin_dir()`
+    //    (`%LOCALAPPDATA%\Spid3r\state\bin`), never add `$LOCALAPPDATA\Spid3r\bin`,
+    //    wrap PowerShell `$parts = @(...)` (avoiding scalar string concatenation),
+    //    and preserve `REG_EXPAND_SZ`.
+    let nsi = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/nsis/spid3r.nsi"),
+    )
+    .expect("read packaging/nsis/spid3r.nsi");
+    assert!(
+        nsi.contains(r#"$LOCALAPPDATA\Spid3r\state\bin"#),
+        "NSIS installer must add $LOCALAPPDATA\\Spid3r\\state\\bin to PATH"
+    );
+    assert!(
+        !nsi.contains("Push \"$LOCALAPPDATA\\Spid3r\\bin\"\n  Call ${UN}SafeAddDirToPath")
+            && !nsi.contains("Push \"$LOCALAPPDATA\\Spid3r\\bin\"\r\n  Call ${UN}SafeAddDirToPath"),
+        "NSIS installer must not add the wrong $LOCALAPPDATA\\Spid3r\\bin directory"
+    );
+    assert!(
+        nsi.contains("$$parts = @($$cur -split ';'")
+            && nsi.contains("DoNotExpandEnvironmentNames")
+            && nsi.contains("RegistryValueKind]::ExpandString"),
+        "NSIS PowerShell PATH fallback must force array wrapping and preserve REG_EXPAND_SZ"
+    );
+
+    // 5. Unix `install.sh` must have the same `spkg tool` PATH parity:
+    //    add and remove `${XDG_STATE_HOME:-$HOME/.local/state}/spid3r/bin`
+    //    alongside `${INSTALL_DIR}`, and pass POSIX `sh -n`.
+    let install_sh_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let install_sh = std::fs::read_to_string(&install_sh_path).expect("read install.sh");
+    assert!(
+        install_sh.contains("${XDG_STATE_HOME:-$HOME/.local/state}")
+            && install_sh.contains("${XDG_STATE_HOME:-${HOME_PREFIX}/.local/state}")
+            && install_sh.contains("TOOL_BIN_DIR=")
+            && install_sh.contains("/spid3r/bin")
+            && install_sh.contains("${INSTALL_DIR}:${TOOL_BIN_DIR}")
+            && install_sh.contains("rpf_exp_both=")
+            && install_sh.contains("rpf_exp_tool=")
+            && install_sh.contains("write_rc_inplace"),
+        "install.sh must add and remove the default XDG spkg tool bin dir"
+    );
+
+    #[cfg(unix)]
+    {
+        let syntax = Command::new("sh")
+            .args(["-n", install_sh_path.to_str().unwrap()])
+            .output()
+            .expect("spawn sh -n");
+        assert!(
+            syntax.status.success(),
+            "sh -n install.sh failed: {}",
+            String::from_utf8_lossy(&syntax.stderr)
+        );
+
+        let fake_home = p.base.join("unix_home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let bashrc = fake_home.join(".bashrc");
+        std::fs::write(
+            &bashrc,
+            format!(
+                "export KEEP_USER=1\nalias spdir=\"cd {home}/.local/state/spid3r/bin\"\nexport OTHER=1 # {home}/.spid3r/bin\n",
+                home = fake_home.display()
+            ),
+        )
+        .unwrap();
+
+        let probe = format!(
+            "set -eu\n\
+             lib=\"{tmp}/lib.sh\"\n\
+             awk '/^if \\[ \"\\$DO_UNINSTALL\" -eq 1 \\]; then/ {{ exit }} {{ print }}' \"{src}\" > \"$lib\"\n\
+             unset XDG_STATE_HOME SPID3R_INSTALL_DIR SPID3R_NO_PATH\n\
+             export HOME=\"{home}/\"\n\
+             export PATH=\"/usr/bin:/bin\"\n\
+             set -- --modify-path\n\
+             . \"$lib\"\n\
+             configure_path\n\
+             configure_path\n",
+            tmp = p.base.display(),
+            src = install_sh_path.display(),
+            home = fake_home.display(),
+        );
+        let run_cfg = Command::new("sh")
+            .args(["-c", &probe])
+            .output()
+            .expect("run install.sh configure_path");
+        assert!(
+            run_cfg.status.success(),
+            "configure_path probe failed: {}",
+            String::from_utf8_lossy(&run_cfg.stderr)
+        );
+        let rc_after = std::fs::read_to_string(&bashrc).unwrap();
+        let expected_line = format!(
+            "export PATH=\"{home}/.spid3r/bin:{home}/.local/state/spid3r/bin:$PATH\"",
+            home = fake_home.display()
+        );
+        assert_eq!(
+            rc_after.lines().filter(|l| *l == expected_line).count(),
+            1,
+            "expected exactly one combined PATH export in .bashrc:\n{rc_after}"
+        );
+
+        let uninst = Command::new("sh")
+            .args([install_sh_path.to_str().unwrap(), "--uninstall"])
+            .env("HOME", &fake_home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("SPID3R_INSTALL_DIR")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("run install.sh --uninstall");
+        assert!(
+            uninst.status.success(),
+            "install.sh --uninstall failed: {}",
+            String::from_utf8_lossy(&uninst.stderr)
+        );
+        let rc_uninst = std::fs::read_to_string(&bashrc).unwrap();
+        assert!(rc_uninst.contains("export KEEP_USER=1"), "{rc_uninst}");
+        assert!(
+            !rc_uninst.contains(&expected_line)
+                && !rc_uninst.contains("# Spid3r (installed by install.sh)"),
+            "uninstall left spid3r PATH entry behind:\n{rc_uninst}"
+        );
+    }
+}
