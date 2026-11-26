@@ -127,6 +127,7 @@ impl Capability {
                 "is_file",
                 "file_size",
                 "file_mtime",
+                "cwd",
                 "chdir",
                 "exe_path",
                 "dir_create",
@@ -148,6 +149,8 @@ impl Capability {
                 "file_lock",
                 "file_unlock",
                 "file_close",
+                "db_open",
+                "config_reload",
             ],
             Capability::Process => &[
                 "spawn_process",
@@ -195,8 +198,22 @@ impl Capability {
                 "http_write_response_chunk",
                 "http_fetch",
                 "__http_fetch",
+                "pg_connect",
+                "pg_query",
+                "pg_exec",
+                "pg_close",
+                "mysql_connect",
+                "mysql_query",
+                "mysql_exec",
+                "mysql_close",
             ],
-            Capability::Environment => &["env", "env_set"],
+            Capability::Environment => &[
+                "env",
+                "env_set",
+                "spid3rinfo",
+                "config_set",
+                "config_reload",
+            ],
         }
     }
 }
@@ -654,6 +671,29 @@ mod tests {
         assert_eq!(
             out.output, "fs: allowed\n",
             "the filter must be what denies it"
+        );
+    }
+
+    #[test]
+    fn deny_all_blocks_db_info_config_and_cwd() {
+        let _suite = SUITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let engine = Engine::new().deny_all();
+        let src = r#"fn main() {
+    try { db_open(":memory:"); println("db: BAD"); } catch e { println("db: denied"); }
+    try { pg_connect("host=127.0.0.1"); println("pg: BAD"); } catch e { println("pg: denied"); }
+    try { mysql_connect("127.0.0.1"); println("my: BAD"); } catch e { println("my: denied"); }
+    try { cwd(); println("cwd: BAD"); } catch e { println("cwd: denied"); }
+    try { spid3rinfo(); println("info: BAD"); } catch e { println("info: denied"); }
+    try { spid3rinfo("json", true); println("info2: BAD"); } catch e { println("info2: denied"); }
+    try { config_set("spid3r.env", "x"); println("cset: BAD"); } catch e { println("cset: denied"); }
+    try { config_reload(); println("crel: BAD"); } catch e { println("crel: denied"); }
+    return 0;
+}"#;
+        let out = engine.run("deny_extras", src).expect("script runs");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(
+            out.output,
+            "db: denied\npg: denied\nmy: denied\ncwd: denied\ninfo: denied\ninfo2: denied\ncset: denied\ncrel: denied\n"
         );
     }
 }

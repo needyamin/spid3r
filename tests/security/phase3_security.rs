@@ -731,12 +731,21 @@ fn packages_registry_ini_matches_env_alias() {
         err2
     );
 
-    // Neither set: the documented not-set error (which still names the
-    // alias, the documented spelling).
+    // Neither set: defaults to the built-in GitHub Pages registry.
     let empty_ini = write_in(&dir, "empty.ini", "");
+    let (code_def, out_def, err_def) = run_with(
+        &[("SPID3R_INI", empty_ini.as_str())],
+        &["SPID3R_REGISTRY", "SPID3R_PACKAGES_REGISTRY"],
+        &["config", "get", "packages.registry"],
+    );
+    assert_eq!(code_def, 0, "err={}", err_def);
+    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io");
+
+    // Explicitly disabled via `registry = none`: the documented not-set error.
+    let disabled_ini = write_in(&dir, "disabled.ini", "[packages]\nregistry = none\n");
     let (code, _, err3) = run_in(
         &app,
-        &[("SPID3R_INI", empty_ini.as_str())],
+        &[("SPID3R_INI", disabled_ini.as_str())],
         &["SPID3R_REGISTRY", "SPID3R_PACKAGES_REGISTRY"],
         &["install"],
     );
@@ -981,4 +990,128 @@ fn denials_are_identical_across_engines() {
         outputs.push((code, out));
     }
     assert_eq!(outputs[0], outputs[1], "engines must agree byte for byte");
+}
+
+#[test]
+fn sandbox_blocks_spid3rinfo_config_mutation_cwd_and_db() {
+    let dir = scratch_dir("sbx_info_db");
+    let ini = write_in(&dir, "spid3r.ini", "");
+    let secret = "top-secret-token-12345";
+    let script = write_in(
+        &dir,
+        "s.matrix",
+        r#"fn main() {
+    try { let s = spid3rinfo("json", true); println("INFO_LEAK:" + s); } catch e { println("info_json:denied"); }
+    try { spid3rinfo(); println("INFO_MAP_LEAK"); } catch e { println("info_map:denied"); }
+    try { config_set("spid3r.env", "pwn"); println("CSET_LEAK"); } catch e { println("config_set:denied"); }
+    try { config_reload(); println("CREL_LEAK"); } catch e { println("config_reload:denied"); }
+    try { cwd(); println("CWD_LEAK"); } catch e { println("cwd:denied"); }
+    try { db_open(":memory:"); println("DB_LEAK"); } catch e { println("db_open:denied"); }
+    try { pg_connect("host=127.0.0.1"); println("PG_LEAK"); } catch e { println("pg_connect:denied"); }
+    try { mysql_connect("127.0.0.1"); println("MY_LEAK"); } catch e { println("mysql_connect:denied"); }
+    return 0;
+}
+"#,
+    );
+    let env = [("SPID3R_INI", ini.as_str()), ("SPID3R_TEST_SECRET", secret)];
+    for engine in ["tree", "vm"] {
+        let (code, out, err) = run_with_engine(engine, &env, &["run", "--sandbox", &script]);
+        assert_eq!(code, 0, "[{engine}] out={} err={}", out, err);
+        assert!(!out.contains(secret), "[{engine}] leaked env secret");
+        assert!(
+            !err.contains(secret),
+            "[{engine}] leaked env secret in stderr"
+        );
+        assert!(!out.contains("_LEAK"), "[{engine}] leak marker: {out}");
+        for expected in [
+            "info_json:denied",
+            "info_map:denied",
+            "config_set:denied",
+            "config_reload:denied",
+            "cwd:denied",
+            "db_open:denied",
+            "pg_connect:denied",
+            "mysql_connect:denied",
+        ] {
+            assert!(
+                out.contains(expected),
+                "[{engine}] missing {expected} in {out}"
+            );
+        }
+    }
+}
+
+#[test]
+fn script_config_set_cannot_weaken_frozen_or_limit_keys() {
+    let dir = scratch_dir("cset_limits");
+    let bd = dir.join("bd");
+    std::fs::create_dir_all(&bd).expect("mkdir bd");
+    let ini = write_in(
+        &dir,
+        "spid3r.ini",
+        &format!(
+            "[security]\nbasedir = {}\n[memory]\nallocation_cap_mb = 1\n",
+            fwd(&bd)
+        ),
+    );
+    let script = write_in(
+        &dir,
+        "s.matrix",
+        r#"fn main() {
+    try { config_set("memory.allocation_cap_mb", "0"); println("BAD_ALLOC_CAP"); } catch e { println("cap_blocked"); }
+    try { config_set("runtime.memory_limit_mb", "0"); println("BAD_MEM_LIM"); } catch e { println("mem_blocked"); }
+    try { config_set("security.basedir", ""); println("BAD_BASEDIR"); } catch e { println("bd_blocked"); }
+    try { let b = bytes(2 * 1024 * 1024); println("BAD_BYTES"); } catch e { println("alloc:" + string(e)); }
+    return 0;
+}
+"#,
+    );
+    for engine in ["tree", "vm"] {
+        let (code, out, err) =
+            run_with_engine(engine, &[("SPID3R_INI", ini.as_str())], &["run", &script]);
+        assert_eq!(code, 0, "[{engine}] out={} err={}", out, err);
+        assert!(!out.contains("BAD_"), "[{engine}] {out}");
+        assert!(out.contains("cap_blocked"), "[{engine}] {out}");
+        assert!(out.contains("mem_blocked"), "[{engine}] {out}");
+        assert!(out.contains("bd_blocked"), "[{engine}] {out}");
+        assert!(
+            out.contains("allocation limit exceeded"),
+            "[{engine}] {out}"
+        );
+    }
+}
+
+#[test]
+fn cwd_spid3r_ini_is_not_auto_loaded() {
+    let dir = scratch_dir("no_cwd_ini");
+    let empty_cfg = dir.join("empty_cfg");
+    std::fs::create_dir_all(&empty_cfg).expect("mkdir empty_cfg");
+    write_in(
+        &dir,
+        "spid3r.ini",
+        "[spid3r]\nenv = hijacked\n[packages]\nallow_insecure_git = true\n",
+    );
+    let cfg_dir_str = empty_cfg.to_str().unwrap();
+    let (code, out, err) = run_in(
+        &dir,
+        &[("SPID3R_CONFIG_DIR", cfg_dir_str)],
+        &["SPID3R_INI", "SPID3R_ENV", "SPID3R_SPID3R_ENV"],
+        &["config", "get", "spid3r.env"],
+    );
+    assert_eq!(code, 0, "err={}", err);
+    assert_ne!(out.trim(), "hijacked", "cwd spid3r.ini must not be loaded");
+    assert_eq!(out.trim(), "default", "out={}", out);
+
+    let (code2, out2, err2) = run_in(
+        &dir,
+        &[("SPID3R_CONFIG_DIR", cfg_dir_str)],
+        &[
+            "SPID3R_INI",
+            "SPID3R_ALLOW_INSECURE_GIT",
+            "SPID3R_PACKAGES_ALLOW_INSECURE_GIT",
+        ],
+        &["config", "get", "packages.allow_insecure_git"],
+    );
+    assert_eq!(code2, 0, "err={}", err2);
+    assert_eq!(out2.trim(), "false", "out={}", out2);
 }

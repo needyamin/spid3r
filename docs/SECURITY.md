@@ -58,14 +58,7 @@ isolation (containers, seccomp, job objects) and keep the host interface narrow.
 
 ## Configuration policy: `security.basedir`, `security.disable_natives`, `modules.disable`
 
-`spid3r.ini` can narrow a run without the embed API. All three keys are
-read **once per process** (a script cannot widen them with `config_set`
-mid-run) and are frozen for the management agent's remote `config.set`.
-The two that describe the host (`security.basedir`,
-`security.disable_natives`) are also redacted on every agent **remote**
-surface (`info`, `config.get`) — they map the host's directory layout and
-the script's reach, which a paired device has no business enumerating;
-local surfaces and scripts keep them readable.
+`spid3r.ini` can narrow a run without the embed API. All `[security]` keys (`deny_filesystem`, `deny_process`, `deny_network`, `deny_environment`, `basedir`, `disable_natives`) and `modules.disable` are read **once per process** (a script cannot widen them with `config_set` mid-run), and `config_set` from scripts also rejects frozen keys and resource-limit keys (`memory.allocation_cap_mb`, `memory.max_steps`, `memory.max_call_depth`, `runtime.wall_clock_limit_ms`, `runtime.memory_limit_mb`). Under `--sandbox`, `security.deny_environment`, or `Engine::deny(Capability::Environment)`, introspection and runtime config mutation (`spid3rinfo`, `config_set`, `config_reload`) are denied so environment variables and host layout cannot be leaked or mutated. `spid3r.ini` is never auto-loaded from the current working directory (use `SPID3R_INI=./spid3r.ini` or `SPID3R_CONFIG_DIR=.` to opt into a project-local file).
 
 ### `security.basedir` — per-path filesystem scope
 
@@ -76,8 +69,9 @@ Covered natives: `read_file`, `write_file`, `write_file_atomic`,
 `file_exists`, `file_delete`/`remove_file`, `rename`, `copy_file`,
 `list_dir`, `is_dir`, `is_file`, `file_size`, `file_mtime`, `chdir`,
 `dir_create`, `dir_remove`, `read_bytes`, `write_bytes`, `save_npy`,
-`load_npy`, `read_csv`, `write_csv`, `db_open`, `tcp_recv_to_file`,
-`tcp_send_file` — the full set is pinned by an exhaustiveness test against
+`load_npy`, `read_csv`, `write_csv`, `file_open`, `db_open`,
+`tcp_recv_to_file`, `tcp_send_file`, `tls_listen`, `uds_listen`,
+`uds_connect` — the full set is pinned by an exhaustiveness test against
 the `Capability::FileSystem` list (`src/stdlib/fs_policy.rs`). Denials are
 **catchable**: `path outside basedir: <path>`, raised before the file system
 is touched.
@@ -225,9 +219,7 @@ The stdlib is written assuming its input is hostile:
   initialization draws from it too. The native AOT backend does not enforce a
   budget (a counter in generated machine code is not free): run untrusted
   code on the tree or VM engine.
-- **No memory cap.** A script can allocate until the host runs out. Cap the
-  process's memory (cgroup, job object, `ulimit`) or the request size at the
-  server.
+- **Soft heap and allocation caps (OS cap still advised).** `runtime.memory_limit_mb` sets a catchable script-value heap ceiling, `memory.allocation_cap_mb` (baked once at startup) caps a single allocation, and `runtime.wall_clock_limit_ms` sets a fatal wall-clock deadline. For a hard process-wide memory ceiling across third-party/FFI allocations, also cap the OS process (`cgroup`, job object, `ulimit`) or limit request sizes at the server.
 
 For a server, use the HTTP layer's own limits (`max_body_bytes`,
 `max_connections`, idle timeouts) and rate-limit at the edge.

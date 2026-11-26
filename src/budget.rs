@@ -336,12 +336,17 @@ pub fn configured_max_call_depth(cfg: &crate::config::Config) -> Option<usize> {
         .filter(|&n| n >= 16)
 }
 
+static BAKED_ALLOC_CAP_MB: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 /// Soft cap on a single allocation in bytes from `memory.allocation_cap_mb`
-/// (`0` = unlimited).
+/// (`0` = unlimited). Baked once per process so `config_set` cannot loosen it
+/// mid-run.
 pub fn allocation_cap_bytes() -> Option<usize> {
-    let mb = crate::config::get("memory.allocation_cap_mb")
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(0);
+    let mb = *BAKED_ALLOC_CAP_MB.get_or_init(|| {
+        crate::config::get("memory.allocation_cap_mb")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    });
     if mb == 0 {
         None
     } else {

@@ -1,6 +1,14 @@
 //! Known `spid3r.ini` keys: names, types, defaults, validation, and the
 //! commented default file `spid3r config init` writes.
 
+/// Default public package registry (override at compile time via
+/// `SPID3R_DEFAULT_REGISTRY`, or at runtime via `SPID3R_REGISTRY` / `spid3r.ini`).
+/// Set `packages.registry = none` (or `SPID3R_REGISTRY=none`) to disable.
+pub const DEFAULT_PACKAGE_REGISTRY: &str = match option_env!("SPID3R_DEFAULT_REGISTRY") {
+    Some(v) => v,
+    None => "https://spid3r-spkg.github.io",
+};
+
 /// Value type of a known key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigValue {
@@ -534,10 +542,10 @@ pub static KEYS: &[KeySpec] = &[
         "packages",
         "registry",
         ConfigValue::Str,
-        "",
+        "https://spid3r-spkg.github.io",
         None,
         None,
-        "Canonical package registry directory (alias of SPID3R_REGISTRY)."
+        "Canonical package registry directory or URL (alias of SPID3R_REGISTRY); \"none\" disables."
     ),
     key_frozen!(
         "packages",
@@ -657,7 +665,11 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("modules.assert_active", ConfigValue::Bool, "true"),
         ("security.basedir", ConfigValue::Str, ""),
         ("security.disable_natives", ConfigValue::Str, ""),
-        ("packages.registry", ConfigValue::Str, ""),
+        (
+            "packages.registry",
+            ConfigValue::Str,
+            DEFAULT_PACKAGE_REGISTRY,
+        ),
         ("packages.allow_insecure_git", ConfigValue::Bool, "false"),
         ("packages.allow_local_git", ConfigValue::Bool, "false"),
         ("packages.trust_pk", ConfigValue::Str, ""),
@@ -857,10 +869,10 @@ deny_environment = false
                              ; 'disabled by configuration' denial
 
 [packages]
-# registry =                 ; canonical registry directory (alias: SPID3R_REGISTRY)
+# registry = https://spid3r-spkg.github.io ; registry URL/dir or comma-separated mirrors (alias: SPID3R_REGISTRY); "none" disables
 allow_insecure_git = false   ; allow http:// and git:// dependencies
 allow_local_git = false      ; allow bare-path and file:// git dependencies
-# trust_pk =                 ; 64-hex Ed25519 public key for registry signature checks
+# trust_pk =                 ; 64-hex Ed25519 public key(s), comma-separated for key rotation
 
 [paths]
 # cache_dir =                ; cache home for the extracted bundle runtime

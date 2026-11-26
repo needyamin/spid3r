@@ -5834,6 +5834,23 @@ fn n_config_set(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
     let key = want_str(&args[0], "config_set")?;
     let value = want_str(&args[1], "config_set")?;
+    if let Some(spec) = crate::config::schema::known_key(&key) {
+        if spec.frozen
+            || matches!(
+                key.as_str(),
+                "memory.allocation_cap_mb"
+                    | "memory.max_steps"
+                    | "memory.max_call_depth"
+                    | "runtime.wall_clock_limit_ms"
+                    | "runtime.memory_limit_mb"
+            )
+        {
+            return Err(format!(
+                "config_set: '{}' cannot be changed at runtime by a script",
+                key
+            ));
+        }
+    }
     crate::config::set_live(&key, &value)?;
     Ok(Value::Bool(true))
 }
@@ -5886,8 +5903,8 @@ fn sandbox_env_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String
 
 /// The stub that answers for a sandboxed or `security.deny_*`-blocked native,
 /// or `None` when the name is permitted. The deny groups reuse the embedding
-/// API's capability lists, plus the database natives (TCP connections and a
-/// local-database file handle) which are network/filesystem access too.
+/// API's capability lists so `--sandbox`, `security.deny_*`, and
+/// `Engine::deny*` enforce identical capability boundaries.
 fn capability_stub(
     name: &str,
     deny_fs: bool,
@@ -5896,20 +5913,10 @@ fn capability_stub(
     deny_env: bool,
 ) -> Option<crate::vm::NativeImpl> {
     use crate::embed::Capability;
-    const DB_NET: &[&str] = &[
-        "mysql_connect",
-        "mysql_query",
-        "mysql_exec",
-        "mysql_close",
-        "pg_connect",
-        "pg_query",
-        "pg_exec",
-        "pg_close",
-    ];
-    if deny_fs && (Capability::FileSystem.natives().contains(&name) || name == "db_open") {
+    if deny_fs && Capability::FileSystem.natives().contains(&name) {
         return Some(sandbox_fs_stub);
     }
-    if deny_net && (Capability::Network.natives().contains(&name) || DB_NET.contains(&name)) {
+    if deny_net && Capability::Network.natives().contains(&name) {
         return Some(sandbox_net_stub);
     }
     if deny_proc && Capability::Process.natives().contains(&name) {

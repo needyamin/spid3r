@@ -18,26 +18,100 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// SHA-256 of `data` as the raw 32-byte digest (FIPS 180-4). This is the
-/// primitive; the hex form used by `spider.lock` and the local registry is
-/// `sha256_bytes` plus a lowercase hex encode. The standard library exposes
-/// the same function to Spid3r programs as `sha256` / `hmac_sha256`, so the
-/// hashes a program computes are bit-identical to the ones the package layer
-/// verifies.
-pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let mut msg = data.to_vec();
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
+/// Streaming SHA-256 hasher (FIPS 180-4) using constant memory regardless of
+/// file size. Also `#[path]`-included into `build.rs`.
+#[allow(dead_code)]
+pub struct Sha256Hasher {
+    h: [u32; 8],
+    buf: [u8; 64],
+    buf_len: usize,
+    total_len: u64,
+}
 
-    for chunk in msg.as_chunks::<64>().0 {
+#[allow(dead_code)]
+impl Sha256Hasher {
+    pub fn new() -> Self {
+        Self {
+            h: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            buf: [0u8; 64],
+            buf_len: 0,
+            total_len: 0,
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        self.total_len = self.total_len.wrapping_add(data.len() as u64);
+        let mut offset = 0usize;
+        if self.buf_len > 0 {
+            let take = (64 - self.buf_len).min(data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            offset += take;
+            if self.buf_len == 64 {
+                let block = self.buf;
+                Self::compress(&mut self.h, &block);
+                self.buf_len = 0;
+            }
+        }
+        while offset + 64 <= data.len() {
+            let block: &[u8; 64] = data[offset..offset + 64].try_into().unwrap();
+            Self::compress(&mut self.h, block);
+            offset += 64;
+        }
+        if offset < data.len() {
+            let rem = data.len() - offset;
+            self.buf[..rem].copy_from_slice(&data[offset..]);
+            self.buf_len = rem;
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 32] {
+        let bit_len = self.total_len.wrapping_mul(8);
+        self.buf[self.buf_len] = 0x80;
+        self.buf_len += 1;
+        if self.buf_len > 56 {
+            for b in &mut self.buf[self.buf_len..] {
+                *b = 0;
+            }
+            let block = self.buf;
+            Self::compress(&mut self.h, &block);
+            self.buf_len = 0;
+        }
+        for b in &mut self.buf[self.buf_len..56] {
+            *b = 0;
+        }
+        self.buf[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let block = self.buf;
+        Self::compress(&mut self.h, &block);
+
+        let mut out = [0u8; 32];
+        for (i, word) in self.h.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+
+    pub fn finalize_hex(self) -> String {
+        hex_encode(&self.finalize())
+    }
+}
+
+#[allow(dead_code)]
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(dead_code)]
+impl Sha256Hasher {
+    fn compress(h: &mut [u32; 8], chunk: &[u8; 64]) {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
@@ -86,12 +160,18 @@ pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
         h[6] = h[6].wrapping_add(g);
         h[7] = h[7].wrapping_add(hh);
     }
+}
 
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
+/// SHA-256 of `data` as the raw 32-byte digest (FIPS 180-4). This is the
+/// primitive; the hex form used by `spider.lock` and the local registry is
+/// `sha256_bytes` plus a lowercase hex encode. The standard library exposes
+/// the same function to Spid3r programs as `sha256` / `hmac_sha256`, so the
+/// hashes a program computes are bit-identical to the ones the package layer
+/// verifies.
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256Hasher::new();
+    hasher.update(data);
+    hasher.finalize()
 }
 
 /// Lowercase-hex encode of a byte slice.

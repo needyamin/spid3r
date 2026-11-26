@@ -52,7 +52,7 @@ set and **non-empty** it is the **only** ini candidate — there is no fallback:
 
 * If the pinned file is missing or unreadable, the loader uses **compiled
   defaults only**. It never falls through to the executable-directory,
-  platform-config, `SPID3R_CONFIG_DIR`, or working-directory `spid3r.ini`.
+  platform-config, or `SPID3R_CONFIG_DIR` `spid3r.ini`.
 * The loader keeps a typed pin failure separate from value-validation notes;
   local `config validate`, `control status` and `spid3rinfo()` report it.
 * This is **fail-closed** for program execution: `run`, `check`, `compile`,
@@ -60,19 +60,19 @@ set and **non-empty** it is the **only** ini candidate — there is no fallback:
   and exit 1 while the pin is broken.
 * Diagnostic commands remain usable: `--version`, `help`, `info`,
   `config path` and `config validate`. `config validate` reports the broken
-  pin as a problem (exit 1), and an unknown flag exits 2 (usage). Remote
-  `config.set` refuses to persist while the pin is broken; a local
+  pin as a problem (exit 1), and an unknown flag exits 2 (usage). Local
   `control config set` or `spid3r config init` is how an operator repairs it.
   Restart any long-lived process that initialized policy while the pin was
   broken; its fail-closed policy is intentionally sticky for that process.
 
 An empty `SPID3R_INI` is treated as unset, so the normal search order applies.
-When it is unset (or empty), the machine/cwd ini candidates are tried as
-before. Local validation diagnostics keep policy values (`security.basedir`,
-`paths.*`, `cache.bytecode_dir`) **raw** so an operator can see which entry is
-wrong; only credential-like values are hashed there. Remote surfaces
-(`info`, `config.get`, `dump_diagnostics` over the agent) never see those
-values, the configuration-notes row, or the pin status at all.
+When it is unset (or empty), the executable-directory and platform-config
+candidates are checked (`<cwd>/spid3r.ini` is intentionally **not** auto-loaded
+so untrusted repositories cannot override runtime or package settings; pass
+`SPID3R_INI=./spid3r.ini` explicitly if needed). Local validation diagnostics
+keep policy values (`security.basedir`, `paths.*`, `cache.bytecode_dir`) **raw**
+so an operator can see which entry is wrong; credential-like values are hashed
+or redacted.
 
 ## Building and the native backend
 

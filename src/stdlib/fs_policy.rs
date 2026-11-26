@@ -641,7 +641,9 @@ mod tests {
     #[test]
     fn the_guard_map_is_exhaustive() {
         const HANDLE_ONLY_FS_NATIVES: &[&str] = &[
+            "cwd",
             "exe_path",
+            "config_reload",
             "file_read",
             "file_read_line",
             "file_write",

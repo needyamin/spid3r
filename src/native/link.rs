@@ -314,6 +314,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     let mut bytecode: Option<PathBuf> = None;
     let mut embed: Vec<String> = Vec::new();
     let mut link_libs: Vec<String> = Vec::new();
+    let mut no_auto_ffi = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -411,6 +412,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
             "--allow-gui" => allow_gui = true,
             "--bundle-runtime" => bundle_runtime = true,
             "--allow-dlopen" => allow_dlopen = true,
+            "--no-auto-ffi" => no_auto_ffi = true,
             "--enforce-budget" => {
                 i += 1;
                 let raw = args
@@ -494,9 +496,6 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     #[cfg(windows)]
     preload_llvm_c();
 
-    // Libraries for `extern fn` symbols, recorded before any linking happens.
-    set_link_libs(link_libs);
-
     let file = file.ok_or_else(|| err("build needs a source file: spid3r build file.matrix"))?;
 
     // front end: read, parse, semantic-check (programs must have a main)
@@ -504,6 +503,24 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     if !path.is_file() {
         return Err(err(format!("'{}' is not a file", file)));
     }
+
+    // Verified automatic [ffi] linking from enclosing spider.toml + spider.lock.
+    let mut runtime_ffi_copies: Vec<(PathBuf, String)> = Vec::new();
+    if !no_auto_ffi && !freestanding {
+        let ffi_links = crate::pkg::ffi_link::collect_project_ffi_links(path).map_err(err)?;
+        if !ffi_links.sources.is_empty() {
+            eprintln!("note: auto-linking FFI: {}", ffi_links.sources.join("; "));
+        }
+        for lib in ffi_links.link_libs {
+            if !link_libs.contains(&lib) {
+                link_libs.push(lib);
+            }
+        }
+        runtime_ffi_copies = ffi_links.runtime_copies;
+    }
+
+    // Libraries for `extern fn` symbols, recorded before any linking happens.
+    set_link_libs(link_libs);
     // An icon that cannot be read used to be skipped silently, so a typo in
     // `--icon app.ico` produced an executable with the default icon and no
     // indication anything went wrong.
@@ -758,6 +775,29 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         &meta,
         build_dir.path(),
     )?;
+    if !emit_obj && !runtime_ffi_copies.is_empty() {
+        let out_dir = out_path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        for (src_lib, fname) in &runtime_ffi_copies {
+            let dst = out_dir.join(fname);
+            let tmp = out_dir.join(format!(".tmp_{}_{}", fname, std::process::id()));
+            std::fs::copy(src_lib, &tmp).map_err(|e| {
+                Diagnostic::new(
+                    Phase::Build,
+                    format!("cannot stage runtime library '{}': {}", fname, e),
+                )
+            })?;
+            if let Err(e) = std::fs::rename(&tmp, &dst) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(Diagnostic::new(
+                    Phase::Build,
+                    format!("cannot install runtime library '{}': {}", dst.display(), e),
+                ));
+            }
+        }
+    }
     if !entries.is_empty() {
         let total: usize = entries.iter().map(|(_, d)| d.len()).sum();
         crate::native::payload::append(&out_path, &entries).map_err(|e| {

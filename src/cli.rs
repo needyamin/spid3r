@@ -177,16 +177,26 @@ USAGE:
 
 COMMANDS:
     init [dir]                             Create spider.toml + src/main.matrix
-    add <name> --path P | --git URL [--rev R] | --version V
+    install [<pkg>...] [--update] [--frozen] [--offline] [--dev] [--extra E]
+                                           Install packages (like pip) or project deps
+    add <name>[==V|@V] [--path P | --git URL [--rev R] | --version V]
                                            Declare a dependency and vendor it
-    remove <name>                          Remove a dependency and its vendor/ copy
-    install [--update]                     Vendor dependencies and write spider.lock
+    remove <name>...                       Remove dependencies and their vendor/ copies
+    uninstall <name>...                    Alias of remove
+    list [--json]                          List installed/locked dependencies
+    show <name>                            Show metadata, hashes, and FFI info for a package
+    outdated [--offline]                   Check registry deps for newer non-yanked versions
+    audit [--json] [--offline]             Verify hashes, signatures, advisories, and FFI surface
+    freeze [--sbom]                        Export pinned specs or CycloneDX JSON SBOM
     tree                                   Print the dependency tree
-    verify                                 Re-hash vendor/ against spider.lock
-    search <query> [--local]               Search local registry and vendor/
-    publish --to-dir <dir>                 Write versioned package with sha256.txt
-    pack [-o out.tar]                      Archive spider.toml + src/
+    verify                                 Re-hash vendor/ and _native/ against spider.lock
+    search [query] [--category C] [--local]
+                                           Search registry catalog and vendor/
+    publish --to-dir <dir> [--target T]    Write signed release (or target wheel) for a registry
+    pack [-o out.tar] [--target T]         Archive spider.toml + src/ (+ native/<target>/)
     unpack <archive> [dir]                 Extract a packed project archive
+    cache [dir | list | prune]             Inspect or prune global registry cache
+    tool install|list|uninstall ...        Manage global CLI tools declaring [bin]
     dist [-o out] [--no-opt]               Compile project entry into target/<pkg>.matrixc
     modules <file> [--tree]                List imported modules and their origins
     version                                Print spkg version
@@ -247,6 +257,7 @@ fn is_yamc_build_flag(arg: &str) -> bool {
             | "--emit-obj"
             | "--bytecode"
             | "--embed"
+            | "--no-auto-ffi"
     )
 }
 
@@ -301,7 +312,15 @@ fn is_allowed_tool_command(tool: CliTool, cmd: &str) -> bool {
             "init"
                 | "add"
                 | "remove"
+                | "uninstall"
                 | "install"
+                | "list"
+                | "show"
+                | "outdated"
+                | "audit"
+                | "freeze"
+                | "cache"
+                | "tool"
                 | "tree"
                 | "verify"
                 | "search"
@@ -451,35 +470,39 @@ COMMANDS:
                                            Line-based debugger on the VM:
                                            breakpoints, step/next/finish,
                                            backtrace, locals, source listing
-    pack [-o out.tar]                      Archive spider.toml + src/ into
-                                           dist/<name>-<version>.tar
+    pack [-o out.tar] [--target T]         Archive spider.toml + src/ (+ native/<target>/)
+                                           into dist/<name>-<version>[-<T>].tar
     unpack <archive> [dir]                 Extract a packed project
     init [dir]                             Create spider.toml + src/main.matrix
     modules <file.matrix> [--tree]         List every module this file imports,
                                            with the origin of each: disk, vendor,
                                            or embedded. --tree prints the
                                            dependency graph instead
-    install [--update]                     Vendor path/git dependencies into
-                                           vendor/, write spider.lock (commit
-                                           pinned, SHA-256 per dep); --update
-                                           re-resolves instead of honoring the
-                                           locked commits
+    install [<pkg>...] [--update] [--frozen] [--offline] [--dev] [--extra E]
+                                           Install packages (like pip) or vendor deps
+                                           into vendor/ and write spider.lock
     dist [-o out] [--no-opt]               Compile the project entry (spider.toml)
                                            into target/<package>.matrixc
-    add <name> --path P | --git URL [--rev R] | --version V
+    add <name>[==V|@V] [--path P | --git URL [--rev R] | --version V]
                                            Declare a dependency in spider.toml and
                                            vendor it (rolled back if install fails)
-    remove <name>                          Drop a dependency and its vendor/ copy
+    remove | uninstall <name>...           Drop dependencies and their vendor/ copies
+    list [--json]                          List installed/locked dependencies
+    show <name>                            Show metadata, hashes, and FFI info for a package
+    outdated [--offline]                   Check registry deps for newer non-yanked versions
+    audit [--json] [--offline]             Verify hashes, signatures, advisories, and FFI surface
+    freeze [--sbom]                        Export pinned specs or CycloneDX JSON SBOM
+    cache [dir | list | prune]             Inspect or prune global registry cache
+    tool install|list|uninstall ...        Manage global CLI tools declaring [bin]
     tree                                   Print the dependency tree
-    verify                                 Re-hash vendor/ against spider.lock;
+    verify                                 Re-hash vendor/ and _native/ against spider.lock;
                                            exit 1 on drift, naming the package
     verify-runtime [PATH]                  Verify the AOT runtime staticlib
                                            against its SHA-256 pin / manifest
                                            (exit 4 on mismatch or missing pin)
-    search <query> [--local]               Find packages in the local registry and
-                                           vendor/ (no network in v1)
-    publish --to-dir <dir>                 Write <dir>/<name>/<version>/ with a
-                                           sha256.txt, ready for a static registry
+    search [query] [--category C] [--local]
+                                           Find packages in registry catalog and vendor/
+    publish --to-dir <dir> [--target T]    Write signed release (or target wheel) for a registry
     test [--filter SUBSTR] [--list]        Run every examples/*.matrix file (or
                                            a project's tests/*.matrix) through the
                                            three-engine differential
@@ -525,6 +548,11 @@ EXIT CODES:
 ";
 
 pub fn version_text() -> String {
+    let compiler = if cfg!(feature = "native") {
+        "yamc (YamLLVM)"
+    } else {
+        "yamcvm (Bytecode)"
+    };
     format!(
         "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗         ╱     ╲\n\
          \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗    ╱╲  ╲ ▄█▄ ╱  ╱╲\n\
@@ -535,11 +563,11 @@ pub fn version_text() -> String {
          \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
          \x20 Version       {}\n\
          \x20 Language      {}\n\
-         \x20 Compiler      yamc (YamLLVM)\n\
+         \x20 Compiler      {}\n\
          \x20 Engine        Spid3r Engine (spvm)\n\
          \x20 Runtime       spid3r_lang (YamGC)\n\n\
          \x20 Developed by ANSNEW TECH",
-        VERSION, LANGUAGE_VERSION
+        VERSION, LANGUAGE_VERSION, compiler
     )
 }
 
@@ -630,9 +658,17 @@ pub fn run_tool(tool: CliTool, args: Vec<String>) -> i32 {
             | "pack"
             | "unpack"
             | "install"
+            | "list"
+            | "show"
+            | "outdated"
+            | "audit"
+            | "freeze"
+            | "cache"
+            | "tool"
             | "publish"
             | "add"
             | "remove"
+            | "uninstall"
     ) {
         if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
             eprintln!("error[config]: {}", message);
@@ -838,10 +874,17 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "verify-runtime" => cmd_verify_runtime(&rest),
         "tree" => cmd_tree(&rest),
         "add" => cmd_add(&rest),
-        "remove" => cmd_remove(&rest),
+        "remove" | "uninstall" => cmd_remove(&rest),
         "search" => cmd_search(&rest),
         "publish" => cmd_publish(&rest),
         "install" => cmd_install(&rest),
+        "list" => cmd_list(&rest),
+        "show" => cmd_show(&rest),
+        "outdated" => cmd_outdated(&rest),
+        "audit" => cmd_audit(&rest),
+        "freeze" => cmd_freeze(&rest),
+        "cache" => cmd_cache(&rest),
+        "tool" => cmd_tool(&rest),
         "dist" => cmd_project_build(&rest),
         "pack" => cmd_pack(&rest),
         "unpack" => cmd_unpack(&rest),
@@ -1229,13 +1272,17 @@ vendor/), or `embedded` (the stdlib table compiled into the binary).
 A module imported by two others is listed once and marked `(*)` in the tree.
 "),
         "install" => Some("\
-spid3r install - Install and vendor dependencies
+spid3r install - Install packages or vendor project dependencies
 
 USAGE:
-    spid3r install [options]
+    spid3r install [<pkg>[==V|>=V|^V|@V]...] [options]
 
 OPTIONS:
-    --update               Re-resolve and update dependencies
+    --version <constraint> Version constraint for a single package
+    --path <dir>           Local path source for a single package
+    --git <url>            Git repository URL for a single package
+    --rev <rev>            Git revision (branch, tag, or commit)
+    --update, -u           Re-resolve and update dependencies
     -h, --help             Print help information
 "),
         "dist" => Some("\
@@ -2560,9 +2607,14 @@ fn compile_file(file: &str, out: Option<&str>, opts: CompileOptions) -> Result<i
 fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
     let mut sandbox = false;
     let mut file: Option<String> = None;
+    let mut script_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--" if file.is_some() => {
+                script_args.extend(args[i + 1..].iter().cloned());
+                break;
+            }
             "--sandbox" => sandbox = true,
             "--help" | "-h" => {
                 println!("{}", subcommand_help("exec").unwrap_or(HELP));
@@ -2587,6 +2639,7 @@ fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
             return Ok(EXIT_BYTECODE);
         }
     };
+    crate::stdlib::set_script_args(script_args);
     if sandbox {
         crate::stdlib::arm_sandbox();
     }
@@ -3557,17 +3610,74 @@ fn cmd_tree(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
-/// `spidr add <name> (--path P | --git URL [--rev R] | --version V)`.
-///
-/// The manifest is edited first, then `install` runs. If install fails the
-/// manifest edit is rolled back, so a typo cannot leave the project in a state
-/// that does not resolve.
-fn cmd_add(args: &[String]) -> Result<i32, Diagnostic> {
-    let mut name: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut git: Option<String> = None;
-    let mut rev: Option<String> = None;
-    let mut version: Option<String> = None;
+/// Parse a pip/npm/cargo style dependency spec:
+/// `name`, `name==1.2.3`, `name>=1.2.0`, `name^1.2.0`, or `name@1.2.3`.
+fn parse_pkg_spec(raw: &str) -> Result<(String, Option<String>), String> {
+    let mut split: Option<(usize, &str)> = None;
+    for op in ["==", ">=", "@", "^"] {
+        if let Some(idx) = raw.find(op) {
+            if split.is_none_or(|(best_idx, _)| idx < best_idx) {
+                split = Some((idx, op));
+            }
+        }
+    }
+    let (name, constraint) = match split {
+        Some((idx, op)) => {
+            let name = raw[..idx].trim();
+            let rhs = raw[idx + op.len()..].trim();
+            if rhs.is_empty() {
+                return Err(format!("package spec '{}' is missing a version", raw));
+            }
+            let c = match op {
+                "==" => format!("={}", rhs),
+                ">=" => format!(">={}", rhs),
+                "^" => format!("^{}", rhs),
+                "@" => {
+                    if rhs.starts_with('^') || rhs.starts_with(">=") || rhs.starts_with('=') {
+                        rhs.to_string()
+                    } else {
+                        format!("={}", rhs)
+                    }
+                }
+                _ => unreachable!(),
+            };
+            (name, Some(c))
+        }
+        None => (raw.trim(), None),
+    };
+    crate::pkg::valid_pkg_name(name)?;
+    if let Some(ref c) = constraint {
+        crate::pkg::Constraint::parse(c).map_err(|e| format!("package '{}': {}", name, e))?;
+    }
+    Ok((name.to_string(), constraint))
+}
+
+struct PkgFlagArgs {
+    specs: Vec<String>,
+    path: Option<String>,
+    git: Option<String>,
+    rev: Option<String>,
+    version: Option<String>,
+    update: bool,
+    frozen: bool,
+    offline: bool,
+    include_dev: bool,
+    extras: Vec<String>,
+}
+
+fn parse_pkg_flag_args(args: &[String], cmd_name: &str) -> Result<PkgFlagArgs, Diagnostic> {
+    let mut out = PkgFlagArgs {
+        specs: Vec::new(),
+        path: None,
+        git: None,
+        rev: None,
+        version: None,
+        update: false,
+        frozen: false,
+        offline: false,
+        include_dev: false,
+        extras: Vec::new(),
+    };
     let mut i = 0;
     while i < args.len() {
         let need = |i: usize| -> Result<String, Diagnostic> {
@@ -3577,77 +3687,164 @@ fn cmd_add(args: &[String]) -> Result<i32, Diagnostic> {
         };
         match args[i].as_str() {
             "--path" => {
-                path = Some(need(i)?);
+                out.path = Some(need(i)?);
                 i += 1;
             }
             "--git" => {
-                git = Some(need(i)?);
+                out.git = Some(need(i)?);
                 i += 1;
             }
             "--rev" => {
-                rev = Some(need(i)?);
+                out.rev = Some(need(i)?);
                 i += 1;
             }
             "--version" => {
-                version = Some(need(i)?);
+                out.version = Some(need(i)?);
                 i += 1;
             }
-            a if a.starts_with('-') => return Err(usage(&format!("unknown argument '{}'", a))),
-            a => {
-                if name.is_some() {
-                    return Err(usage("add takes exactly one package name"));
-                }
-                name = Some(a.to_string());
+            "--update" | "-u" if cmd_name == "install" => out.update = true,
+            "--frozen" | "--locked" if cmd_name == "install" => out.frozen = true,
+            "--offline" if cmd_name == "install" => out.offline = true,
+            "--dev" if cmd_name == "install" => out.include_dev = true,
+            "--extra" if cmd_name == "install" => {
+                let extra = need(i)?;
+                out.extras.push(extra);
+                i += 1;
             }
+            a if a.starts_with('-') => {
+                return Err(usage(&format!("{}: unknown argument '{}'", cmd_name, a)))
+            }
+            a => out.specs.push(a.to_string()),
         }
         i += 1;
     }
-    let name = name.ok_or_else(|| usage("add needs a package name"))?;
-    if path.is_some() && git.is_some() {
+    Ok(out)
+}
+
+fn add_and_install_specs(
+    root: &Path,
+    parsed: &PkgFlagArgs,
+    always_install: bool,
+) -> Result<i32, Diagnostic> {
+    if parsed.path.is_some() && parsed.git.is_some() {
         return Err(usage("--path and --git are mutually exclusive"));
     }
-    let value = match (&path, &git, &version) {
-        (Some(p), None, _) => format!("{{ path = \"{}\" }}", p),
-        (None, Some(url), _) => match &rev {
-            Some(r) => format!("{{ git = \"{}\", rev = \"{}\" }}", url, r),
-            None => format!("{{ git = \"{}\" }}", url),
-        },
-        (None, None, Some(v)) => format!("{{ version = \"{}\" }}", v),
-        (None, None, None) => {
-            return Err(usage(
-                "add needs a source: --path P, --git URL, or --version V",
-            ))
-        }
-        // Rejected above; listed so the match stays exhaustive if that guard
-        // ever moves.
-        (Some(_), Some(_), _) => return Err(usage("--path and --git are mutually exclusive")),
-    };
-    // A `--version` alongside --path/--git is a constraint; on its own it is
-    // the source, already folded into `value` above.
-    let constraint = match (&path, &git) {
-        (Some(_), _) | (_, Some(_)) => version.as_deref(),
-        _ => None,
-    };
+    if (parsed.path.is_some() || parsed.git.is_some() || parsed.version.is_some())
+        && parsed.specs.len() > 1
+    {
+        return Err(usage(
+            "--path, --git, and --version only apply to a single package (use name==ver for multiple)",
+        ));
+    }
 
-    let root = project_root()?;
-    // Snapshot the manifest so a failed install can restore the exact bytes,
-    // not a re-serialised approximation of them.
     let manifest_path = root.join("spider.toml");
     let before = std::fs::read(&manifest_path)
         .map_err(|e| usage(&format!("cannot read spider.toml: {}", e)))?;
-    let changed =
-        crate::pkg::ops::add_dependency(&root, &name, &value, constraint).map_err(|e| usage(&e))?;
-    if !changed {
-        println!("{} is already declared in spider.toml", name);
+
+    let mut added_names: Vec<String> = Vec::new();
+    let mut skipped_names: Vec<String> = Vec::new();
+
+    for raw in &parsed.specs {
+        let (name, inline_ver) = parse_pkg_spec(raw).map_err(|e| usage(&e))?;
+        if inline_ver.is_some() && parsed.version.is_some() {
+            let _ = std::fs::write(&manifest_path, &before);
+            return Err(usage(
+                "specify a version either inline (pkg==V) or with --version V, not both",
+            ));
+        }
+        let explicit_ver = parsed.version.clone().or(inline_ver);
+        let value = match (&parsed.path, &parsed.git, &explicit_ver) {
+            (Some(p), None, _) => {
+                format!("{{ path = \"{}\" }}", crate::pkg::toml_escape_string(p))
+            }
+            (None, Some(url), _) => match &parsed.rev {
+                Some(r) => format!(
+                    "{{ git = \"{}\", rev = \"{}\" }}",
+                    crate::pkg::toml_escape_string(url),
+                    crate::pkg::toml_escape_string(r)
+                ),
+                None => format!("{{ git = \"{}\" }}", crate::pkg::toml_escape_string(url)),
+            },
+            (None, None, Some(v)) => {
+                format!("{{ version = \"{}\" }}", crate::pkg::toml_escape_string(v))
+            }
+            (None, None, None) => {
+                let latest = match crate::pkg::latest_registry_version(&name, None) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = std::fs::write(&manifest_path, &before);
+                        return Err(usage(&format!(
+                            "cannot add '{}': {}\n(the manifest was left unchanged)",
+                            name, e
+                        )));
+                    }
+                };
+                format!("{{ version = \"^{}\" }}", latest)
+            }
+            (Some(_), Some(_), _) => {
+                let _ = std::fs::write(&manifest_path, &before);
+                return Err(usage("--path and --git are mutually exclusive"));
+            }
+        };
+        let constraint = match (&parsed.path, &parsed.git) {
+            (Some(_), _) | (_, Some(_)) => explicit_ver.as_deref(),
+            _ => None,
+        };
+        let changed = match crate::pkg::ops::add_dependency(root, &name, &value, constraint) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::write(&manifest_path, &before);
+                return Err(usage(&e));
+            }
+        };
+        if changed {
+            added_names.push(name);
+        } else {
+            skipped_names.push(name);
+        }
+    }
+
+    if added_names.is_empty() && !always_install {
+        for name in &skipped_names {
+            println!("{} is already declared in spider.toml", name);
+        }
         return Ok(EXIT_OK);
     }
-    match crate::pkg::install(&root) {
+
+    match crate::pkg::install_opts(
+        root,
+        &crate::pkg::InstallOptions {
+            update: parsed.update,
+            frozen: parsed.frozen,
+            offline: parsed.offline,
+            include_dev: parsed.include_dev,
+            extras: parsed.extras.clone(),
+        },
+    ) {
         Ok(report) => {
-            println!("added {}", name);
-            println!(
-                "vendored {} package(s), {} unchanged",
-                report.vendored, report.unchanged
-            );
+            for name in &added_names {
+                println!("added {}", name);
+            }
+            if !always_install {
+                println!(
+                    "vendored {} package(s), {} unchanged",
+                    report.vendored, report.unchanged
+                );
+            } else {
+                println!(
+                    "installed {} dependency(ies), {} file(s) vendored{}",
+                    report.deps.len(),
+                    report.vendored,
+                    if report.unchanged > 0 {
+                        ", spider.lock unchanged"
+                    } else {
+                        ""
+                    }
+                );
+                for d in &report.deps {
+                    println!("  {}", d);
+                }
+            }
             Ok(EXIT_OK)
         }
         Err(e) => {
@@ -3657,66 +3854,114 @@ fn cmd_add(args: &[String]) -> Result<i32, Diagnostic> {
             let _ = std::fs::write(&manifest_path, &before);
             Err(usage(&format!(
                 "cannot add '{}': {}\n(the manifest was left unchanged)",
-                name, e
+                parsed.specs.join(", "),
+                e
             )))
         }
     }
 }
 
-/// `spidr remove <name>`: drop the declaration and its vendored copy.
-fn cmd_remove(args: &[String]) -> Result<i32, Diagnostic> {
-    let name = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or_else(|| usage("remove needs a package name"))?
-        .clone();
-    if args.iter().filter(|a| !a.starts_with('-')).count() > 1 {
-        return Err(usage("remove takes exactly one package name"));
+/// `spkg add <name>[==V|@V] [--path P | --git URL [--rev R] | --version V]`.
+///
+/// The manifest is edited first, then `install` runs. If install fails the
+/// manifest edit is rolled back, so a typo cannot leave the project in a state
+/// that does not resolve.
+fn cmd_add(args: &[String]) -> Result<i32, Diagnostic> {
+    let parsed = parse_pkg_flag_args(args, "add")?;
+    if parsed.specs.is_empty() {
+        return Err(usage("add needs a package name"));
+    }
+    if parsed.specs.len() > 1 {
+        return Err(usage("add takes exactly one package name"));
     }
     let root = project_root()?;
-    let removed = crate::pkg::ops::remove_dependency(&root, &name).map_err(|e| usage(&e))?;
-    if !removed {
-        eprintln!("warning: '{}' is not declared in spider.toml", name);
+    add_and_install_specs(&root, &parsed, false)
+}
+
+/// `spkg remove <name>...` / `spkg uninstall <name>...`: drop declarations and
+/// their vendored copies.
+fn cmd_remove(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut names: Vec<String> = Vec::new();
+    for a in args {
+        if a.starts_with('-') {
+            return Err(usage(&format!("unknown argument '{}'", a)));
+        }
+        crate::pkg::valid_pkg_name(a).map_err(|e| usage(&e))?;
+        names.push(a.clone());
+    }
+    if names.is_empty() {
+        return Err(usage("remove needs at least one package name"));
+    }
+    let root = project_root()?;
+    let mut removed_any = false;
+    let mut missing_any = false;
+    for name in &names {
+        let removed = crate::pkg::ops::remove_dependency(&root, name).map_err(|e| usage(&e))?;
+        if !removed {
+            eprintln!("warning: '{}' is not declared in spider.toml", name);
+            missing_any = true;
+            continue;
+        }
+        removed_any = true;
+        // Prune the vendored copy so `verify` does not report it as unlocked.
+        let dir = root.join("vendor").join(name);
+        if dir.is_dir() {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| usage(&format!("cannot remove {}: {}", dir.display(), e)))?;
+        }
+        println!("removed {}", name);
+    }
+    if !removed_any && missing_any {
         return Ok(EXIT_USER_ERROR);
     }
-    // Prune the vendored copy so `verify` does not report it as unlocked.
-    crate::pkg::valid_pkg_name(&name).map_err(|e| usage(&e))?;
-    let dir = root.join("vendor").join(&name);
-    if dir.is_dir() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| usage(&format!("cannot remove {}: {}", dir.display(), e)))?;
+    // Rewrite `spider.lock` without the removed package(s).
+    if removed_any {
+        if let Err(e) = crate::pkg::install(&root) {
+            eprintln!("warning: could not rewrite spider.lock: {}", e);
+        }
     }
-    // Rewrite `spider.lock` without the removed package. Without this, the lock
-    // still names a vendored directory that no longer exists and `verify`
-    // reports it missing — a remove that leaves the project unverifiable.
-    if let Err(e) = crate::pkg::install(&root) {
-        eprintln!("warning: could not rewrite spider.lock: {}", e);
-    }
-    println!("removed {}", name);
     Ok(EXIT_OK)
 }
 
-/// `spidr search <query> [--local]`.
-///
-/// v1 is local-only: the local registry (`SPID3R_REGISTRY`) and `vendor/`. A
-/// remote index is P8 in `plan.txt`; saying "no results" for a network search
-/// would be a lie, so `--local` is accepted and the remote case says so.
+/// `spkg search [query] [--category CAT] [--local]`.
 fn cmd_search(args: &[String]) -> Result<i32, Diagnostic> {
-    let local = args.iter().any(|a| a == "--local");
-    let query = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or_else(|| usage("search needs a query"))?
-        .clone();
-    if !local {
-        eprintln!(
-            "note: only the local registry is searched in this version (see docs/REGISTRY.md)"
-        );
+    let mut local = false;
+    let mut category: Option<String> = None;
+    let mut query: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--local" => local = true,
+            "--category" | "-c" => {
+                let val = args
+                    .get(i + 1)
+                    .cloned()
+                    .ok_or_else(|| usage("--category needs a value"))?;
+                category = Some(val);
+                i += 1;
+            }
+            s if s.starts_with('-') => {
+                return Err(usage(&format!("search: unknown option '{}'", s)))
+            }
+            s => {
+                if query.is_some() {
+                    return Err(usage("search accepts at most one query"));
+                }
+                query = Some(s.to_string());
+            }
+        }
+        i += 1;
     }
+    let q = query.unwrap_or_default();
     let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let found = crate::pkg::ops::search_local(&root, &query).map_err(|e| usage(&e))?;
+    let found = crate::pkg::ops::search_with_category(&root, &q, category.as_deref(), local)
+        .map_err(|e| usage(&e))?;
     if found.is_empty() {
-        println!("no packages matching '{}'", query);
+        if q.is_empty() && category.is_none() {
+            println!("no packages found");
+        } else {
+            println!("no packages matching '{}'", q);
+        }
         return Ok(EXIT_OK);
     }
     for (name, origin) in found {
@@ -3725,9 +3970,10 @@ fn cmd_search(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
-/// `spidr publish --to-dir <dir>`: write a registry-shaped package tree.
+/// `spidr publish --to-dir <dir> [--target TRIPLE]`: write a registry-shaped package tree.
 fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
     let mut to_dir: Option<String> = None;
+    let mut target: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -3739,6 +3985,14 @@ fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
                 );
                 i += 1;
             }
+            "--target" => {
+                target = Some(
+                    args.get(i + 1)
+                        .cloned()
+                        .ok_or_else(|| usage("--target needs a target triple"))?,
+                );
+                i += 1;
+            }
             a => return Err(usage(&format!("unknown argument '{}'", a))),
         }
         i += 1;
@@ -3746,11 +4000,279 @@ fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
     let to_dir =
         to_dir.ok_or_else(|| usage("publish needs a destination: spidr publish --to-dir <dir>"))?;
     let root = project_root()?;
-    let (dest, hash) =
-        crate::pkg::ops::publish_to_dir(&root, &PathBuf::from(&to_dir)).map_err(|e| usage(&e))?;
+    let (dest, hash) = crate::pkg::ops::publish_to_dir_with_target(
+        &root,
+        &PathBuf::from(&to_dir),
+        target.as_deref(),
+    )
+    .map_err(|e| usage(&e))?;
     println!("published to {}", dest.display());
     println!("sha256: {}", hash);
     Ok(EXIT_OK)
+}
+
+/// `spkg list [--json]`
+fn cmd_list(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut json = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            other => return Err(usage(&format!("list: unknown argument '{}'", other))),
+        }
+    }
+    let root = project_root()?;
+    let items = crate::pkg::ops::list_installed(&root).map_err(|e| usage(&e))?;
+    if json {
+        print!("[");
+        for (idx, it) in items.iter().enumerate() {
+            if idx > 0 {
+                print!(",");
+            }
+            print!(
+                "\n  {{\"name\": \"{}\", \"version\": \"{}\", \"source\": \"{}\", \"vendored\": {}, \"verified\": {}}}",
+                it.name, it.version, it.source.replace('"', "\\\""), it.vendored, it.verified
+            );
+        }
+        if !items.is_empty() {
+            println!();
+        }
+        println!("]");
+        return Ok(EXIT_OK);
+    }
+    if items.is_empty() {
+        println!("no dependencies locked");
+        return Ok(EXIT_OK);
+    }
+    for it in items {
+        let tgt = it
+            .target
+            .as_deref()
+            .map(|t| format!(" [{}]", t))
+            .unwrap_or_default();
+        let status = if it.verified {
+            "verified"
+        } else {
+            "UNVERIFIED"
+        };
+        println!(
+            "{}\t{}\t{}{}\t{}",
+            it.name, it.version, status, tgt, it.source
+        );
+    }
+    Ok(EXIT_OK)
+}
+
+/// `spkg show <name>`
+fn cmd_show(args: &[String]) -> Result<i32, Diagnostic> {
+    if args.len() != 1 || args[0].starts_with('-') {
+        return Err(usage("show needs a package name: spkg show <name>"));
+    }
+    let root = project_root()?;
+    let text = crate::pkg::ops::show_package(&root, &args[0]).map_err(|e| usage(&e))?;
+    print!("{}", text);
+    Ok(EXIT_OK)
+}
+
+/// `spkg outdated [--offline]`
+fn cmd_outdated(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut offline = false;
+    for a in args {
+        match a.as_str() {
+            "--offline" => offline = true,
+            other => return Err(usage(&format!("outdated: unknown argument '{}'", other))),
+        }
+    }
+    let root = project_root()?;
+    let list = crate::pkg::ops::outdated_packages(&root, offline).map_err(|e| usage(&e))?;
+    if list.is_empty() {
+        println!("all registry dependencies are up to date");
+        return Ok(EXIT_OK);
+    }
+    for o in list {
+        println!("{}\t{} -> {}", o.name, o.current, o.latest);
+    }
+    Ok(EXIT_OK)
+}
+
+/// `spkg audit [--json] [--offline]`
+fn cmd_audit(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut json = false;
+    let mut offline = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            "--offline" => offline = true,
+            other => return Err(usage(&format!("audit: unknown argument '{}'", other))),
+        }
+    }
+    let root = project_root()?;
+    let report = crate::pkg::audit::audit_project(&root, offline).map_err(|e| usage(&e))?;
+    if json {
+        print!("{}", crate::pkg::audit::render_audit_json(&report));
+    } else if report.findings.is_empty() {
+        println!(
+            "ok: {} package(s) audited with zero findings",
+            report.checked
+        );
+    } else {
+        for f in &report.findings {
+            println!("[{}] {}: {} ({})", f.severity, f.package, f.kind, f.detail);
+        }
+        println!("audited {} package(s)", report.checked);
+    }
+    if report.has_failures() {
+        Ok(EXIT_USER_ERROR)
+    } else {
+        Ok(EXIT_OK)
+    }
+}
+
+/// `spkg freeze [--sbom]`
+fn cmd_freeze(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut sbom = false;
+    for a in args {
+        match a.as_str() {
+            "--sbom" => sbom = true,
+            other => return Err(usage(&format!("freeze: unknown argument '{}'", other))),
+        }
+    }
+    let root = project_root()?;
+    let out = crate::pkg::audit::freeze_project(&root, sbom).map_err(|e| usage(&e))?;
+    print!("{}", out);
+    Ok(EXIT_OK)
+}
+
+/// `spkg cache [dir | list | prune]`
+fn cmd_cache(args: &[String]) -> Result<i32, Diagnostic> {
+    let sub = args.first().map(String::as_str).unwrap_or("dir");
+    if args.len() > 1 {
+        return Err(usage(
+            "cache accepts at most one subcommand: dir | list | prune",
+        ));
+    }
+    match sub {
+        "dir" => {
+            println!("{}", crate::pkg::ops::cache_dir_path().display());
+            Ok(EXIT_OK)
+        }
+        "list" => {
+            let items = crate::pkg::ops::cache_list().map_err(|e| usage(&e))?;
+            if items.is_empty() {
+                println!("cache is empty");
+            } else {
+                for (name, bytes) in items {
+                    println!("{}\t{} bytes", name, bytes);
+                }
+            }
+            Ok(EXIT_OK)
+        }
+        "prune" => {
+            let (removed, freed) = crate::pkg::ops::cache_prune().map_err(|e| usage(&e))?;
+            println!("pruned {} cache bucket(s), freed {} bytes", removed, freed);
+            Ok(EXIT_OK)
+        }
+        other => Err(usage(&format!(
+            "cache: unknown subcommand '{}' (expected dir, list, or prune)",
+            other
+        ))),
+    }
+}
+
+/// `spkg tool <install|list|uninstall> ...`
+fn cmd_tool(args: &[String]) -> Result<i32, Diagnostic> {
+    let Some(sub) = args.first().map(String::as_str) else {
+        return Err(usage(
+            "tool needs a subcommand: spkg tool <install|list|uninstall>",
+        ));
+    };
+    let rest = &args[1..];
+    match sub {
+        "list" => {
+            if !rest.is_empty() {
+                return Err(usage("tool list takes no arguments"));
+            }
+            let list = crate::pkg::tool::tool_list().map_err(|e| usage(&e))?;
+            if list.is_empty() {
+                println!("no tools installed");
+            } else {
+                for t in list {
+                    println!("{}\t{}\t[{}]", t.package, t.version, t.bins.join(", "));
+                }
+            }
+            Ok(EXIT_OK)
+        }
+        "uninstall" | "remove" => {
+            if rest.len() != 1 || rest[0].starts_with('-') {
+                return Err(usage("tool uninstall needs a package name"));
+            }
+            let bins = crate::pkg::tool::tool_uninstall(&rest[0]).map_err(|e| usage(&e))?;
+            println!("uninstalled {} ({})", rest[0], bins.join(", "));
+            Ok(EXIT_OK)
+        }
+        "install" => {
+            let mut spec: Option<String> = None;
+            let mut path: Option<String> = None;
+            let mut git: Option<String> = None;
+            let mut rev: Option<String> = None;
+            let mut force = false;
+            let mut i = 0;
+            while i < rest.len() {
+                let need = |i: usize| -> Result<String, Diagnostic> {
+                    rest.get(i + 1)
+                        .cloned()
+                        .ok_or_else(|| usage(&format!("tool install: {} needs a value", rest[i])))
+                };
+                match rest[i].as_str() {
+                    "--path" => {
+                        path = Some(need(i)?);
+                        i += 1;
+                    }
+                    "--git" => {
+                        git = Some(need(i)?);
+                        i += 1;
+                    }
+                    "--rev" => {
+                        rev = Some(need(i)?);
+                        i += 1;
+                    }
+                    "--force" => force = true,
+                    a if a.starts_with('-') => {
+                        return Err(usage(&format!("tool install: unknown option '{}'", a)))
+                    }
+                    a => {
+                        if spec.is_some() {
+                            return Err(usage("tool install accepts one package spec"));
+                        }
+                        spec = Some(a.to_string());
+                    }
+                }
+                i += 1;
+            }
+            let spec = spec.ok_or_else(|| usage("tool install needs a package spec"))?;
+            let (name, constraint) = parse_pkg_spec(&spec).map_err(|e| usage(&e))?;
+            let report = crate::pkg::tool::tool_install(
+                &name,
+                constraint.as_deref(),
+                path.as_deref(),
+                git.as_deref(),
+                rev.as_deref(),
+                force,
+            )
+            .map_err(|e| usage(&e))?;
+            println!(
+                "installed tool {}@{} -> {} (bins: {})",
+                report.package,
+                report.version,
+                report.bin_dir.display(),
+                report.bins.join(", ")
+            );
+            Ok(EXIT_OK)
+        }
+        other => Err(usage(&format!(
+            "tool: unknown subcommand '{}' (expected install, list, or uninstall)",
+            other
+        ))),
+    }
 }
 
 /// `spid3r info [--json|--html] [--no-redact] [--out <path>]`
@@ -4025,6 +4547,7 @@ fn cmd_modules(args: &[String]) -> Result<i32, Diagnostic> {
 
 fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
     let mut out: Option<String> = None;
+    let mut target: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -4036,6 +4559,14 @@ fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
                         .ok_or_else(|| usage("-o needs a path"))?,
                 );
             }
+            "--target" => {
+                i += 1;
+                target = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| usage("--target needs a target triple"))?,
+                );
+            }
             a => return Err(usage(&format!("unknown argument '{}'", a))),
         }
         i += 1;
@@ -4045,9 +4576,12 @@ fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
         .map_err(|e| usage(&e))?
         .ok_or_else(|| usage("no spider.toml in this directory — run `spid3r init` first"))?;
     if manifest.members.is_empty() {
-        let (path, files, hash) =
-            crate::pkg::pack(&root, out.as_deref().map(PathBuf::from).as_deref())
-                .map_err(|e| usage(&e))?;
+        let (path, files, hash) = crate::pkg::pack_for_target(
+            &root,
+            out.as_deref().map(PathBuf::from).as_deref(),
+            target.as_deref(),
+        )
+        .map_err(|e| usage(&e))?;
         println!("packed {} file(s) into {}", files, path.display());
         println!("sha256: {}", hash);
         return Ok(EXIT_OK);
@@ -4173,35 +4707,63 @@ fn cmd_project_build(args: &[String]) -> Result<i32, Diagnostic> {
     )
 }
 
-/// `spid3r install` — resolve `[dependencies]` into `vendor/` and lock them.
+/// `spkg install [<pkg>...] [--update]`: install specified packages (auto-init
+/// `spider.toml` if missing) or resolve all manifest `[dependencies]` into
+/// `vendor/` and lock them.
 fn cmd_install(args: &[String]) -> Result<i32, Diagnostic> {
-    let mut update = false;
-    for a in args {
-        match a.as_str() {
-            "--update" | "-u" => update = true,
-            other => return Err(usage(&format!("install: unknown argument '{}'", other))),
-        }
-    }
+    let parsed = parse_pkg_flag_args(args, "install")?;
     let root = std::env::current_dir().map_err(|e| usage(&format!("cannot read cwd: {}", e)))?;
-    let report = crate::pkg::install_with(&root, update).map_err(|e| usage(&e))?;
-    if report.deps.is_empty() {
-        println!("no dependencies in spider.toml");
-    } else {
-        println!(
-            "installed {} dependency(ies), {} file(s) vendored{}",
-            report.deps.len(),
-            report.vendored,
-            if report.unchanged > 0 {
-                ", spider.lock unchanged"
-            } else {
-                ""
-            }
-        );
-        for d in &report.deps {
-            println!("  {}", d);
+    if parsed.specs.is_empty() {
+        if parsed.path.is_some()
+            || parsed.git.is_some()
+            || parsed.rev.is_some()
+            || parsed.version.is_some()
+        {
+            return Err(usage(
+                "install: --path/--git/--version requires a package name",
+            ));
         }
+        let report = crate::pkg::install_opts(
+            &root,
+            &crate::pkg::InstallOptions {
+                update: parsed.update,
+                frozen: parsed.frozen,
+                offline: parsed.offline,
+                include_dev: parsed.include_dev,
+                extras: parsed.extras.clone(),
+            },
+        )
+        .map_err(|e| usage(&e))?;
+        if report.deps.is_empty() {
+            println!("no dependencies in spider.toml");
+        } else {
+            println!(
+                "installed {} dependency(ies), {} file(s) vendored{}",
+                report.deps.len(),
+                report.vendored,
+                if report.unchanged > 0 {
+                    ", spider.lock unchanged"
+                } else {
+                    ""
+                }
+            );
+            for d in &report.deps {
+                println!("  {}", d);
+            }
+        }
+        return Ok(EXIT_OK);
     }
-    Ok(EXIT_OK)
+
+    if !root.join("spider.toml").is_file() {
+        let dir_name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "app".to_string());
+        crate::pkg::init(&root, &dir_name).map_err(|e| usage(&e))?;
+        println!("initialized spider.toml in {}", root.display());
+    }
+    add_and_install_specs(&root, &parsed, true)
 }
 
 /// Rewrite files in canonical form. Without `--check`, files are formatted in

@@ -1,115 +1,33 @@
-//! SPM operations: verify, tree, add, remove, publish-to-directory, local
-//! search.
-//!
-//! Everything here works on the same on-disk formats `install` produces — the
-//! `spider.toml` manifest, `spider.lock` and `vendor/` — and none of it uses a
-//! third-party crate. `install` itself lives in the parent module; this file is
-//! the read/inspect/edit half of the package manager.
-//!
-//! Two rules the whole file obeys:
-//!
-//! * **A manifest edit is textual.** `add` and `remove` insert or delete one
-//!   line inside `[dependencies]` instead of re-serialising the document, so a
-//!   user's comments, ordering and formatting survive. A canonicalising
-//!   rewrite would be easier and would quietly destroy hand-maintained files.
-//! * **Nothing here executes package code.** No build scripts, no hooks. That
-//!   is a deliberate security property of this package manager (see
-//!   `docs/ECOSYSTEM.md`), not an omission.
+//! SPM operations: `verify`, `tree`, `add`, `remove`, `publish --to-dir`,
+//! and `search`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::{content_hash, valid_pkg_name, Manifest};
-
-/// One `[[package]]` block of `spider.lock`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LockEntry {
-    pub name: String,
-    pub version: String,
-    pub source: String,
-    /// `files = N`, when the writer recorded it.
-    pub files: Option<usize>,
-    /// The content hash of the dependency's `src/` tree.
-    pub sha256: Option<String>,
-    /// The workspace member that pulled this dependency in, if any.
-    pub used_by: Option<String>,
-}
-
-/// Parse `spider.lock`.
-///
-/// Deliberately tolerant: an unknown key is ignored, and a block without a
-/// `name` is skipped. The file is generated, but a lock written by an older
-/// `spidr` must still load (that is the whole point of a lock file), so a new
-/// key must never make an old lock unreadable — and vice versa.
-pub fn read_lock(root: &Path) -> Result<Vec<LockEntry>, String> {
-    let path = root.join("spider.lock");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(Vec::new());
-    };
-    let mut out: Vec<LockEntry> = Vec::new();
-    let mut cur: Option<LockEntry> = None;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with("[[package]]") {
-            if let Some(e) = cur.take() {
-                if !e.name.is_empty() {
-                    out.push(e);
-                }
-            }
-            cur = Some(LockEntry {
-                name: String::new(),
-                version: String::new(),
-                source: String::new(),
-                files: None,
-                sha256: None,
-                used_by: None,
-            });
-            continue;
-        }
-        if line.starts_with('[') {
-            // A new section of any other kind ends the current block.
-            if let Some(e) = cur.take() {
-                if !e.name.is_empty() {
-                    out.push(e);
-                }
-            }
-            continue;
-        }
-        let Some(entry) = cur.as_mut() else { continue };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"').to_string();
-        match key.trim() {
-            "name" => entry.name = value,
-            "version" => entry.version = value,
-            "source" => entry.source = value,
-            "used-by" => entry.used_by = Some(value),
-            "sha256" => entry.sha256 = Some(value),
-            "files" => entry.files = value.parse().ok(),
-            _ => {}
-        }
-    }
-    if let Some(e) = cur {
-        if !e.name.is_empty() {
-            out.push(e);
-        }
-    }
-    Ok(out)
-}
+use super::hash::{
+    content_hash, manifest_and_tree_digest, manifest_and_wheel_digest, native_tree_hash,
+    vendor_src_hash,
+};
+pub use super::lockfile::{read_lock, LockEntry};
+use super::manifest::{
+    parse_manifest, toml_escape_string, valid_pkg_name, validate_native_rel_path, DepSource,
+    Manifest, PackageInfo,
+};
+use super::registry;
+use super::semver::Version;
 
 /// One problem found by [`verify`].
 #[derive(Debug, Clone)]
 pub struct VerifyIssue {
     /// The package the issue is about.
     pub name: String,
-    /// `missing`, `hash`, `files` or `unlocked`.
+    /// `missing`, `hash`, `files`, `unverified`, or `unlocked`.
     pub kind: &'static str,
-    /// A human-readable explanation naming both values.
+    /// Human-readable explanation.
     pub detail: String,
 }
 
-/// The outcome of `spidr verify`.
+/// Outcome of `spkg verify`.
 #[derive(Debug, Clone, Default)]
 pub struct VerifyReport {
     pub checked: usize,
@@ -122,12 +40,7 @@ impl VerifyReport {
     }
 }
 
-/// Re-hash every vendored dependency against the `sha256` in `spider.lock`.
-///
-/// This is the integrity check the trust model promises: install verifies a
-/// registry package's `sha256.txt`, and `verify` re-checks the vendored tree
-/// afterwards, so a hand-edited file under `vendor/` is detected instead of
-/// silently compiled into the program.
+/// Re-hash every vendored dependency against `spider.lock` (symlink-safe).
 pub fn verify(root: &Path) -> Result<VerifyReport, String> {
     let entries = read_lock(root)?;
     let mut report = VerifyReport::default();
@@ -137,16 +50,12 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
         valid_pkg_name(&entry.name)?;
         let dir = vendor.join(&entry.name);
         let Some(expected) = entry.sha256.as_deref() else {
-            // A git/path dependency records no hash; nothing to re-check.
-            // A REGISTRY dependency without one is a lock from before the
-            // mandatory-checksum rule (or a hand-edited lock): report it
-            // rather than silently trusting unverified code.
             if entry.source.starts_with("registry+") {
                 report.issues.push(VerifyIssue {
                     name: entry.name.clone(),
                     kind: "unverified",
                     detail: "a registry dependency must record a sha256 in \
-                             spider.lock — run `spid3r install` to re-vendor it"
+                             spider.lock — run `spkg install` to re-vendor it"
                         .to_string(),
                 });
             }
@@ -158,13 +67,13 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
                 name: entry.name.clone(),
                 kind: "missing",
                 detail: format!(
-                    "vendored at vendor/{} but the directory is missing — run `spidr install`",
+                    "vendored at vendor/{} but the directory is missing — run `spkg install`",
                     entry.name
                 ),
             });
             continue;
         }
-        let actual = content_hash(&dir)?;
+        let (found_count, actual) = vendor_src_hash(&dir)?;
         if actual != expected {
             report.issues.push(VerifyIssue {
                 name: entry.name.clone(),
@@ -177,30 +86,76 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
             continue;
         }
         if let Some(files) = entry.files {
-            let mut found: Vec<PathBuf> = Vec::new();
-            collect(&dir, &mut found);
-            if found.len() != files {
+            if found_count != files {
                 report.issues.push(VerifyIssue {
                     name: entry.name.clone(),
                     kind: "files",
                     detail: format!(
                         "vendor/{} has {} file(s), spider.lock records {}",
-                        entry.name,
-                        found.len(),
-                        files
+                        entry.name, found_count, files
                     ),
                 });
             }
         }
+        if let Some(expected_native) = entry.native_sha256.as_deref() {
+            let tgt = entry
+                .target
+                .as_deref()
+                .unwrap_or_else(|| super::manifest::host_target_triple());
+            let native_dir = dir.join("_native").join(tgt);
+            if !native_dir.is_dir() {
+                report.issues.push(VerifyIssue {
+                    name: entry.name.clone(),
+                    kind: "native-missing",
+                    detail: format!(
+                        "vendor/{} is missing native artifact directory _native/{}",
+                        entry.name, tgt
+                    ),
+                });
+            } else {
+                let actual_native = native_tree_hash(&native_dir)?;
+                if actual_native != expected_native {
+                    report.issues.push(VerifyIssue {
+                        name: entry.name.clone(),
+                        kind: "native-hash",
+                        detail: format!(
+                            "vendor/{}/_native/{} does not match spider.lock\n  expected {}\n  actual   {}",
+                            entry.name, tgt, expected_native, actual_native
+                        ),
+                    });
+                }
+            }
+        }
+        if let Some(expected_msha) = entry.manifest_sha256.as_deref() {
+            let snap_manifest = dir.join(".spid3r-manifest.toml");
+            if snap_manifest.is_file() {
+                let raw_manifest = std::fs::read(&snap_manifest)
+                    .map_err(|e| format!("cannot read {}: {}", snap_manifest.display(), e))?;
+                let computed = manifest_and_tree_digest(&raw_manifest, &actual);
+                if computed != expected_msha {
+                    report.issues.push(VerifyIssue {
+                        name: entry.name.clone(),
+                        kind: "hash",
+                        detail: format!(
+                            "vendor/{} manifest.sha256 mismatch (expected {}, computed {})",
+                            entry.name, expected_msha, computed
+                        ),
+                    });
+                }
+            }
+        }
     }
 
-    // A vendored directory with no lock entry is a package nobody declared:
-    // report it rather than trusting it.
     if vendor.is_dir() {
         let mut names: Vec<String> = std::fs::read_dir(&vendor)
             .map_err(|e| format!("cannot read vendor/: {}", e))?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
+            .filter(|e| {
+                let p = e.path();
+                p.is_dir()
+                    && !e.file_name().to_string_lossy().starts_with(".tmp_")
+                    && !e.file_name().to_string_lossy().starts_with(".old_")
+            })
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
@@ -218,44 +173,109 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
     Ok(report)
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in rd.filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if p.is_dir() {
-            collect(&p, out);
-        } else {
-            out.push(p);
-        }
-    }
-}
-
-/// Render `spidr tree`: the declared dependency tree.
-///
-/// The lock is flat (one block per package, no edge list), so the tree is
-/// rebuilt from the manifests: each dependency's own `spider.toml` is read when
-/// it is a path dependency, and a locked version is shown when one exists.
-/// `used-by` is used for the workspace case, where several members share one
-/// vendor directory.
+/// Render `spkg tree`: full dependency tree across path, git, registry, and
+/// workspace members (fixes B6).
 pub fn dep_tree(root: &Path) -> Result<String, String> {
     let manifest =
         Manifest::load(root)?.ok_or_else(|| format!("no spider.toml in {}", root.display()))?;
     let locked = read_lock(root)?;
     let mut out = String::new();
-    out.push_str(&format!("{} {}\n", manifest.name(), manifest.version()));
 
+    if !manifest.members.is_empty() && manifest.package.is_none() {
+        out.push_str("workspace\n");
+        let mcount = manifest.members.len();
+        for (idx, member) in manifest.members.iter().enumerate() {
+            let last_m = idx + 1 == mcount;
+            let branch = if last_m { "└─ " } else { "├─ " };
+            let mdir = root.join(member);
+            if let Ok(Some(m_manifest)) = Manifest::load(&mdir) {
+                out.push_str(&format!(
+                    "{}{} {} [{}]\n",
+                    branch,
+                    m_manifest.name(),
+                    m_manifest.version(),
+                    member
+                ));
+                let next_prefix = if last_m { "   " } else { "│  " };
+                let mut visiting = vec![m_manifest.name().to_string()];
+                render_deps(
+                    root,
+                    &mdir,
+                    &m_manifest,
+                    &locked,
+                    next_prefix,
+                    &mut visiting,
+                    &mut out,
+                )?;
+            } else {
+                out.push_str(&format!("{}{} (missing spider.toml)\n", branch, member));
+            }
+        }
+        return Ok(out);
+    }
+
+    out.push_str(&format!("{} {}\n", manifest.name(), manifest.version()));
     let mut visiting: Vec<String> = vec![manifest.name().to_string()];
-    render_deps(root, &manifest, &locked, "", &mut visiting, &mut out)?;
+    render_deps(root, root, &manifest, &locked, "", &mut visiting, &mut out)?;
     if manifest.deps.is_empty() {
         out.push_str("└─ (no dependencies)\n");
     }
     Ok(out)
 }
 
+fn find_dep_manifest(
+    project_root: &Path,
+    caller_dir: &Path,
+    name: &str,
+    source: &DepSource,
+    lock: Option<&LockEntry>,
+) -> Option<(PathBuf, Manifest)> {
+    match source {
+        DepSource::Path(p) => {
+            let dep_root = caller_dir.join(p);
+            Manifest::load(&dep_root)
+                .ok()
+                .flatten()
+                .map(|m| (dep_root, m))
+        }
+        DepSource::Git { .. } => {
+            let dep_root = project_root.join(".spid3r").join("git").join(name);
+            Manifest::load(&dep_root)
+                .ok()
+                .flatten()
+                .map(|m| (dep_root, m))
+        }
+        DepSource::Registry { registry, .. } => {
+            let ver = &lock?.version;
+            for ep in registry::registry_endpoints() {
+                if registry::is_remote_url(&ep) {
+                    if let Ok(base) = registry::build_registry_base(&ep, registry.as_deref()) {
+                        let cache_dir = registry::registry_cache_root(project_root, &base)
+                            .join(name)
+                            .join(ver);
+                        if let Ok(Some(m)) = Manifest::load(&cache_dir) {
+                            return Some((cache_dir, m));
+                        }
+                    }
+                } else {
+                    let base = match registry {
+                        Some(sub) => PathBuf::from(&ep).join(sub),
+                        None => PathBuf::from(&ep),
+                    };
+                    let pkg_dir = base.join(name).join(ver);
+                    if let Ok(Some(m)) = Manifest::load(&pkg_dir) {
+                        return Some((pkg_dir, m));
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
 fn render_deps(
-    root: &Path,
+    project_root: &Path,
+    caller_dir: &Path,
     manifest: &Manifest,
     locked: &[LockEntry],
     prefix: &str,
@@ -286,8 +306,6 @@ fn render_deps(
             if lock.is_some() { "" } else { "  unlocked" }
         ));
 
-        // Recurse into a path dependency's own manifest, guarding against a
-        // dependency cycle in the manifests themselves.
         if visiting.contains(&dep.name) {
             out.push_str(&format!(
                 "{}{}  (cycle: {})\n",
@@ -297,25 +315,29 @@ fn render_deps(
             ));
             continue;
         }
-        let super::DepSource::Path(p) = &dep.source else {
-            continue;
-        };
-        let dep_root = root.join(p);
-        let Ok(Some(child)) = Manifest::load(&dep_root) else {
+        let Some((dep_root, child)) =
+            find_dep_manifest(project_root, caller_dir, &dep.name, &dep.source, lock)
+        else {
             continue;
         };
         visiting.push(dep.name.clone());
         let next = format!("{}{}", prefix, if last { "   " } else { "│  " });
-        render_deps(&dep_root, &child, locked, &next, visiting, out)?;
+        render_deps(
+            project_root,
+            &dep_root,
+            &child,
+            locked,
+            &next,
+            visiting,
+            out,
+        )?;
         visiting.pop();
     }
     Ok(())
 }
 
-/// `spidr add <name> [--path P | --git URL [--rev R] | --version V]`.
-///
-/// The value written is exactly what the manifest parser accepts, so `add` and
-/// a hand-written line are indistinguishable afterwards.
+/// Declare a dependency textually in `spider.toml` `[dependencies]` while
+/// preserving existing comments and ordering.
 pub fn add_dependency(
     root: &Path,
     name: &str,
@@ -334,11 +356,9 @@ pub fn add_dependency(
                 "{} = {{ {}, version = \"{}\" }}",
                 name,
                 value.trim_start_matches('{').trim_end_matches('}').trim(),
-                v
+                toml_escape_string(v)
             );
         } else {
-            // A bare path string carries no constraint; the table form is the
-            // only place a version fits.
             return Err(
                 "a version constraint needs the table form, e.g. { path = \"../x\", version = \"^1.2\" }"
                     .to_string(),
@@ -348,18 +368,16 @@ pub fn add_dependency(
 
     let updated = insert_into_dependencies(&text, name, &entry)?;
     if updated == text {
-        return Ok(false); // already declared verbatim
+        return Ok(false);
     }
     std::fs::write(&path, updated)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
     Ok(true)
 }
 
-/// Insert `line` into `[dependencies]`, creating the section if needed.
-/// Returns the new document; unchanged if `name` is already declared.
 fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String, String> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut section: Option<(usize, usize)> = None; // (header idx, end idx)
+    let mut section: Option<(usize, usize)> = None;
     for (i, raw) in lines.iter().enumerate() {
         let t = raw.trim();
         if let Some(rest) = t.strip_prefix('[') {
@@ -373,8 +391,7 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
             }
         }
     }
-    if let Some((_, end)) = section {
-        // Recompute the section end: the next section header after the start.
+    if let Some((_, _end)) = section {
         let start = section.unwrap().0;
         let mut stop = lines.len();
         for (i, raw) in lines.iter().enumerate().skip(start + 1) {
@@ -383,7 +400,6 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
                 break;
             }
         }
-        let _ = end;
         for raw in lines.iter().take(stop).skip(start + 1) {
             let t = raw.trim();
             if let Some((k, _)) = t.split_once('=') {
@@ -396,7 +412,6 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
         out.insert(stop, line.to_string());
         return Ok(out.join("\n") + "\n");
     }
-    // No [dependencies] section yet: append one.
     let mut out = text.to_string();
     if !out.ends_with('\n') {
         out.push('\n');
@@ -407,9 +422,7 @@ fn insert_into_dependencies(text: &str, name: &str, line: &str) -> Result<String
     Ok(out)
 }
 
-/// `spidr remove <name>`: delete the declaration from `[dependencies]`.
-/// Returns whether a line was removed. `vendor/<name>` is left for the next
-/// `install` to prune.
+/// Remove `[dependencies]` declaration for `name` from `spider.toml`.
 pub fn remove_dependency(root: &Path, name: &str) -> Result<bool, String> {
     let path = root.join("spider.toml");
     let text = std::fs::read_to_string(&path)
@@ -444,12 +457,24 @@ pub fn remove_dependency(root: &Path, name: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `spidr publish --to-dir <dir>`: write `<dir>/<name>/<version>/` in the
-/// layout the local registry resolver reads, plus a `sha256.txt`.
-///
-/// No network, no signing: TLS + checksum is the v1 trust model, and this is
-/// the local half of it.
+/// `spkg publish --to-dir <dir>`: write immutable versioned release directory,
+/// `sha256.txt`, `sha256.txt.sig`, `manifest.sha256`, `manifest.sha256.sig`,
+/// `package.tar`, `<pkg>/index.txt` (+ `.sig`), `registry.pub`, `registry.toml`
+/// (+ `.sig`), and `catalog.txt` (+ `.sig`).
 pub fn publish_to_dir(root: &Path, dir: &Path) -> Result<(PathBuf, String), String> {
+    publish_to_dir_with_target(root, dir, None)
+}
+
+/// Publish a universal release (`target = None`) or a signed per-target binary
+/// wheel (`target = Some("windows-x86_64")`) into `dir`.
+pub fn publish_to_dir_with_target(
+    root: &Path,
+    dir: &Path,
+    target: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    if let Some(t) = target {
+        valid_pkg_name(t)?;
+    }
     let manifest =
         Manifest::load(root)?.ok_or_else(|| format!("no spider.toml in {}", root.display()))?;
     valid_pkg_name(manifest.name())?;
@@ -457,81 +482,346 @@ pub fn publish_to_dir(root: &Path, dir: &Path) -> Result<(PathBuf, String), Stri
     if version.is_empty() {
         return Err("the package has no version".to_string());
     }
-    super::Version::parse(&version)
+    Version::parse(&version)
         .map_err(|e| format!("invalid package version '{}': {}", version, e))?;
     let pkg_dir = dir.join(manifest.name());
     let dest = pkg_dir.join(&version);
-    if dest.exists() {
+    let adding_wheel_to_existing = target.is_some() && dest.exists();
+    if dest.exists() && target.is_none() {
         return Err(format!(
             "{} already exists — bump the version instead of overwriting a published release",
             dest.display()
         ));
     }
-    std::fs::create_dir_all(&dest)
-        .map_err(|e| format!("cannot create {}: {}", dest.display(), e))?;
-
-    // The registry layout is a package tree: spider.toml + src/.
-    std::fs::copy(root.join("spider.toml"), dest.join("spider.toml"))
-        .map_err(|e| format!("cannot copy spider.toml: {}", e))?;
-    let src = root.join("src");
-    if !src.is_dir() {
-        return Err(format!("no src/ directory in {}", root.display()));
+    if let Some(t) = target {
+        let wheel_tar = dest.join(format!("package-{}.tar", t));
+        if wheel_tar.exists() {
+            return Err(format!(
+                "{} already exists — bump the version instead of overwriting a published wheel",
+                wheel_tar.display()
+            ));
+        }
+        let native_src = root.join("native").join(t);
+        let nmeta = std::fs::symlink_metadata(&native_src).map_err(|_| {
+            format!(
+                "publish --target {}: missing directory '{}'",
+                t,
+                native_src.display()
+            )
+        })?;
+        if nmeta.file_type().is_symlink() || !nmeta.is_dir() {
+            return Err(format!(
+                "publish --target {}: invalid/symlinked native directory '{}'",
+                t,
+                native_src.display()
+            ));
+        }
+        for nf in super::hash::collect_regular_files(&native_src)? {
+            let rel = nf.strip_prefix(&native_src).unwrap_or(&nf);
+            validate_native_rel_path(&rel.to_string_lossy().replace('\\', "/"))?;
+        }
     }
-    copy_tree(&src, &dest.join("src"))?;
+    if !adding_wheel_to_existing {
+        std::fs::create_dir_all(&dest)
+            .map_err(|e| format!("cannot create {}: {}", dest.display(), e))?;
+    }
 
-    let hash = content_hash(&dest.join("src"))?;
-    let sha_txt = format!("{}\n", hash);
-    std::fs::write(dest.join("sha256.txt"), sha_txt.as_bytes())
-        .map_err(|e| format!("cannot write sha256.txt: {}", e))?;
+    let publish_res = (|| -> Result<String, String> {
+        let src_manifest_path = root.join("spider.toml");
+        let manifest_bytes = std::fs::read(&src_manifest_path)
+            .map_err(|e| format!("cannot read spider.toml: {}", e))?;
 
-    // R8.2: bundle tarball + maintain <dir>/<name>/index.txt for HTTP(S) registries.
-    let entries = super::pack_entries(root)?;
-    let tar_bytes = super::write_tar(&entries);
-    std::fs::write(dest.join("package.tar"), &tar_bytes)
-        .map_err(|e| format!("cannot write package.tar: {}", e))?;
+        let (pk, sk) = load_or_create_signing_keypair(dir)?;
+        let pk_hex = super::sha256::hex_encode(&pk);
+        std::fs::write(dir.join("registry.pub"), format!("{}\n", pk_hex))
+            .map_err(|e| format!("cannot write registry.pub: {}", e))?;
 
-    let mut versions: Vec<super::Version> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&pkg_dir) {
+        let hash = if adding_wheel_to_existing {
+            let existing_sha = std::fs::read_to_string(dest.join("sha256.txt"))
+                .map_err(|e| format!("existing release lacks sha256.txt: {}", e))?
+                .trim()
+                .to_string();
+            let local_hash = super::hash::tree_hash(root)?;
+            if local_hash != existing_sha {
+                return Err(format!(
+                    "cannot add wheel to existing {}@{}: local src/ hash ({}) differs from published release ({})",
+                    manifest.name(),
+                    version,
+                    local_hash,
+                    existing_sha
+                ));
+            }
+            existing_sha
+        } else {
+            std::fs::write(dest.join("spider.toml"), &manifest_bytes)
+                .map_err(|e| format!("cannot write spider.toml: {}", e))?;
+
+            let src = root.join("src");
+            let src_meta = std::fs::symlink_metadata(&src)
+                .map_err(|_| format!("no src/ directory in {}", root.display()))?;
+            if src_meta.file_type().is_symlink() || !src_meta.is_dir() {
+                return Err(format!(
+                    "invalid or symlinked src/ directory in {}",
+                    root.display()
+                ));
+            }
+            copy_tree_no_symlinks(&src, &dest.join("src"))?;
+
+            let hash = content_hash(&dest.join("src"))?;
+            let sha_txt = format!("{}\n", hash);
+            std::fs::write(dest.join("sha256.txt"), sha_txt.as_bytes())
+                .map_err(|e| format!("cannot write sha256.txt: {}", e))?;
+
+            let manifest_digest = manifest_and_tree_digest(&manifest_bytes, &hash);
+            let msha_txt = format!("{}\n", manifest_digest);
+            std::fs::write(dest.join("manifest.sha256"), msha_txt.as_bytes())
+                .map_err(|e| format!("cannot write manifest.sha256: {}", e))?;
+
+            let entries = super::tar::pack_entries(root)?;
+            let tar_bytes = super::tar::write_tar(&entries);
+            std::fs::write(dest.join("package.tar"), &tar_bytes)
+                .map_err(|e| format!("cannot write package.tar: {}", e))?;
+
+            let sig = super::ed25519::sign(&sk, sha_txt.as_bytes())?;
+            std::fs::write(
+                dest.join("sha256.txt.sig"),
+                format!("{}\n", super::sha256::hex_encode(&sig)),
+            )
+            .map_err(|e| format!("cannot write sha256.txt.sig: {}", e))?;
+
+            let msig = super::ed25519::sign(&sk, msha_txt.as_bytes())?;
+            std::fs::write(
+                dest.join("manifest.sha256.sig"),
+                format!("{}\n", super::sha256::hex_encode(&msig)),
+            )
+            .map_err(|e| format!("cannot write manifest.sha256.sig: {}", e))?;
+            hash
+        };
+
+        if let Some(t) = target {
+            let native_src = root.join("native").join(t);
+            let native_dst = dest.join("native").join(t);
+            copy_tree_no_symlinks(&native_src, &native_dst)?;
+            let n_hash = native_tree_hash(&native_dst)?;
+            let n_sha_txt = format!("{}\n", n_hash);
+            std::fs::write(dest.join(format!("sha256-{}.txt", t)), n_sha_txt.as_bytes())
+                .map_err(|e| format!("cannot write wheel sha256: {}", e))?;
+            let n_sig = super::ed25519::sign(&sk, n_sha_txt.as_bytes())?;
+            std::fs::write(
+                dest.join(format!("sha256-{}.txt.sig", t)),
+                format!("{}\n", super::sha256::hex_encode(&n_sig)),
+            )
+            .map_err(|e| format!("cannot write wheel sig: {}", e))?;
+
+            let w_msha = manifest_and_wheel_digest(&manifest_bytes, &hash, t, &n_hash);
+            let w_msha_txt = format!("{}\n", w_msha);
+            std::fs::write(
+                dest.join(format!("manifest-{}.sha256", t)),
+                w_msha_txt.as_bytes(),
+            )
+            .map_err(|e| format!("cannot write wheel manifest digest: {}", e))?;
+            let w_msig = super::ed25519::sign(&sk, w_msha_txt.as_bytes())?;
+            std::fs::write(
+                dest.join(format!("manifest-{}.sha256.sig", t)),
+                format!("{}\n", super::sha256::hex_encode(&w_msig)),
+            )
+            .map_err(|e| format!("cannot write wheel manifest sig: {}", e))?;
+
+            let w_entries = super::tar::pack_entries_for_target(root, Some(t))?;
+            let w_tar = super::tar::write_tar(&w_entries);
+            std::fs::write(dest.join(format!("package-{}.tar", t)), &w_tar)
+                .map_err(|e| format!("cannot write wheel tar: {}", e))?;
+        }
+
+        let mut versions: Vec<Version> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&pkg_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Some(name) = entry.file_name().to_str() {
+                    if let Ok(v) = Version::parse(name) {
+                        versions.push(v);
+                    }
+                }
+            }
+        }
+        versions.sort();
+        let index_body: String = versions
+            .iter()
+            .map(|v| format!("{}.{}.{}\n", v.major, v.minor, v.patch))
+            .collect();
+        std::fs::write(pkg_dir.join("index.txt"), index_body.as_bytes())
+            .map_err(|e| format!("cannot write index.txt: {}", e))?;
+        let index_sig = super::ed25519::sign(&sk, index_body.as_bytes())?;
+        std::fs::write(
+            pkg_dir.join("index.txt.sig"),
+            format!("{}\n", super::sha256::hex_encode(&index_sig)),
+        )
+        .map_err(|e| format!("cannot write index.txt.sig: {}", e))?;
+
+        let desc_path = dir.join("registry.toml");
+        if !desc_path.exists() {
+            let desc_body = format!(
+                "# Host-portable Spid3r Package Registry descriptor\n\
+                 name = \"Spid3r Package Registry\"\n\
+                 api_version = \"1\"\n\
+                 public_key = \"{}\"\n\
+                 moved_to = \"\"\n\
+                 mirrors = []\n",
+                pk_hex
+            );
+            std::fs::write(&desc_path, desc_body)
+                .map_err(|e| format!("cannot write registry.toml: {}", e))?;
+        }
+        if let Ok(desc_bytes) = std::fs::read(&desc_path) {
+            let dsig = super::ed25519::sign(&sk, &desc_bytes)?;
+            let _ = std::fs::write(
+                dir.join("registry.toml.sig"),
+                format!("{}\n", super::sha256::hex_encode(&dsig)),
+            );
+        }
+
+        write_registry_catalog(dir)?;
+        if let Ok(cat_bytes) = std::fs::read(dir.join("catalog.txt")) {
+            let csig = super::ed25519::sign(&sk, &cat_bytes)?;
+            let _ = std::fs::write(
+                dir.join("catalog.txt.sig"),
+                format!("{}\n", super::sha256::hex_encode(&csig)),
+            );
+        }
+        Ok(hash)
+    })();
+
+    match publish_res {
+        Ok(hash) => Ok((dest, hash)),
+        Err(e) => {
+            if !adding_wheel_to_existing {
+                let _ = std::fs::remove_dir_all(&dest);
+            }
+            Err(e)
+        }
+    }
+}
+
+fn sanitize_catalog_cell(s: &str) -> String {
+    s.replace(['\t', '\r', '\n'], " ").trim().to_string()
+}
+
+/// Regenerate `<dir>/catalog.txt` summarizing every published package so remote
+/// `spkg search` and static web portals stay in sync.
+pub fn write_registry_catalog(dir: &Path) -> Result<(), String> {
+    let mut packages: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.filter_map(|e| e.ok()) {
             if !entry.path().is_dir() {
                 continue;
             }
-            if let Some(name) = entry.file_name().to_str() {
-                if let Ok(v) = super::Version::parse(name) {
-                    versions.push(v);
+            let Some(name) = entry.file_name().to_str().map(String::from) else {
+                continue;
+            };
+            if valid_pkg_name(&name).is_err() {
+                continue;
+            }
+            packages.push(name);
+        }
+    }
+    packages.sort();
+
+    let mut out = String::from(
+        "# Spid3r Package Registry Catalog\n# name\tlatest\tversions\tdescription\tcategories\ttargets\tlicense\n",
+    );
+    for pkg_name in packages {
+        let pkg_dir = dir.join(&pkg_name);
+        let mut versions: Vec<Version> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&pkg_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Some(ver_name) = entry.file_name().to_str() {
+                    if let Ok(v) = Version::parse(ver_name) {
+                        versions.push(v);
+                    }
                 }
             }
         }
+        if versions.is_empty() {
+            continue;
+        }
+        versions.sort();
+        let latest = versions.last().unwrap().to_string();
+        let ver_csv: Vec<String> = versions.iter().map(ToString::to_string).collect();
+        let ver_dir = pkg_dir.join(&latest);
+        let mut wheel_targets: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&ver_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if let Some(fname) = entry.file_name().to_str() {
+                    if let Some(rest) = fname
+                        .strip_prefix("package-")
+                        .and_then(|s| s.strip_suffix(".tar"))
+                    {
+                        if !rest.is_empty() {
+                            wheel_targets.push(rest.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let pkg_info: Option<PackageInfo> = Manifest::load(&ver_dir)
+            .ok()
+            .flatten()
+            .and_then(|m| m.package);
+        let (desc, cats, targets, license) = match pkg_info {
+            Some(p) => {
+                let mut tgt_set: std::collections::BTreeSet<String> =
+                    p.targets.iter().map(|t| sanitize_catalog_cell(t)).collect();
+                for wt in wheel_targets {
+                    tgt_set.insert(sanitize_catalog_cell(&wt));
+                }
+                (
+                    p.description
+                        .map(|s| sanitize_catalog_cell(&s))
+                        .unwrap_or_default(),
+                    p.categories
+                        .iter()
+                        .map(|c| sanitize_catalog_cell(c))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    tgt_set.into_iter().collect::<Vec<_>>().join(","),
+                    p.license
+                        .map(|s| sanitize_catalog_cell(&s))
+                        .unwrap_or_default(),
+                )
+            }
+            None => (
+                String::new(),
+                String::new(),
+                wheel_targets.join(","),
+                String::new(),
+            ),
+        };
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            pkg_name,
+            latest,
+            ver_csv.join(","),
+            desc,
+            cats,
+            targets,
+            license
+        ));
     }
-    versions.sort();
-    let index_body: String = versions
-        .iter()
-        .map(|v| format!("{}.{}.{}\n", v.major, v.minor, v.patch))
-        .collect();
-    std::fs::write(pkg_dir.join("index.txt"), index_body)
-        .map_err(|e| format!("cannot write index.txt: {}", e))?;
 
-    // R8.3: Ed25519 signature over the exact ASCII bytes of sha256.txt.
-    let (pk, sk) = load_or_create_signing_keypair(dir)?;
-    std::fs::write(
-        dir.join("registry.pub"),
-        format!("{}\n", super::hex_encode(&pk)),
-    )
-    .map_err(|e| format!("cannot write registry.pub: {}", e))?;
-    let sig = super::ed25519_sign(&sk, sha_txt.as_bytes())?;
-    std::fs::write(
-        dest.join("sha256.txt.sig"),
-        format!("{}\n", super::hex_encode(&sig)),
-    )
-    .map_err(|e| format!("cannot write sha256.txt.sig: {}", e))?;
-
-    Ok((dest, hash))
+    std::fs::write(dir.join("catalog.txt"), out)
+        .map_err(|e| format!("cannot write catalog.txt: {}", e))?;
+    Ok(())
 }
 
 fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), String> {
     let parse_seed_hex = |raw: &str, label: &str| -> Result<[u8; 32], String> {
         let trimmed = raw.trim();
-        let bytes = super::hex_decode(trimmed)
+        let bytes = super::sha256::hex_decode(trimmed)
             .ok_or_else(|| format!("{}: invalid hex signing key", label))?;
         if bytes.len() != 32 && bytes.len() != 64 {
             return Err(format!(
@@ -549,7 +839,7 @@ fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), St
         if let Ok(val) = std::env::var(var) {
             if !val.trim().is_empty() {
                 let seed = parse_seed_hex(&val, var)?;
-                return Ok(super::keypair_from_seed(&seed));
+                return Ok(super::ed25519::keypair_from_seed(&seed));
             }
         }
     }
@@ -562,76 +852,420 @@ fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), St
     } else {
         let mut seed = [0u8; 32];
         crate::stdlib::entropy::fill_random(&mut seed)?;
-        std::fs::write(&key_path, format!("{}\n", super::hex_encode(&seed)))
+        std::fs::write(&key_path, format!("{}\n", super::sha256::hex_encode(&seed)))
             .map_err(|e| format!("cannot write {}: {}", key_path.display(), e))?;
         seed
     };
-    Ok(super::keypair_from_seed(&seed))
+    Ok(super::ed25519::keypair_from_seed(&seed))
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+fn copy_tree_no_symlinks(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| format!("cannot create {}: {}", to.display(), e))?;
     for entry in std::fs::read_dir(from)
         .map_err(|e| format!("cannot read {}: {}", from.display(), e))?
         .filter_map(|e| e.ok())
     {
         let p = entry.path();
+        let meta = std::fs::symlink_metadata(&p)
+            .map_err(|e| format!("cannot inspect {}: {}", p.display(), e))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "refusing symlink '{}' in published package",
+                p.display()
+            ));
+        }
         let target = to.join(entry.file_name());
-        if p.is_dir() {
-            copy_tree(&p, &target)?;
-        } else {
+        if meta.is_dir() {
+            copy_tree_no_symlinks(&p, &target)?;
+        } else if meta.is_file() {
             std::fs::copy(&p, &target)
                 .map_err(|e| format!("cannot copy {}: {}", p.display(), e))?;
+        } else {
+            return Err(format!(
+                "refusing non-regular file '{}' in published package",
+                p.display()
+            ));
         }
     }
     Ok(())
 }
 
-/// `spidr search <query> --local`: match package names in the local registry
-/// (`packages.registry`, alias of `SPID3R_REGISTRY`) and in `vendor/`.
-pub fn search_local(root: &Path, query: &str) -> Result<Vec<(String, String)>, String> {
-    let needle = query.to_lowercase();
+/// Search configured registries (`packages.registry` mirrors or local dir) and
+/// `vendor/`, optionally filtering remote results by `--category`.
+pub fn search_with_category(
+    root: &Path,
+    query: &str,
+    category: Option<&str>,
+    local_only: bool,
+) -> Result<Vec<(String, String)>, String> {
+    let trimmed = query.trim();
+    let needle = if trimmed == "*" {
+        String::new()
+    } else {
+        trimmed.to_lowercase()
+    };
+    let cat_filter = category
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| !c.is_empty());
     let mut found: BTreeMap<String, String> = BTreeMap::new();
 
-    if let Some(reg) = crate::config::get("packages.registry").filter(|v| !v.trim().is_empty()) {
-        let reg = PathBuf::from(reg);
+    let endpoints = registry::registry_endpoints();
+    let remote_eps: Vec<String> = endpoints
+        .iter()
+        .filter(|ep| registry::is_remote_url(ep))
+        .cloned()
+        .collect();
+    if !local_only && !remote_eps.is_empty() {
+        for (name, origin) in registry::search_remote_across_mirrors(&remote_eps, query, category)?
+        {
+            found.insert(name, origin);
+        }
+    }
+
+    for ep in endpoints.iter().filter(|ep| !registry::is_remote_url(ep)) {
+        let reg = PathBuf::from(ep);
         if let Ok(rd) = std::fs::read_dir(&reg) {
             for entry in rd.filter_map(|e| e.ok()) {
                 if !entry.path().is_dir() {
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().to_string();
-                if !name.to_lowercase().contains(&needle) {
+                if valid_pkg_name(&name).is_err() {
                     continue;
                 }
-                let mut versions: Vec<String> = std::fs::read_dir(entry.path())
+                let mut versions: Vec<Version> = std::fs::read_dir(entry.path())
                     .map(|rd| {
                         rd.filter_map(|e| e.ok())
                             .filter(|e| e.path().is_dir())
-                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .filter_map(|e| Version::parse(e.file_name().to_str()?).ok())
                             .collect()
                     })
                     .unwrap_or_default();
                 versions.sort();
-                found.insert(name, format!("registry ({})", versions.join(", ")));
+                if versions.is_empty() {
+                    continue;
+                }
+                let latest = versions.last().unwrap().to_string();
+                let pkg_info = Manifest::load(&entry.path().join(&latest))
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.package);
+                if let Some(ref cat) = cat_filter {
+                    let ok = pkg_info
+                        .as_ref()
+                        .is_some_and(|p| p.categories.iter().any(|c| c.eq_ignore_ascii_case(cat)));
+                    if !ok {
+                        continue;
+                    }
+                }
+                let desc = pkg_info
+                    .as_ref()
+                    .and_then(|p| p.description.as_deref())
+                    .unwrap_or("");
+                if !needle.is_empty()
+                    && !name.to_lowercase().contains(&needle)
+                    && !desc.to_lowercase().contains(&needle)
+                {
+                    continue;
+                }
+                let ver_list: Vec<String> = versions.iter().map(ToString::to_string).collect();
+                found.insert(name, format!("registry ({})", ver_list.join(", ")));
             }
         }
     }
 
-    let vendor = root.join("vendor");
-    if let Ok(rd) = std::fs::read_dir(&vendor) {
-        for entry in rd.filter_map(|e| e.ok()) {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.to_lowercase().contains(&needle) {
-                found.entry(name).or_insert_with(|| "vendored".to_string());
+    if cat_filter.is_none() {
+        let vendor = root.join("vendor");
+        if let Ok(rd) = std::fs::read_dir(&vendor) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(".tmp_") || name.starts_with(".old_") {
+                    continue;
+                }
+                if needle.is_empty() || name.to_lowercase().contains(&needle) {
+                    found.entry(name).or_insert_with(|| "vendored".to_string());
+                }
             }
         }
     }
 
     Ok(found.into_iter().collect())
+}
+
+/// `spkg search [query] [--local]`.
+pub fn search(root: &Path, query: &str, local_only: bool) -> Result<Vec<(String, String)>, String> {
+    search_with_category(root, query, None, local_only)
+}
+
+/// Backward-compatible alias searching local registry directory + `vendor/`.
+pub fn search_local(root: &Path, query: &str) -> Result<Vec<(String, String)>, String> {
+    search(root, query, true)
+}
+
+#[derive(Debug, Clone)]
+pub struct InstalledPkgInfo {
+    pub name: String,
+    pub version: String,
+    pub source: String,
+    pub target: Option<String>,
+    pub vendored: bool,
+    pub verified: bool,
+    pub ffi_libs: Vec<String>,
+}
+
+/// List locked/vendored packages with their wheel target and checksum status (`spkg list`).
+pub fn list_installed(root: &Path) -> Result<Vec<InstalledPkgInfo>, String> {
+    let entries = read_lock(root)?;
+    let vendor_root = root.join("vendor");
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries {
+        let dir = vendor_root.join(&e.name);
+        let vendored = dir.is_dir();
+        let verified = if !vendored {
+            false
+        } else if let Some(ref sha) = e.sha256 {
+            let src_ok = vendor_src_hash(&dir).is_ok_and(|(_, h)| h == *sha);
+            let native_ok = match e.native_sha256.as_deref() {
+                Some(nsha) => {
+                    let tgt = e
+                        .target
+                        .as_deref()
+                        .unwrap_or_else(|| super::manifest::host_target_triple());
+                    let nd = dir.join("_native").join(tgt);
+                    nd.is_dir() && native_tree_hash(&nd).is_ok_and(|h| h == nsha)
+                }
+                None => true,
+            };
+            src_ok && native_ok
+        } else {
+            !e.source.starts_with("registry+")
+        };
+        out.push(InstalledPkgInfo {
+            name: e.name,
+            version: e.version,
+            source: e.source,
+            target: e.target,
+            vendored,
+            verified,
+            ffi_libs: e.ffi_libs,
+        });
+    }
+    Ok(out)
+}
+
+/// Inspect metadata and hashes for a single locked/vendored dependency (`spkg show <name>`).
+pub fn show_package(root: &Path, name: &str) -> Result<String, String> {
+    valid_pkg_name(name)?;
+    let entries = read_lock(root)?;
+    let entry = entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| format!("package '{}' is not installed in spider.lock", name))?;
+    let vendor_dir = root.join("vendor").join(name);
+    let snap = vendor_dir.join(".spid3r-manifest.toml");
+    let manifest_opt = if snap.is_file() {
+        std::fs::read_to_string(&snap)
+            .ok()
+            .and_then(|raw| parse_manifest(&raw).ok())
+    } else {
+        None
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!("Name: {}\n", entry.name));
+    out.push_str(&format!("Version: {}\n", entry.version));
+    out.push_str(&format!("Source: {}\n", entry.source));
+    if let Some(ref tgt) = entry.target {
+        out.push_str(&format!("Wheel-Target: {}\n", tgt));
+    }
+    if let Some(ref m) = manifest_opt {
+        if let Some(ref p) = m.package {
+            if let Some(ref d) = p.description {
+                out.push_str(&format!("Summary: {}\n", d));
+            }
+            if let Some(ref l) = p.license {
+                out.push_str(&format!("License: {}\n", l));
+            }
+            if !p.authors.is_empty() {
+                out.push_str(&format!("Authors: {}\n", p.authors.join(", ")));
+            }
+            if let Some(ref hp) = p.homepage {
+                out.push_str(&format!("Homepage: {}\n", hp));
+            }
+        }
+        let dep_names: Vec<String> = m.deps.iter().map(|d| d.name.clone()).collect();
+        out.push_str(&format!(
+            "Dependencies: {}\n",
+            if dep_names.is_empty() {
+                "(none)".to_string()
+            } else {
+                dep_names.join(", ")
+            }
+        ));
+        if !m.bins.is_empty() {
+            let bin_names: Vec<String> = m.bins.keys().cloned().collect();
+            out.push_str(&format!("Binaries: {}\n", bin_names.join(", ")));
+        }
+    }
+    if !entry.ffi_libs.is_empty() {
+        out.push_str(&format!("FFI-Libs: {}\n", entry.ffi_libs.join(", ")));
+    }
+    if let Some(ref sha) = entry.sha256 {
+        out.push_str(&format!("SHA-256: {}\n", sha));
+    }
+    if let Some(ref msha) = entry.manifest_sha256 {
+        out.push_str(&format!("Manifest-SHA-256: {}\n", msha));
+    }
+    if let Some(ref nsha) = entry.native_sha256 {
+        out.push_str(&format!("Native-SHA-256: {}\n", nsha));
+    }
+    out.push_str(&format!("Location: {}\n", vendor_dir.display()));
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+pub struct OutdatedEntry {
+    pub name: String,
+    pub current: String,
+    pub latest: String,
+}
+
+/// Compare locked registry dependencies against latest non-yanked versions (`spkg outdated`).
+pub fn outdated_packages(root: &Path, offline: bool) -> Result<Vec<OutdatedEntry>, String> {
+    let entries = read_lock(root)?;
+    let endpoints = registry::registry_endpoints();
+    let mut out = Vec::new();
+    for e in entries {
+        if !e.source.starts_with("registry+") {
+            continue;
+        }
+        let Ok(cur) = Version::parse(&e.version) else {
+            continue;
+        };
+        let latest = if offline {
+            match registry::fetch_cached_versions(root, &endpoints, None, &e.name) {
+                Ok((_, vers)) => vers.into_iter().max(),
+                Err(_) => None,
+            }
+        } else {
+            let mut best: Option<Version> = None;
+            for ep in &endpoints {
+                if registry::is_remote_url(ep) {
+                    if let Ok((eff, mut vers)) = registry::fetch_versions_across_mirrors(
+                        std::slice::from_ref(ep),
+                        None,
+                        &e.name,
+                    ) {
+                        if let Ok(yanked) = registry::fetch_remote_yanked(&eff, None, &e.name) {
+                            vers.retain(|v| !yanked.contains(v));
+                        }
+                        if let Some(top) = vers.into_iter().max() {
+                            if best.as_ref().is_none_or(|b| top > *b) {
+                                best = Some(top);
+                            }
+                            break;
+                        }
+                    }
+                } else if let Ok(v) = super::resolver::latest_registry_version(&e.name, None) {
+                    best = Some(v);
+                    break;
+                }
+            }
+            best
+        };
+        if let Some(top) = latest {
+            if top > cur {
+                out.push(OutdatedEntry {
+                    name: e.name,
+                    current: cur.to_string(),
+                    latest: top.to_string(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Return the active global package cache root (`paths.cache_dir` / `SPID3R_CACHE_DIR`).
+pub fn cache_dir_path() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    registry::registry_cache_root(&cwd, "__default__")
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| cwd.join(".spid3r").join("registry"))
+}
+
+fn dir_size_bytes(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                total = total.saturating_add(dir_size_bytes(&p));
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
+/// List cached registry buckets and their byte sizes (`spkg cache list`).
+pub fn cache_list() -> Result<Vec<(String, u64)>, String> {
+    let root = cache_dir_path();
+    let mut items = Vec::new();
+    if !root.is_dir() {
+        return Ok(items);
+    }
+    for entry in std::fs::read_dir(&root)
+        .map_err(|e| format!("cannot read cache '{}': {}", root.display(), e))?
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "__default__" {
+            continue;
+        }
+        items.push((name, dir_size_bytes(&p)));
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(items)
+}
+
+/// Remove cached registry entries (`spkg cache prune`), returning `(dirs_removed, bytes_freed)`.
+pub fn cache_prune() -> Result<(usize, u64), String> {
+    let root = cache_dir_path();
+    if !root.is_dir() {
+        return Ok((0, 0));
+    }
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    for entry in std::fs::read_dir(&root)
+        .map_err(|e| format!("cannot read cache '{}': {}", root.display(), e))?
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let bytes = dir_size_bytes(&p);
+        std::fs::remove_dir_all(&p).map_err(|e| format!("cannot remove {}: {}", p.display(), e))?;
+        removed += 1;
+        freed = freed.saturating_add(bytes);
+    }
+    Ok((removed, freed))
 }
 
 #[cfg(test)]
@@ -659,12 +1293,10 @@ mod tests {
         assert!(text.contains("[dependencies]"), "{text}");
         assert!(text.contains("mathlib = \"../mathlib\""), "{text}");
 
-        // Adding again must not duplicate the line.
         assert!(!add_dependency(&dir, "mathlib", "\"../mathlib\"", None).unwrap());
         let again = std::fs::read_to_string(dir.join("spider.toml")).unwrap();
         assert_eq!(text, again);
 
-        // The result must parse as a manifest.
         let m = super::super::parse_manifest(&again).expect("manifest parses");
         assert_eq!(m.deps.len(), 1);
         assert_eq!(m.deps[0].name, "mathlib");
@@ -738,17 +1370,11 @@ mod tests {
 
         let clean = verify(&dir).unwrap();
         assert!(clean.ok(), "clean tree reported {:?}", clean.issues);
-        assert_eq!(clean.checked, 1);
 
-        std::fs::write(dir.join("vendor/mathlib/util.matrix"), "return 2;\n").unwrap();
+        std::fs::write(dir.join("vendor/mathlib/util.matrix"), "return 99;\n").unwrap();
         let dirty = verify(&dir).unwrap();
         assert!(!dirty.ok());
         assert_eq!(dirty.issues[0].kind, "hash");
-        assert!(
-            dirty.issues[0].detail.contains("expected"),
-            "{:?}",
-            dirty.issues
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

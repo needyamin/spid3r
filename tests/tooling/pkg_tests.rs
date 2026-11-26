@@ -88,12 +88,19 @@ impl Project {
         )
     }
 
-    /// Run with a variable explicitly removed (to test the "unset" error path).
+    /// Run with a variable explicitly removed (to test the "unset" error path)
+    /// against an empty `SPID3R_INI` so machine-global config never leaks in.
     fn run_unset(&self, args: &[&str], key: &str) -> (i32, String, String) {
+        let ini = self.base.join("empty.ini");
+        if !ini.exists() {
+            let _ = std::fs::write(&ini, "");
+        }
         let out = Command::new(bin())
             .args(args)
             .current_dir(&self.root)
+            .env("SPID3R_INI", &ini)
             .env_remove(key)
+            .env_remove("SPID3R_PACKAGES_REGISTRY")
             .output()
             .expect("spawn");
         (
@@ -1299,12 +1306,18 @@ fn registry_dependency_runs_end_to_end() {
 
 #[test]
 fn registry_errors_are_clear() {
-    // Unset SPID3R_REGISTRY.
+    // Unsetting SPID3R_REGISTRY falls back to the built-in GitHub Pages registry.
     let p = Project::new("regnone");
     p.add_registry_pkg("mathlib", "1.0.0", DEP_BODY);
     p.add_app_registry(&[("mathlib", "^1.0")], "fn main() {\n    return 0;\n}\n");
-    let (code, _, err) = p.run_unset(&["install"], "SPID3R_REGISTRY");
-    assert_ne!(code, 0, "install must fail without SPID3R_REGISTRY");
+    let (code_def, out_def, err_def) =
+        p.run_unset(&["config", "get", "packages.registry"], "SPID3R_REGISTRY");
+    assert_eq!(code_def, 0, "config get failed: {}", err_def);
+    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io");
+
+    // Registry explicitly disabled (no network needed).
+    let (code, _, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", "none")]);
+    assert_ne!(code, 0, "install must fail when registry is disabled");
     assert!(err.contains("SPID3R_REGISTRY"), "error: {}", err);
 
     // No version matches the constraint.
@@ -1781,4 +1794,409 @@ fn the_git_transport_policy_accepts_only_network_transports_by_default() {
             url
         );
     }
+}
+
+#[test]
+fn wheel_publish_install_verify_audit_and_tamper_refusal() {
+    let p = Project::new("wheel_e2e");
+    let triple = spid3r_lang::pkg::manifest::host_target_triple();
+    let wheel_pkg = p.base.join("numwheel");
+    std::fs::create_dir_all(wheel_pkg.join("src")).unwrap();
+    std::fs::create_dir_all(wheel_pkg.join("native").join(triple)).unwrap();
+    std::fs::write(
+        wheel_pkg.join("spider.toml"),
+        format!(
+            "[package]\nname = \"numwheel\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\ndescription = \"Native accelerated wheel\"\nlicense = \"MIT\"\ntargets = [\"{}\"]\n\n[ffi]\nlibs = [\"{}\"]\nbundled = [\"dummy.lib\"]\nruntime_libs = [\"helper.dll\"]\n",
+            triple,
+            if cfg!(windows) { "kernel32" } else { "m" }
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        wheel_pkg.join("src/lib.matrix"),
+        "public fn wheel_ok() -> int { return 42; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        wheel_pkg.join("native").join(triple).join("dummy.lib"),
+        b"MOCKLIB1",
+    )
+    .unwrap();
+    std::fs::write(
+        wheel_pkg.join("native").join(triple).join("helper.dll"),
+        b"MOCKDLL1",
+    )
+    .unwrap();
+
+    let reg = p.base.join("wheel_reg");
+    std::fs::create_dir_all(&reg).unwrap();
+    let seed = "13e73ff995a5d91c9cd42884ce989ec6378fa899cdc25b3fa6e915050c5947ab";
+    let (pub_code, _, pub_err) = {
+        let out = Command::new(bin())
+            .args([
+                "publish",
+                "--to-dir",
+                reg.to_str().unwrap(),
+                "--target",
+                triple,
+            ])
+            .current_dir(&wheel_pkg)
+            .env("SPID3R_SIGN_KEY", seed)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    assert_eq!(pub_code, 0, "wheel publish failed: {pub_err}");
+    let pk = std::fs::read_to_string(reg.join("registry.pub"))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(reg.join("catalog.txt.sig").is_file());
+    assert!(reg.join("registry.toml.sig").is_file());
+    assert!(reg.join("numwheel/index.txt.sig").is_file());
+    assert!(reg
+        .join(format!("numwheel/1.0.0/package-{}.tar", triple))
+        .is_file());
+    assert!(reg
+        .join(format!("numwheel/1.0.0/sha256-{}.txt.sig", triple))
+        .is_file());
+    assert!(reg
+        .join(format!("numwheel/1.0.0/manifest-{}.sha256.sig", triple))
+        .is_file());
+
+    let ini = p.base.join("trust.ini");
+    std::fs::write(&ini, "").unwrap();
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"wheel_app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nnumwheel = { version = \"^1.0\" }\n",
+    );
+    p.write(
+        "src/main.matrix",
+        "import \"numwheel/lib\";\nfn main() { println(wheel_ok()); return 0; }\n",
+    );
+
+    let reg_str = reg.to_str().unwrap();
+    let ini_str = ini.to_str().unwrap();
+    let (code, _, err) = p.run_env(
+        &["install"],
+        &[
+            ("SPID3R_INI", ini_str),
+            ("SPID3R_REGISTRY", reg_str),
+            ("SPID3R_TRUST_PK", &pk),
+        ],
+    );
+    assert_eq!(code, 0, "wheel install failed: {err}");
+    assert!(p
+        .root
+        .join("vendor/numwheel/_native")
+        .join(triple)
+        .join("dummy.lib")
+        .is_file());
+    let lock = p.read("spider.lock");
+    assert!(lock.contains(&format!("target = \"{}\"", triple)), "{lock}");
+    assert!(lock.contains("native-sha256 = "), "{lock}");
+
+    let (vcode, _, verr) = p.run(&["verify"]);
+    assert_eq!(vcode, 0, "verify failed: {verr}");
+    let (acode, aout, aerr) = p.run_env(
+        &["audit", "--offline"],
+        &[("SPID3R_INI", ini_str), ("SPID3R_TRUST_PK", &pk)],
+    );
+    assert_eq!(acode, 0, "audit failed: out={aout} err={aerr}");
+    assert!(aout.contains("ffi-surface"), "{aout}");
+
+    // Tamper one byte inside _native/<target>/dummy.lib -> verify, audit, and auto-FFI must refuse!
+    std::fs::write(
+        p.root
+            .join("vendor/numwheel/_native")
+            .join(triple)
+            .join("dummy.lib"),
+        b"EVILLIB!",
+    )
+    .unwrap();
+    assert_ne!(p.run(&["verify"]).0, 0, "verify must catch native tamper");
+    assert_ne!(
+        p.run_env(
+            &["audit", "--offline"],
+            &[("SPID3R_INI", ini_str), ("SPID3R_TRUST_PK", &pk)]
+        )
+        .0,
+        0,
+        "audit must fail on native tamper"
+    );
+    let ffi_err =
+        spid3r_lang::pkg::ffi_link::collect_project_ffi_links(&p.root.join("src/main.matrix"))
+            .unwrap_err();
+    assert!(
+        ffi_err.contains("tampered native binaries") || ffi_err.contains("native-sha256"),
+        "{ffi_err}"
+    );
+}
+
+#[test]
+fn enterprise_commands_frozen_offline_extras_list_show_freeze_cache() {
+    let p = Project::new("ent_cmds");
+    let reg = p.base.join("reg");
+    std::fs::create_dir_all(&reg).unwrap();
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+    let cache = p.base.join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+
+    for (name, ver) in [
+        ("coredep", "1.0.0"),
+        ("devtool", "0.2.0"),
+        ("gpulib", "0.5.0"),
+    ] {
+        let dir = p.base.join(format!("src_{}", name));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("spider.toml"),
+            format!(
+                "[package]\nname = \"{}\"\nversion = \"{}\"\nentry = \"src/lib.matrix\"\ndescription = \"{} desc\"\nlicense = \"Apache-2.0\"\n",
+                name, ver, name
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/lib.matrix"),
+            format!(
+                "public fn who_{}() -> string {{ return \"{}\"; }}\n",
+                name, name
+            ),
+        )
+        .unwrap();
+        assert!(Command::new(bin())
+            .args(["publish", "--to-dir", reg.to_str().unwrap()])
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"ent_app\"\nversion = \"1.2.3\"\n\n\
+         [dependencies]\ncoredep = { version = \"^1.0\" }\n\n\
+         [dev-dependencies]\ndevtool = { version = \"^0.2\" }\n\n\
+         [optional-dependencies.gpu]\ngpulib = { version = \"^0.5\" }\n",
+    );
+    p.write("src/main.matrix", "fn main() { return 0; }\n");
+
+    let reg_str = reg.to_str().unwrap();
+    let ini_str = ini.to_str().unwrap();
+    let cache_str = cache.to_str().unwrap();
+    let envs = [
+        ("SPID3R_INI", ini_str),
+        ("SPID3R_REGISTRY", reg_str),
+        ("SPID3R_CACHE_DIR", cache_str),
+    ];
+
+    // --dev + --extra gpu installs all three groups cleanly.
+    let (code, _, err) = p.run_env(&["install", "--dev", "--extra", "gpu"], &envs);
+    assert_eq!(code, 0, "install failed: {err}");
+    assert!(p.exists("vendor/coredep/lib.matrix"));
+    assert!(p.exists("vendor/devtool/lib.matrix"));
+    assert!(p.exists("vendor/gpulib/lib.matrix"));
+
+    // --frozen succeeds when spider.lock matches.
+    let (code, _, err) = p.run_env(&["install", "--frozen", "--dev", "--extra", "gpu"], &envs);
+    assert_eq!(code, 0, "--frozen failed unexpectedly: {err}");
+
+    // Unknown --extra is rejected cleanly.
+    let (bad_extra, _, _) = p.run_env(&["install", "--extra", "nonexistent"], &envs);
+    assert_ne!(bad_extra, 0);
+
+    // --frozen refuses when spider.toml drifts from spider.lock.
+    let (drift_code, _, drift_err) = p.run_env(&["install", "--frozen"], &envs);
+    assert_ne!(drift_code, 0, "--frozen should fail on lock drift");
+    assert!(drift_err.contains("frozen lockfile"), "{drift_err}");
+
+    // --offline works with registry removed when cache/registry dir is omitted or using local path.
+    let (list_c, list_out, _) = p.run_env(&["list", "--json"], &envs);
+    assert_eq!(list_c, 0);
+    assert!(
+        list_out.contains("coredep") && list_out.contains("gpulib"),
+        "{list_out}"
+    );
+
+    let (show_c, show_out, _) = p.run_env(&["show", "coredep"], &envs);
+    assert_eq!(show_c, 0);
+    assert!(
+        show_out.contains("Apache-2.0") && show_out.contains("SHA-256:"),
+        "{show_out}"
+    );
+
+    let (frz_c, frz_out, _) = p.run_env(&["freeze"], &envs);
+    assert_eq!(frz_c, 0);
+    assert!(frz_out.contains("coredep==1.0.0"), "{frz_out}");
+
+    let (sbom_c, sbom_out, _) = p.run_env(&["freeze", "--sbom"], &envs);
+    assert_eq!(sbom_c, 0);
+    assert!(
+        sbom_out.contains("\"bomFormat\": \"CycloneDX\"") && sbom_out.contains("SHA-256"),
+        "{sbom_out}"
+    );
+
+    let (cdir_c, cdir_out, _) = p.run_env(&["cache", "dir"], &envs);
+    assert_eq!(cdir_c, 0);
+    assert!(!cdir_out.trim().is_empty());
+    assert_eq!(p.run_env(&["cache", "prune"], &envs).0, 0);
+
+    // Publish newer version 1.5.0 of coredep -> outdated must report 1.0.0 -> 1.5.0.
+    let core_new = p.base.join("src_coredep_new");
+    std::fs::create_dir_all(core_new.join("src")).unwrap();
+    std::fs::write(
+        core_new.join("spider.toml"),
+        "[package]\nname = \"coredep\"\nversion = \"1.5.0\"\nentry = \"src/lib.matrix\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        core_new.join("src/lib.matrix"),
+        "public fn who() -> int { return 2; }\n",
+    )
+    .unwrap();
+    assert!(Command::new(bin())
+        .args(["publish", "--to-dir", reg.to_str().unwrap()])
+        .current_dir(&core_new)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let (out_c, out_out, _) = p.run_env(&["outdated"], &envs);
+    assert_eq!(out_c, 0);
+    assert!(
+        out_out.contains("coredep") && out_out.contains("1.5.0"),
+        "{out_out}"
+    );
+}
+
+#[test]
+fn tool_install_runs_shim_lists_and_uninstalls() {
+    let p = Project::new("tool_cli");
+    let state = p.base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+
+    p.write_sibling(
+        "greeter/spider.toml",
+        "[package]\nname = \"greeter\"\nversion = \"0.3.0\"\nentry = \"src/main.matrix\"\n\n[bin]\ngreetctl = \"src/cli.matrix\"\n",
+    );
+    p.write_sibling(
+        "greeter/src/cli.matrix",
+        "fn main() {\n    let a = args();\n    let who = if a.len() > 0 { a[0] } else { \"world\" };\n    println(\"hello \" + who);\n    return 0;\n}\n",
+    );
+    let pkg_dir = p.base.join("greeter");
+    let state_str = state.to_str().unwrap();
+    let ini_str = ini.to_str().unwrap();
+
+    let (ic, iout, ierr) = p.run_env(
+        &[
+            "tool",
+            "install",
+            "greeter",
+            "--path",
+            pkg_dir.to_str().unwrap(),
+        ],
+        &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+    );
+    assert_eq!(ic, 0, "tool install failed: out={iout} err={ierr}");
+
+    let (lc, lout, _) = p.run_env(
+        &["tool", "list"],
+        &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+    );
+    assert_eq!(lc, 0);
+    assert!(
+        lout.contains("greeter") && lout.contains("greetctl"),
+        "{lout}"
+    );
+
+    let shim = if cfg!(windows) {
+        state.join("bin").join("greetctl.cmd")
+    } else {
+        state.join("bin").join("greetctl")
+    };
+    assert!(shim.is_file(), "missing shim {}", shim.display());
+    let run_out = Command::new(&shim)
+        .arg("spid3r")
+        .env("SPID3R_INI", ini_str)
+        .output()
+        .expect("execute installed shim");
+    assert!(
+        run_out.status.success(),
+        "shim failed: {}",
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_out.stdout).trim(),
+        "hello spid3r"
+    );
+
+    let (uc, _, uerr) = p.run_env(
+        &["tool", "uninstall", "greeter"],
+        &[("SPID3R_STATE_DIR", state_str), ("SPID3R_INI", ini_str)],
+    );
+    assert_eq!(uc, 0, "uninstall failed: {uerr}");
+    assert!(!shim.exists(), "shim should be removed on uninstall");
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn build_auto_links_vendored_ffi_system_lib_without_flag() {
+    let p = Project::new("auto_ffi_build");
+    let sys_lib = if cfg!(windows) { "kernel32" } else { "m" };
+    p.write_sibling(
+        "syswrap/spider.toml",
+        &format!(
+            "[package]\nname = \"syswrap\"\nversion = \"0.1.0\"\nentry = \"src/lib.matrix\"\n\n[ffi]\nlibs = [\"{}\"]\n",
+            sys_lib
+        ),
+    );
+    if cfg!(windows) {
+        p.write_sibling(
+            "syswrap/src/lib.matrix",
+            "extern fn GetCurrentProcessId() -> int;\npublic fn host_pid() -> int { return GetCurrentProcessId(); }\n",
+        );
+    } else {
+        p.write_sibling(
+            "syswrap/src/lib.matrix",
+            "extern fn tgamma(x: float) -> float;\npublic fn math_six() -> float { return tgamma(4.0); }\n",
+        );
+    }
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsyswrap = \"../syswrap\"\n",
+    );
+    if cfg!(windows) {
+        p.write(
+            "src/main.matrix",
+            "import \"syswrap/lib\";\nfn main() { let pid = host_pid(); if (pid <= 0) { return 2; } println(\"AUTO_FFI_OK\"); return 0; }\n",
+        );
+    } else {
+        p.write(
+            "src/main.matrix",
+            "import \"syswrap/lib\";\nfn main() { let v = math_six(); if (v < 5.9 || v > 6.1) { return 2; } println(\"AUTO_FFI_OK\"); return 0; }\n",
+        );
+    }
+    assert_eq!(p.run(&["install"]).0, 0);
+    let exe_out = p.root.join(if cfg!(windows) { "app.exe" } else { "app" });
+    let (bcode, bout, berr) = p.run(&["build", "src/main.matrix", "-o", exe_out.to_str().unwrap()]);
+    assert_eq!(bcode, 0, "auto-ffi build failed: out={bout} err={berr}");
+    assert!(
+        berr.contains("auto-linking FFI"),
+        "expected note in stderr: {berr}"
+    );
+    let run_out = Command::new(&exe_out).output().expect("run built binary");
+    assert!(run_out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run_out.stdout).trim(),
+        "AUTO_FFI_OK"
+    );
 }

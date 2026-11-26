@@ -192,3 +192,21 @@ sha256 = "…"
 
 `used-by` names the workspace member(s) that depend on the package (for the
 single-project case it is simply the project).
+
+## Enterprise Wheels, Signed Indexes & Supply-Chain Auditing
+
+- **Per-target binary wheels:** `spkg publish --to-dir <dir> --target <triple>`
+  packages `native/<triple>/` as `package-<triple>.tar` with signed
+  `sha256-<triple>.txt.sig` and `manifest-<triple>.sha256.sig`. `spkg install`
+  automatically selects matching wheels before falling back to `package.tar`,
+  and `spid3r build` / `yamc` verifies and auto-links declared `[ffi]`
+  `libs` / `bundled` / `runtime_libs` (use `--no-auto-ffi` to opt out).
+- **Signed indexes, yanks & advisories:** `publish` signs `index.txt.sig`,
+  `catalog.txt.sig`, and `registry.toml.sig`; clients verify them when
+  `packages.trust_pk` is configured. New resolutions skip versions listed in
+  `<pkg>/yanked.txt`, and `spkg audit` checks `<registry>/advisories.txt`,
+  unpinned Git sources, tampered `vendor/`, and native `[ffi]` exposure.
+- **Enterprise CI & private auth:** Use `spkg install --frozen` to refuse lock
+  drift, `--offline` to resolve strictly from local cache, `spkg freeze --sbom`
+  for CycloneDX JSON SBOM export, and `SPID3R_REGISTRY_TOKEN` for HTTPS
+  Bearer authentication (stripped automatically on cross-origin redirects).

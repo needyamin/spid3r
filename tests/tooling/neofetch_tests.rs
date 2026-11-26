@@ -28,6 +28,17 @@ fn neofetch_prints_all_sections_and_no_color_flag_works() {
     assert!(stdout.contains("NETWORK & ENGINE"), "stdout:\n{stdout}");
     assert!(stdout.contains("Native Core Fetch"), "stdout:\n{stdout}");
     assert!(stdout.contains("0 Deps"), "stdout:\n{stdout}");
+    assert!(stdout.contains("spvm"), "stdout:\n{stdout}");
+    assert!(stdout.contains("YamGC"), "stdout:\n{stdout}");
+    assert!(stdout.contains("ANSNEW TECH"), "stdout:\n{stdout}");
+    assert!(stdout.contains("Spid3r Engine"), "stdout:\n{stdout}");
+    if cfg!(feature = "native") {
+        assert!(stdout.contains("YamLLVM"), "stdout:\n{stdout}");
+    } else {
+        assert!(stdout.contains("yamcvm"), "stdout:\n{stdout}");
+    }
+    assert!(!stdout.contains("Rust Stg0"), "stdout:\n{stdout}");
+    assert!(!stdout.contains("Self-Hosted AOT"), "stdout:\n{stdout}");
     assert!(
         !stdout.contains("\x1b["),
         "--no-color emitted ANSI escapes:\n{stdout}"

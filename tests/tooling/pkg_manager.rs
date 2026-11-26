@@ -1025,4 +1025,533 @@ mod r8_tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn pip_style_install_uninstall_search_and_redirect_work() {
+        let root = temp_dir("pip_style");
+        let reg_dir = root.join("registry");
+
+        let pkg_dir = root.join("hello_src");
+        write_file(
+            &pkg_dir.join("spider.toml"),
+            "[package]\nname = \"hello\"\nversion = \"0.1.0\"\nentry = \"src/lib.matrix\"\ndescription = \"Starter greeting package for Spid3r\"\n",
+        );
+        write_file(
+            &pkg_dir.join("src/lib.matrix"),
+            "public fn greet(name: string) -> string {\n    return \"Hello, \" + name + \"!\";\n}\n",
+        );
+        let pub_out = run_spid3r(
+            &pkg_dir,
+            &["publish", "--to-dir", reg_dir.to_str().unwrap()],
+            &[],
+        );
+        assert!(
+            pub_out.status.success(),
+            "publish failed: {}",
+            String::from_utf8_lossy(&pub_out.stderr)
+        );
+        assert!(
+            reg_dir.join("catalog.txt").is_file(),
+            "catalog.txt must be written"
+        );
+
+        let srv = start_file_server(reg_dir.clone());
+        let base_url = format!("http://127.0.0.1:{}", srv.port);
+
+        // Redirect proxy server: sends HTTP 302 with relative/absolute Location to `srv`.
+        let redir_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let redir_port = redir_listener.local_addr().unwrap().port();
+        let redir_stop = Arc::new(AtomicBool::new(false));
+        let redir_stop_bg = redir_stop.clone();
+        let target_base = base_url.clone();
+        let redir_handle = std::thread::spawn(move || {
+            while !redir_stop_bg.load(Ordering::SeqCst) {
+                match redir_listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if redir_stop_bg.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let mut buf = [0u8; 4096];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let raw_path = req
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("/");
+                        let dest = format!("{}{}", target_base, raw_path);
+                        let hdr = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            dest
+                        );
+                        let _ = stream.write_all(hdr.as_bytes());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let redir_url = format!("http://127.0.0.1:{}", redir_port);
+
+        // 1. Remote `spkg search` against catalog.txt via HTTP 302 redirect.
+        let search_dir = root.join("search_cwd");
+        std::fs::create_dir_all(&search_dir).unwrap();
+        let search_out = run_spid3r(
+            &search_dir,
+            &["search", "hello"],
+            &[("SPID3R_REGISTRY", Some(&redir_url))],
+        );
+        assert!(
+            search_out.status.success(),
+            "remote search failed: {}",
+            String::from_utf8_lossy(&search_out.stderr)
+        );
+        let search_txt = String::from_utf8_lossy(&search_out.stdout);
+        assert!(
+            search_txt.contains("hello") && search_txt.contains("0.1.0"),
+            "unexpected search output: {}",
+            search_txt
+        );
+
+        // 2. Fresh directory: `spkg install hello` auto-initializes spider.toml & fetches latest.
+        let fresh = root.join("fresh_app");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let inst_out = run_spid3r(
+            &fresh,
+            &["install", "hello"],
+            &[("SPID3R_REGISTRY", Some(&redir_url))],
+        );
+        assert!(
+            inst_out.status.success(),
+            "pip-style install failed: {}\nstdout: {}",
+            String::from_utf8_lossy(&inst_out.stderr),
+            String::from_utf8_lossy(&inst_out.stdout)
+        );
+        assert!(fresh.join("spider.toml").is_file());
+        assert!(fresh.join("vendor/hello/lib.matrix").is_file());
+        write_file(
+            &fresh.join("src/main.matrix"),
+            "import \"hello/lib\" as h;\nfn main() {\n    println(h.greet(\"Spid3r\"));\n}\n",
+        );
+        let run_out = run_spid3r(&fresh, &["run", "src/main.matrix"], &[]);
+        assert!(
+            run_out.status.success(),
+            "run importing hello/lib failed: {}",
+            String::from_utf8_lossy(&run_out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run_out.stdout).trim(),
+            "Hello, Spid3r!"
+        );
+
+        // 3. Exact version spec (`hello==0.1.0`) + `uninstall hello` + clean `verify`.
+        let pinned = root.join("pinned_app");
+        std::fs::create_dir_all(&pinned).unwrap();
+        let pin_out = run_spid3r(
+            &pinned,
+            &["install", "hello==0.1.0"],
+            &[("SPID3R_REGISTRY", Some(&base_url))],
+        );
+        assert!(
+            pin_out.status.success(),
+            "hello==0.1.0 install failed: {}",
+            String::from_utf8_lossy(&pin_out.stderr)
+        );
+        let manifest_pinned = std::fs::read_to_string(pinned.join("spider.toml")).unwrap();
+        assert!(
+            manifest_pinned.contains("\"=0.1.0\""),
+            "expected exact pin =0.1.0 in:\n{}",
+            manifest_pinned
+        );
+
+        let un_out = run_spid3r(&pinned, &["uninstall", "hello"], &[]);
+        assert!(
+            un_out.status.success(),
+            "uninstall failed: {}",
+            String::from_utf8_lossy(&un_out.stderr)
+        );
+        assert!(!pinned.join("vendor/hello").exists());
+        let ver_out = run_spid3r(&pinned, &["verify"], &[]);
+        assert!(ver_out.status.success());
+
+        redir_stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(("127.0.0.1", redir_port));
+        let _ = redir_handle.join();
+        drop(srv);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lazy_fetch_preextract_sig_pin_orphan_prune_and_mirrors_work() {
+        let root = temp_dir("advanced_pkg");
+        let reg_dir = root.join("registry");
+        let cache_dir = root.join("shared_cache");
+        let cache_str = cache_dir.to_str().unwrap();
+
+        // Publish leaf 1.0.0, 1.1.0, and 1.2.0 using explicit signing key #1.
+        let key1 = "11".repeat(32);
+        let key2 = "22".repeat(32);
+        for (ver, ret_val) in [("1.0.0", "v100"), ("1.1.0", "v110"), ("1.2.0", "v120")] {
+            let ldir = root.join(format!("leaf_{}", ver));
+            write_file(
+                &ldir.join("spider.toml"),
+                &format!(
+                    "[package]\nname = \"leaf\"\nversion = \"{}\"\nentry = \"src/lib.matrix\"\ndescription = \"Array math\"\ncategories = [\"data-science\"]\ntargets = [\"any\"]\n",
+                    ver
+                ),
+            );
+            write_file(
+                &ldir.join("src/lib.matrix"),
+                &format!(
+                    "public fn leaf_ver() -> string {{ return \"{}\"; }}\n",
+                    ret_val
+                ),
+            );
+            let out = run_spid3r(
+                &ldir,
+                &["publish", "--to-dir", reg_dir.to_str().unwrap()],
+                &[("SPID3R_SIGN_KEY", Some(&key1))],
+            );
+            assert!(
+                out.status.success(),
+                "publish leaf {} failed: {}",
+                ver,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(reg_dir
+                .join(format!("leaf/{}/manifest.sha256", ver))
+                .is_file());
+            assert!(reg_dir
+                .join(format!("leaf/{}/manifest.sha256.sig", ver))
+                .is_file());
+        }
+        let pk1 = std::fs::read_to_string(reg_dir.join("registry.pub"))
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Publish `mid` 0.1.0 signed with key #2 (simulating key rotation).
+        let mid_dir = root.join("mid_010");
+        write_file(
+            &mid_dir.join("spider.toml"),
+            "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nentry = \"src/lib.matrix\"\ncategories = [\"media\"]\n\n[dependencies]\nleaf = { version = \"^1.0.0\" }\n",
+        );
+        write_file(
+            &mid_dir.join("src/lib.matrix"),
+            "import \"leaf/lib\" as lf;\npublic fn mid_info() -> string { return \"mid+\" + lf.leaf_ver(); }\n",
+        );
+        let pub_mid = run_spid3r(
+            &mid_dir,
+            &["publish", "--to-dir", reg_dir.to_str().unwrap()],
+            &[("SPID3R_SIGN_KEY", Some(&key2))],
+        );
+        assert!(pub_mid.status.success());
+        let pk2 = std::fs::read_to_string(reg_dir.join("registry.pub"))
+            .unwrap()
+            .trim()
+            .to_string();
+        let rotated_trust = format!("{},{}", pk1, pk2);
+
+        // Request-recording HTTP server serving `reg_dir`.
+        let req_log: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let req_log_bg = req_log.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = stop.clone();
+        let reg_clone = reg_dir.clone();
+        let srv_handle = std::thread::spawn(move || {
+            while !stop_bg.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_bg.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let mut buf = [0u8; 4096];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let raw_path = req
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("/");
+                        let rel = raw_path
+                            .split('?')
+                            .next()
+                            .unwrap_or("/")
+                            .trim_start_matches('/');
+                        req_log_bg.lock().unwrap().push(rel.to_string());
+                        let mut candidate = reg_clone.clone();
+                        for comp in Path::new(rel).components() {
+                            if let std::path::Component::Normal(c) = comp {
+                                candidate.push(c);
+                            }
+                        }
+                        if candidate.is_file() {
+                            let body = std::fs::read(&candidate).unwrap_or_default();
+                            let hdr = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(hdr.as_bytes());
+                            let _ = stream.write_all(&body);
+                        } else {
+                            let hdr = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+                            let _ = stream.write_all(hdr.as_bytes());
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let mirror_list = format!("http://127.0.0.1:1,http://127.0.0.1:{}", port);
+
+        // 1. Lazy single-version fetch + mirror failover + category search.
+        let search_out = run_spid3r(
+            &root,
+            &["search", "--category", "data-science"],
+            &[
+                ("SPID3R_REGISTRY", Some(&mirror_list)),
+                ("SPID3R_CACHE_DIR", Some(cache_str)),
+            ],
+        );
+        assert!(search_out.status.success());
+        let stxt = String::from_utf8_lossy(&search_out.stdout);
+        assert!(
+            stxt.contains("leaf") && !stxt.contains("mid"),
+            "cat search: {stxt}"
+        );
+
+        let proj_lazy = root.join("proj_lazy");
+        std::fs::create_dir_all(&proj_lazy).unwrap();
+        req_log.lock().unwrap().clear();
+        let inst_lazy = run_spid3r(
+            &proj_lazy,
+            &["install", "leaf==1.1.0"],
+            &[
+                ("SPID3R_REGISTRY", Some(&mirror_list)),
+                ("SPID3R_TRUST_PK", Some(&rotated_trust)),
+                ("SPID3R_CACHE_DIR", Some(cache_str)),
+            ],
+        );
+        assert!(
+            inst_lazy.status.success(),
+            "lazy install failed: {}",
+            String::from_utf8_lossy(&inst_lazy.stderr)
+        );
+        {
+            let logged = req_log.lock().unwrap();
+            assert!(
+                logged.iter().any(|p| p == "leaf/1.1.0/package.tar"),
+                "must fetch 1.1.0: {:?}",
+                *logged
+            );
+            assert!(
+                !logged
+                    .iter()
+                    .any(|p| p.contains("leaf/1.0.0/") || p.contains("leaf/1.2.0/")),
+                "must NOT fetch unselected versions: {:?}",
+                *logged
+            );
+        }
+
+        // 2. Pre-extract Ed25519 refusal: bad sha256.txt.sig fails BEFORE package.tar is ever requested!
+        let bad_sig_file = reg_dir.join("leaf/1.0.0/sha256.txt.sig");
+        let orig_sig = std::fs::read(&bad_sig_file).unwrap();
+        std::fs::write(&bad_sig_file, format!("{}\n", "00".repeat(64))).unwrap();
+        let proj_bad_sig = root.join("proj_bad_sig");
+        std::fs::create_dir_all(&proj_bad_sig).unwrap();
+        req_log.lock().unwrap().clear();
+        let bad_sig_out = run_spid3r(
+            &proj_bad_sig,
+            &["install", "leaf==1.0.0"],
+            &[
+                (
+                    "SPID3R_REGISTRY",
+                    Some(&format!("http://127.0.0.1:{}", port)),
+                ),
+                ("SPID3R_TRUST_PK", Some(&rotated_trust)),
+                ("SPID3R_CACHE_DIR", Some(cache_str)),
+            ],
+        );
+        std::fs::write(&bad_sig_file, orig_sig).unwrap();
+        assert!(!bad_sig_out.status.success());
+        {
+            let logged = req_log.lock().unwrap();
+            assert!(
+                !logged.iter().any(|p| p == "leaf/1.0.0/package.tar"),
+                "tampered signature must reject BEFORE downloading package.tar: {:?}",
+                *logged
+            );
+        }
+
+        // 3. Multi-key rotation + transitive tree + orphan vendor pruning + Windows backslash path escape.
+        let proj_tree = root.join("proj_tree");
+        std::fs::create_dir_all(&proj_tree).unwrap();
+        let inst_mid = run_spid3r(
+            &proj_tree,
+            &["install", "mid"],
+            &[
+                (
+                    "SPID3R_REGISTRY",
+                    Some(&format!("http://127.0.0.1:{}", port)),
+                ),
+                ("SPID3R_TRUST_PK", Some(&rotated_trust)),
+                ("SPID3R_CACHE_DIR", Some(cache_str)),
+            ],
+        );
+        assert!(
+            inst_mid.status.success(),
+            "mid install with key rotation failed: {}",
+            String::from_utf8_lossy(&inst_mid.stderr)
+        );
+        assert!(proj_tree.join("vendor/leaf/lib.matrix").is_file());
+        let tree_out = run_spid3r(
+            &proj_tree,
+            &["tree"],
+            &[
+                (
+                    "SPID3R_REGISTRY",
+                    Some(&format!("http://127.0.0.1:{}", port)),
+                ),
+                ("SPID3R_CACHE_DIR", Some(cache_str)),
+            ],
+        );
+        let tree_txt = String::from_utf8_lossy(&tree_out.stdout);
+        assert!(
+            tree_txt.contains("mid 0.1.0") && tree_txt.contains("leaf 1.2.0"),
+            "transitive tree missing leaf:\n{}",
+            tree_txt
+        );
+
+        // Removing `mid` must prune orphaned transitive `vendor/leaf` cleanly!
+        let rem_mid = run_spid3r(&proj_tree, &["remove", "mid"], &[]);
+        assert!(rem_mid.status.success());
+        assert!(!proj_tree.join("vendor/mid").exists());
+        assert!(
+            !proj_tree.join("vendor/leaf").exists(),
+            "orphaned transitive vendor/leaf was not pruned"
+        );
+        assert!(run_spid3r(&proj_tree, &["verify"], &[]).status.success());
+
+        // 4. Lockfile pins registry version until --update.
+        let reg_pin = root.join("reg_pin");
+        let p_src = root.join("p_src");
+        write_file(
+            &p_src.join("spider.toml"),
+            "[package]\nname = \"p\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+        );
+        write_file(
+            &p_src.join("src/lib.matrix"),
+            "public fn pv() { return 1; }\n",
+        );
+        assert!(run_spid3r(
+            &p_src,
+            &["publish", "--to-dir", reg_pin.to_str().unwrap()],
+            &[]
+        )
+        .status
+        .success());
+
+        let app_pin = root.join("app_pin");
+        write_file(
+            &app_pin.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\np = { version = \"^1.0.0\" }\n",
+        );
+        write_file(
+            &app_pin.join("src/main.matrix"),
+            "fn main() { return 0; }\n",
+        );
+        assert!(run_spid3r(
+            &app_pin,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(reg_pin.to_str().unwrap()))]
+        )
+        .status
+        .success());
+
+        write_file(
+            &p_src.join("spider.toml"),
+            "[package]\nname = \"p\"\nversion = \"1.1.0\"\nentry = \"src/lib.matrix\"\n",
+        );
+        assert!(run_spid3r(
+            &p_src,
+            &["publish", "--to-dir", reg_pin.to_str().unwrap()],
+            &[]
+        )
+        .status
+        .success());
+
+        // Plain `install` stays at locked 1.0.0; `--update` upgrades to 1.1.0.
+        assert!(run_spid3r(
+            &app_pin,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(reg_pin.to_str().unwrap()))]
+        )
+        .status
+        .success());
+        let lock1 = std::fs::read_to_string(app_pin.join("spider.lock")).unwrap();
+        assert!(
+            lock1.contains("version = \"1.0.0\""),
+            "must stay pinned:\n{lock1}"
+        );
+
+        assert!(run_spid3r(
+            &app_pin,
+            &["install", "--update"],
+            &[("SPID3R_REGISTRY", Some(reg_pin.to_str().unwrap()))]
+        )
+        .status
+        .success());
+        let lock2 = std::fs::read_to_string(app_pin.join("spider.lock")).unwrap();
+        assert!(
+            lock2.contains("version = \"1.1.0\""),
+            "--update must upgrade:\n{lock2}"
+        );
+
+        // 5. Escaped backslash path + incompatible target gate.
+        let win_lib = root.join("bs_lib");
+        write_file(
+            &win_lib.join("spider.toml"),
+            "[package]\nname = \"bs_lib\"\nversion = \"0.1.0\"\nentry = \"src/lib.matrix\"\n",
+        );
+        write_file(
+            &win_lib.join("src/lib.matrix"),
+            "public fn ok() { return 7; }\n",
+        );
+        let consumer = root.join("bs_consumer");
+        write_file(
+            &consumer.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        );
+        write_file(
+            &consumer.join("src/main.matrix"),
+            "fn main() { return 0; }\n",
+        );
+        let bs_add = run_spid3r(&consumer, &["add", "bs_lib", "--path", "..\\bs_lib"], &[]);
+        assert!(
+            bs_add.status.success(),
+            "backslash path failed: {}",
+            String::from_utf8_lossy(&bs_add.stderr)
+        );
+
+        let incompat = root.join("incompat_pkg");
+        write_file(
+            &incompat.join("spider.toml"),
+            "[package]\nname = \"incompat\"\nversion = \"0.1.0\"\ntargets = [\"plan9-vax\"]\n",
+        );
+        write_file(&incompat.join("src/lib.matrix"), "public fn x() {}\n");
+        let bad_target = run_spid3r(
+            &consumer,
+            &["add", "incompat", "--path", "../incompat_pkg"],
+            &[],
+        );
+        assert!(!bad_target.status.success());
+        assert!(String::from_utf8_lossy(&bad_target.stderr).contains("plan9-vax"));
+
+        stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(("127.0.0.1", port));
+        let _ = srv_handle.join();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

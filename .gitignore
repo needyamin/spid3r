@@ -114,3 +114,6 @@ __pycache__/
 # in benchmarks/json/.
 /benchmarks/json/*.ci-advisory.json
 
+# Cloned standalone static registry repository (spid3r-spkg.github.io).
+/docs/spid3r-spkg.github.io/
+

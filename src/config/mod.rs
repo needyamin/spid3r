@@ -128,16 +128,24 @@ pub fn parse_ini(text: &str) -> (IniDoc, Vec<String>) {
 
 fn strip_comment(line: &str) -> &str {
     // A `;` or `#` that is not inside quotes starts a comment.
+    // Backslash-escaped quotes inside `"..."` stay inside the literal.
     let bytes = line.as_bytes();
     let mut in_quote: Option<u8> = None;
-    for (i, &b) in bytes.iter().enumerate() {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
         match in_quote {
+            Some(b'"') if b == b'\\' && i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
             Some(q) if b == q => in_quote = None,
             Some(_) => {}
             None if b == b'"' || b == b'\'' => in_quote = Some(b),
             None if b == b';' || b == b'#' => return &line[..i],
             None => {}
         }
+        i += 1;
     }
     line
 }
@@ -152,6 +160,7 @@ fn unescape_ini(s: &str) -> String {
                 Some('t') => out.push('\t'),
                 Some('r') => out.push('\r'),
                 Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
@@ -166,6 +175,12 @@ fn unescape_ini(s: &str) -> String {
 }
 
 fn escape_ini(s: &str) -> String {
+    let needs_quotes = s.is_empty()
+        || s.trim() != s
+        || s.contains(';')
+        || s.contains('#')
+        || s.contains('"')
+        || (s.starts_with('\'') && s.ends_with('\''));
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -173,13 +188,11 @@ fn escape_ini(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
             '\\' => out.push_str("\\\\"),
-            ';' | '#' | '"' if s.starts_with(';') || s.starts_with('#') => {
-                out.push(c);
-            }
+            '"' if needs_quotes => out.push_str("\\\""),
             _ => out.push(c),
         }
     }
-    if s.contains(';') || s.contains('#') || s.trim() != s || s.is_empty() {
+    if needs_quotes {
         format!("\"{}\"", out)
     } else {
         out
@@ -203,6 +216,12 @@ pub fn write_ini(doc: &IniDoc) -> String {
 
 /// Where we look for `spid3r.ini`, in order. The first hit wins; the rest
 /// are reported by `search_path()` for `spid3r config path`.
+///
+/// The current working directory is intentionally excluded so cloning or
+/// entering an untrusted repository with a `spid3r.ini` cannot silently
+/// hijack `[paths]`, `[packages]`, or `[security]` settings; opt into a
+/// project-local file explicitly with `SPID3R_INI=./spid3r.ini` (or
+/// `SPID3R_CONFIG_DIR=.`).
 pub fn candidate_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = std::env::var_os("SPID3R_INI") {
@@ -217,9 +236,6 @@ pub fn candidate_paths() -> Vec<PathBuf> {
     }
     if let Some(dir) = config_dir() {
         out.push(dir.join("spid3r.ini"));
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        out.push(cwd.join("spid3r.ini"));
     }
     out
 }
@@ -495,7 +511,7 @@ fn build_from_doc(
         }
     }
 
-    // Process environment: SPID3R_AGENT_BIND / SPID3R_AGENT_BIND.
+    // Process environment: SPID3R_<SECTION>_<KEY> overrides (e.g. SPID3R_NET_TIMEOUT_MS).
     // Existing documented names (SPID3R_MAX_WORKERS, ...) also apply.
     apply_process_env(&mut values, &mut notes, &mut display_explicit);
 
@@ -856,5 +872,46 @@ mod tests {
         let cfg = build_from_doc(doc, None, None, Vec::new(), "default");
         assert_eq!(cfg.get("runtime.timezone"), Some("UTC"));
         assert!(cfg.notes.iter().any(|n| n.contains("runtime.timezone")));
+    }
+
+    #[test]
+    fn roundtrip_ini_preserves_quotes_comments_and_whitespace() {
+        let mut doc = IniDoc::default();
+        let cases = [
+            ("k_quote", "say \"hello\" now"),
+            ("k_semi_quote", "a; \"b\" # c"),
+            ("k_backslash", r#"C:\path\"quoted"\end"#),
+            ("k_newline", "line1\nline2\tindent\r"),
+            ("k_spaces", "  padded  "),
+            ("k_empty", ""),
+            ("k_single", "'already single'"),
+        ];
+        for (k, v) in cases {
+            doc.set("test", k, v);
+        }
+        let text = write_ini(&doc);
+        let (back, probs) = parse_ini(&text);
+        assert!(probs.is_empty(), "parse problems: {:?}", probs);
+        for (k, v) in cases {
+            assert_eq!(
+                back.get("test", k),
+                Some(v),
+                "key {} failed roundtrip in:\n{}",
+                k,
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_paths_never_includes_cwd() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let cwd_ini = cwd.join("spid3r.ini");
+        let candidates = candidate_paths();
+        assert!(
+            !candidates.iter().any(|p| p == &cwd_ini),
+            "candidate_paths() must never auto-load <cwd>/spid3r.ini: {:?}",
+            candidates
+        );
     }
 }

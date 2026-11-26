@@ -292,7 +292,14 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     s.push("Spid3r version", crate::VERSION);
     s.push("Language version", crate::LANGUAGE_VERSION);
     s.push("Host language", "Rust");
-    s.push("Compiler", "yamc (YamLLVM)");
+    s.push(
+        "Compiler",
+        if cfg!(feature = "native") {
+            "yamc (YamLLVM)"
+        } else {
+            "yamcvm (Bytecode)"
+        },
+    );
     s.push("Execution engine", "Spid3r Engine (spvm / spvm_rt)");
     s.push("Memory manager", "YamGC");
     s.push("Runtime library", "spid3r_lang");
@@ -1029,6 +1036,9 @@ pub fn sections_to_value(sections: &[Section]) -> Value {
 /// `"html"` / `"json"` / `"text"` return the rendered string.
 /// A second truthy argument disables redaction (local operator choice).
 pub fn n_spid3rinfo(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if crate::stdlib::sandbox_armed() || crate::stdlib::fs_policy::policy().deny_environment {
+        return Err("sandboxed: environment access denied".to_string());
+    }
     if args.len() > 2 {
         return Err(format!(
             "spid3rinfo expects at most 2 argument(s), got {}",

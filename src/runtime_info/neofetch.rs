@@ -236,14 +236,14 @@ fn target_short_tag() -> &'static str {
 
 fn compiler_short_tag() -> &'static str {
     if cfg!(feature = "native") {
-        "LLVM 23"
+        "YamLLVM"
     } else {
-        "Bytecode"
+        "yamcvm"
     }
 }
 
 fn runtime_short_tag() -> &'static str {
-    "Zero-Dep"
+    "YamGC"
 }
 
 /// Map standard Windows timezone key names (`TimeZoneKeyName`) to IANA IDs.
@@ -362,9 +362,9 @@ fn build_left_column(use_color: bool) -> Vec<String> {
     }
     lines.push(box_row("Lang", lang));
     lines.push(box_row("Compiler", compiler));
-    lines.push(box_row("Host", "Rust Stg0"));
-    lines.push(box_row("Target", target));
+    lines.push(box_row("Engine", "spvm"));
     lines.push(box_row("Runtime", runtime));
+    lines.push(box_row("Target", target));
     lines.push(c(use_color, "90", "    └────────────────────┘"));
     lines.push(String::new());
 
@@ -388,7 +388,7 @@ fn build_left_column(use_color: bool) -> Vec<String> {
 
     lines.push(String::new());
     lines.push(format!("         {}", c(use_color, "1;37", "ANSNEW TECH")));
-    lines.push(format!("       {}", c(use_color, "90", "Self-Hosted AOT")));
+    lines.push(format!("        {}", c(use_color, "90", "Spid3r Engine")));
     lines
 }
 
