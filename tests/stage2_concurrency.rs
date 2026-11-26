@@ -785,18 +785,23 @@ fn concurrent_set_adds_do_not_duplicate() {
     let src = r#"
 fn main() {
     let s = set();
+    let tasks = [];
     let i = 0;
     while (i < 8) {
-        spawn fn() {
+        tasks.push(spawn fn() {
             let j = 0;
             while (j < 200) {
                 s.add("x");
                 j = j + 1;
             }
-        };
+        });
         i = i + 1;
     }
-    sleep_ms(800);
+    let k = 0;
+    while (k < tasks.len()) {
+        tasks[k].join();
+        k = k + 1;
+    }
     println(s.len());
     return 0;
 }
@@ -812,24 +817,84 @@ fn concurrent_bag_adds_keep_an_exact_count() {
     let src = r#"
 fn main() {
     let b = bag();
+    let tasks = [];
     let i = 0;
     while (i < 4) {
-        spawn fn() {
+        tasks.push(spawn fn() {
             let j = 0;
             while (j < 50) {
                 b.add("x");
                 j = j + 1;
             }
-        };
+        });
         i = i + 1;
     }
-    sleep_ms(800);
+    let k = 0;
+    while (k < tasks.len()) {
+        tasks[k].join();
+        k = k + 1;
+    }
     println(b.count_of("x"));
     println(b.len());
     return 0;
 }
 "#;
     assert_both_engines("bag add race", src, &["200", "200"]);
+}
+
+/// Non-scalar concurrent `bag.add` (exercises `bag_detached` + `with_snapshot_retry`)
+/// must also preserve exact counts without spurious CAS exhaustion or lost adds.
+#[test]
+fn concurrent_bag_adds_non_scalar_keep_exact_count() {
+    let src = r#"
+fn main() {
+    let b = bag();
+    let tasks = [];
+    let i = 0;
+    while (i < 4) {
+        tasks.push(spawn fn() {
+            let j = 0;
+            while (j < 50) {
+                b.add([1, 2]);
+                j = j + 1;
+            }
+        });
+        i = i + 1;
+    }
+    let k = 0;
+    while (k < tasks.len()) {
+        tasks[k].join();
+        k = k + 1;
+    }
+    println(b.count_of([1, 2]));
+    println(b.len());
+    return 0;
+}
+"#;
+    assert_both_engines("bag non-scalar add race", src, &["200", "200"]);
+}
+
+/// `Option` and `Result` elements in a `bag()` must match via `same_slot`
+/// during repeated `add` and `remove` calls rather than tripping spurious CAS conflicts.
+#[test]
+fn bag_handles_option_and_result_values() {
+    let src = r#"
+fn main() {
+    let b = bag();
+    b.add(some(1));
+    b.add(some(1));
+    b.add(ok(2));
+    b.add(ok(2));
+    b.add(err("e"));
+    b.remove(some(1));
+    println(b.count_of(some(1)));
+    println(b.count_of(ok(2)));
+    println(b.count_of(err("e")));
+    println(b.len());
+    return 0;
+}
+"#;
+    assert_both_engines("bag option result", src, &["1", "2", "1", "4"]);
 }
 
 /// At the worker ceiling, queued work whose workers are all parked can never

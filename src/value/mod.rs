@@ -1786,7 +1786,16 @@ pub fn same_slot(a: &Value, b: &Value) -> bool {
     if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
         return x == y;
     }
-    scalar_equal(a, b).unwrap_or(false)
+    match (a, b) {
+        (Value::Float(x), Value::Float(y)) if x.is_nan() && y.is_nan() => true,
+        (Value::Option(None), Value::Option(None)) => true,
+        (Value::Option(Some(x)), Value::Option(Some(y))) => same_slot(x, y),
+        (Value::Result(x), Value::Result(y)) => match (x.as_ref(), y.as_ref()) {
+            (Ok(a), Ok(b)) | (Err(a), Err(b)) => same_slot(a, b),
+            _ => false,
+        },
+        _ => scalar_equal(a, b).unwrap_or(false),
+    }
 }
 
 /// Exact mixed Int/Float equality: a distinct mathematical value never compares

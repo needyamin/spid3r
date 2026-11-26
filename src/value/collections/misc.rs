@@ -3039,15 +3039,16 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
 
 // ------------------------------------------------------- detached operations
 
-/// Did the bag keep exactly the entries `snapshot` had, with the same counts?
+/// Did the bag keep the exact same entry keys in the same slots as `snapshot`?
 /// Identity/scalar comparison only — never locks a value, so it is safe under
-/// the bag's mutex (see [`crate::value::same_slot`]).
+/// the bag's mutex (see [`crate::value::same_slot`]). Count changes on existing
+/// slots do not make a missing key appear, so counts are intentionally ignored.
 fn bag_counts_unchanged(cur: &[(Value, usize)], snapshot: &[(Value, usize)]) -> bool {
     cur.len() == snapshot.len()
         && cur
             .iter()
             .zip(snapshot)
-            .all(|((a, n), (b, m))| n == m && crate::value::same_slot(a, b))
+            .all(|((a, _), (b, _))| crate::value::same_slot(a, b))
 }
 
 /// Detached bag operations (audit A-7): `add`/`remove`/`count_of`/`contains`
@@ -3068,24 +3069,29 @@ pub fn bag_detached(
             let pos = counts.iter().position(|(v, _)| values_equal(v, &args[0]));
             let mut g = d.lock().unwrap();
             match pos {
-                // Existing entry: only *that* entry has to be unchanged, so
-                // concurrent adds of other values do not force a retry.
+                // Existing entry: only verify that the slot still holds the
+                // same key with a nonzero count so concurrent increments on the
+                // same entry commute without spurious CAS retries.
                 Some(i) => match g.counts.get(i) {
-                    Some((cur, n))
-                        if *n == counts[i].1 && crate::value::same_slot(cur, &counts[i].0) =>
-                    {
+                    Some((cur, n)) if *n > 0 && crate::value::same_slot(cur, &counts[i].0) => {
                         g.counts[i].1 += 1;
                         Ok(Value::Null)
                     }
-                    // The entry moved, vanished, or was re-counted underneath
+                    // The entry moved, vanished, or was emptied underneath
                     // us: retry on a fresh snapshot (audit A-7).
                     Some(_) | None => Err(super::seq::CONFLICT.to_string()),
                 },
                 // New entry: the snapshot said "absent", so verify the whole
-                // entry list is still what we searched before inserting.
+                // entry list still holds the same keys before inserting.
                 None => {
                     if !bag_counts_unchanged(&g.counts, &counts) {
                         return Err(super::seq::CONFLICT.to_string());
+                    }
+                    if g.counts.len() == g.counts.capacity() {
+                        crate::budget::check_vec_grow::<(Value, usize)>(g.counts.len(), 1)?;
+                        g.counts
+                            .try_reserve(1)
+                            .map_err(|_| "out of memory: bag allocation failed".to_string())?;
                     }
                     g.counts.push((args[0].clone(), 1));
                     Ok(Value::Null)
@@ -3110,10 +3116,9 @@ pub fn bag_detached(
                             }
                             Ok(Value::Null)
                         }
-                        // A concurrent mutation moved or emptied the entry:
-                        // let the dispatcher retry on a fresh snapshot.
-                        Some(_) => Err(super::seq::CONFLICT.to_string()),
-                        None => Err("item not in bag".to_string()),
+                        // A concurrent mutation moved, shrank, or emptied the
+                        // entry: let the dispatcher retry on a fresh snapshot.
+                        Some(_) | None => Err(super::seq::CONFLICT.to_string()),
                     }
                 }
                 None => Err("item not in bag".to_string()),

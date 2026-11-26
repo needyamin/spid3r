@@ -724,7 +724,10 @@ const SNAPSHOT_RETRIES: usize = 32;
 fn with_snapshot_retry<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
     for _ in 0..SNAPSHOT_RETRIES {
         match attempt() {
-            Err(e) if e == seq::CONFLICT => continue,
+            Err(e) if e == seq::CONFLICT => {
+                std::thread::yield_now();
+                continue;
+            }
             other => return other,
         }
     }
@@ -1076,6 +1079,14 @@ pub fn call_method_host(
             d.lock().unwrap().method(name, &args)
         }
         Value::Bag(d) => {
+            if matches!(name, "push" | "add" | "remove" | "count_of" | "contains")
+                && args.len() == 1
+                && crate::value::is_scalar(&args[0])
+            {
+                // Scalar operands never lock any nested container, so we can
+                // query/mutate `counts` directly without cloning or CAS retries.
+                return d.lock().unwrap().method(name, &args);
+            }
             if matches!(name, "push" | "add" | "remove" | "count_of" | "contains") {
                 // Audit A-7: snapshot-then-operate, see the list arm above;
                 // `add` verifies the snapshot before committing so two tasks
