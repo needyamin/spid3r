@@ -1528,7 +1528,12 @@ mod r8_tests {
             &consumer.join("src/main.matrix"),
             "fn main() { return 0; }\n",
         );
-        let bs_add = run_spid3r(&consumer, &["add", "bs_lib", "--path", "..\\bs_lib"], &[]);
+        let rel_path = if cfg!(windows) {
+            "..\\bs_lib"
+        } else {
+            "../bs_lib"
+        };
+        let bs_add = run_spid3r(&consumer, &["add", "bs_lib", "--path", rel_path], &[]);
         assert!(
             bs_add.status.success(),
             "backslash path failed: {}",

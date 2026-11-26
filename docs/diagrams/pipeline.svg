@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img">
 <title>Spid3r compilation pipeline: one front end, four backends</title>
-<desc>Source code passes through lexer, parser, semantic checker and lower into a checked AST. Four Spid3r Engine backends consume that AST: the tree walker (spvm_rt) as reference oracle, the 60-opcode spvm bytecode VM (compiled by yamcvm to .matrixc, with pre-decoded fixed-width instructions and general fused superinstructions), the YamLLVM (LLVM 23) native AOT compiler (yamc / spid3r build / self-hosted spid3r-self), and the WebAssembly build. All four must produce identical stdout, stderr phase and exit code.</desc>
+<desc>Source code passes through lexer, parser, semantic checker and lower into a checked AST. Four Spid3r Engine backends consume that AST: the tree walker (spvm_rt) as reference oracle, the 60-opcode spvm bytecode VM (compiled by yamcvm to .matrixc, with pre-decoded fixed-width instructions and general fused superinstructions), the YamLLVM (LLVM 23) native AOT compiler (yamc / spid3r build / self-hosted spid3r-self with verified vendored auto-FFI linking), and the WebAssembly build. All four must produce identical stdout, stderr phase and exit code.</desc>
 <defs>
 <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>

@@ -52,7 +52,7 @@
 
 <rect x="36" y="472" width="356" height="46" rx="6" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
 <text x="214" y="490" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="600" fill="#166534">CI PASS = 6/6 jobs green</text>
-<text x="214" y="507" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">counts pinned via tools/count_tests.sh</text>
+<text x="214" y="507" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">counts pinned via tools/ci/count_tests.sh</text>
 
 <!-- ============ COLUMN 2: RELEASE ============ -->
 <rect x="420" y="74" width="330" height="462" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
@@ -70,11 +70,11 @@
 <text x="446" y="272" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">Stage 1→2→3 fixed point · pinned runtime</text>
 
 <rect x="432" y="292" width="306" height="106" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<text x="446" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F172A">2 · Windows NSIS installer</text>
-<text x="446" y="336" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">spid3r-self + spid3r + spid3r-control</text>
-<text x="446" y="352" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">slim native staticlib · LLVM-C.dll</text>
+<text x="446" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="600" fill="#0F172A">2 · Windows NSIS &amp; Store MSIX</text>
+<text x="446" y="336" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">spid3r-self + spid3r + spkg + yamc + control</text>
+<text x="446" y="352" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">slim native staticlib · LLVM-C.dll · Store MSIX</text>
 <rect x="446" y="364" width="278" height="26" rx="4" fill="#FEF3C7" stroke="#FDE68A" stroke-width="1"/>
-<text x="585" y="377" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">Spid3r-Setup-1.1.1.exe</text>
+<text x="585" y="377" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">Spid3r-Setup-1.1.1.exe · .msix</text>
 
 <path d="M585 398 L585 414" fill="none" stroke="#10B981" stroke-width="2" marker-end="url(#arrow-green)"/>
 

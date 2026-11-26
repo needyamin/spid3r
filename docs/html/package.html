@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en" data-theme="dark">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,7 +13,7 @@
         if (t === 'light' || t === 'dark') {
           document.documentElement.setAttribute('data-theme', t);
         }
-      } catch (e) {}
+      } catch (e) { }
     })();
   </script>
   <script src="version.js"></script>
@@ -49,9 +50,13 @@
       --shadow: 0 2px 12px rgba(15, 23, 42, 0.08);
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
-    html { scroll-behavior: smooth; }
+    html {
+      scroll-behavior: smooth;
+    }
 
     body {
       margin: 0;
@@ -62,8 +67,14 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    a { color: var(--cyan); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    a {
+      color: var(--cyan);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
 
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -102,7 +113,11 @@
       color: var(--fg-primary);
       text-decoration: none;
     }
-    .brand:hover { text-decoration: none; }
+
+    .brand:hover {
+      text-decoration: none;
+    }
+
     .brand img {
       width: 28px;
       height: 28px;
@@ -125,11 +140,13 @@
       border-radius: 7px;
       transition: background 0.15s, color 0.15s;
     }
+
     .nav-tab:hover {
       background: var(--bg-card-alt);
       color: var(--fg-primary);
       text-decoration: none;
     }
+
     .nav-tab.active {
       background: var(--w3-green);
       color: #ffffff;
@@ -145,10 +162,13 @@
       font-weight: 600;
       cursor: pointer;
     }
-    .btn-top:hover { background: var(--bg-card-alt); }
+
+    .btn-top:hover {
+      background: var(--bg-card-alt);
+    }
 
     .layout {
-      max-width: 1240px;
+      max-width: 1540px;
       margin: 0 auto;
       padding: 1.5rem 1.5rem 3.5rem;
       display: grid;
@@ -192,13 +212,16 @@
       font-size: 0.88rem;
       color: var(--fg-secondary);
     }
+
     .toc a:hover {
       background: var(--bg-card-alt);
       color: var(--fg-primary);
       text-decoration: none;
     }
 
-    main { min-width: 0; }
+    main {
+      min-width: 0;
+    }
 
     .hero {
       background: linear-gradient(135deg, rgba(4, 170, 109, 0.14), rgba(56, 189, 248, 0.1));
@@ -340,7 +363,9 @@
       margin-bottom: 1rem;
     }
 
-    .panel h3:first-child { margin-top: 0; }
+    .panel h3:first-child {
+      margin-top: 0;
+    }
 
     .note {
       background: rgba(56, 189, 248, 0.08);
@@ -393,7 +418,12 @@
       font-weight: 600;
       cursor: pointer;
     }
-    .copy-btn:hover { background: var(--w3-green); border-color: var(--w3-green); color: #ffffff; }
+
+    .copy-btn:hover {
+      background: var(--w3-green);
+      border-color: var(--w3-green);
+      color: #ffffff;
+    }
 
     .table-wrap {
       overflow-x: auto;
@@ -410,7 +440,8 @@
       font-size: 0.9rem;
     }
 
-    th, td {
+    th,
+    td {
       text-align: left;
       padding: 0.7rem 0.9rem;
       border-bottom: 1px solid var(--border-line);
@@ -426,7 +457,9 @@
       letter-spacing: 0.04em;
     }
 
-    tr:last-child td { border-bottom: none; }
+    tr:last-child td {
+      border-bottom: none;
+    }
 
     .badge {
       display: inline-block;
@@ -437,10 +470,26 @@
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
-    .badge.pass { background: rgba(4, 170, 109, 0.16); color: var(--w3-green); }
-    .badge.info { background: rgba(56, 189, 248, 0.16); color: var(--cyan); }
-    .badge.warn { background: rgba(251, 191, 36, 0.16); color: var(--amber); }
-    .badge.muted { background: rgba(148, 163, 184, 0.16); color: var(--fg-secondary); }
+
+    .badge.pass {
+      background: rgba(4, 170, 109, 0.16);
+      color: var(--w3-green);
+    }
+
+    .badge.info {
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--cyan);
+    }
+
+    .badge.warn {
+      background: rgba(251, 191, 36, 0.16);
+      color: var(--amber);
+    }
+
+    .badge.muted {
+      background: rgba(148, 163, 184, 0.16);
+      color: var(--fg-secondary);
+    }
 
     details {
       background: var(--bg-card);
@@ -471,11 +520,17 @@
     }
 
     @media (max-width: 920px) {
-      .layout { grid-template-columns: 1fr; }
-      .toc { position: static; }
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toc {
+        position: static;
+      }
     }
   </style>
 </head>
+
 <body>
   <header class="topbar">
     <a class="brand" href="doc.html">
@@ -530,76 +585,105 @@
         <div class="card">
           <div class="k">Tool Entry Points</div>
           <div class="v"><code>spkg</code> &amp; <code>spid3r</code></div>
-          <div class="n">Both invoke the exact same in-process package engine; <code>spkg</code> accepts commands directly or via <code>spid3r init</code>/<code>add</code>/<code>install</code>.</div>
+          <div class="n">Both invoke the exact same in-process package engine; <code>spkg</code> accepts commands
+            directly or via <code>spid3r init</code>/<code>add</code>/<code>install</code>.</div>
         </div>
         <div class="card">
           <div class="k">4 Package Sources</div>
           <div class="v">Path · Git · Dir · HTTP(S)</div>
-          <div class="n">Install from local folders, Git URLs, local directory registries, or static HTTP/HTTPS package servers.</div>
+          <div class="n">Install from local folders, Git URLs, local directory registries, or static HTTP/HTTPS package
+            servers.</div>
         </div>
         <div class="card">
           <div class="k">Integrity Model</div>
           <div class="v">SHA-256 + Ed25519</div>
-          <div class="n">Deterministic hashing over relative paths + raw bytes, with optional signed <code>sha256.txt.sig</code> registries.</div>
+          <div class="n">Deterministic hashing over relative paths + raw bytes, with optional signed
+            <code>sha256.txt.sig</code> registries.
+          </div>
         </div>
         <div class="card">
           <div class="k">Execution Safety</div>
           <div class="v">Zero Install Hooks</div>
-          <div class="n">No build scripts run during <code>add</code> or <code>install</code>, and POSIX tar extraction rejects symlinks and special files.</div>
+          <div class="n">No build scripts run during <code>add</code> or <code>install</code>, and POSIX tar extraction
+            rejects symlinks and special files.</div>
         </div>
       </div>
 
       <section class="doc-section" id="sec-overview">
         <h2><span class="num">01</span>Architecture Overview: How It Works</h2>
         <p class="section-lead">
-          Spid3r uses a reproducible, vendored package workflow modeled around offline-friendly builds and verifiable lockfiles.
+          Spid3r uses a reproducible, vendored package workflow with per-target native wheels, verifiable lockfiles,
+          zero install hooks, and Ed25519-signed registries.
         </p>
+
+        <img src="../diagrams/packages.svg" alt="Spid3r enterprise package lifecycle diagram"
+          style="width:100%;height:auto;border-radius:10px;border:1px solid var(--border-line);margin:0.5rem 0 1.25rem;background:#fff;" />
 
         <div class="grid-2">
           <div class="panel">
             <h3>End-to-End Resolution &amp; Vendoring Flow</h3>
-            <p>When you run <code>spkg install</code> (or <code>spkg add</code>), Spid3r executes a deterministic pipeline:</p>
+            <p>When you run <code>spkg install</code> (or <code>spkg add</code>), Spid3r executes a deterministic
+              pipeline:</p>
             <ol>
-              <li>Reads <code>spider.toml</code> (single package or <code>[workspace]</code> root).</li>
-              <li>Unifies semantic version constraints across transitive dependencies (for example, combining <code>^1.0.0</code> and <code>=1.2.0</code> into <code>1.2.0</code>).</li>
-              <li>Fetches source files from a local path, Git checkout, local directory registry, or HTTP(S) registry cache under <code>.spid3r/registry/</code>.</li>
-              <li>Copies only package sources and <code>spider.toml</code> into <code>vendor/&lt;pkg&gt;/</code>.</li>
-              <li>Computes deterministic SHA-256 file digests and records exact versions, sources, file lists, and reverse dependents (<code>used_by</code>) in <code>spider.lock</code>.</li>
+              <li>Reads <code>spider.toml</code> (single package or <code>[workspace]</code> root) plus optional
+                <code>--dev</code> / <code>--extra</code> dependency groups.
+              </li>
+              <li>Unifies semantic version constraints across transitive dependencies while filtering yanked releases
+                (for example, combining <code>^1.0.0</code> and <code>=1.2.0</code> into <code>1.2.0</code>).</li>
+              <li>Fetches source archives or prebuilt per-target wheels (<code>package-&lt;target&gt;.tar</code>) into
+                the shared global cache (<code>paths.cache_dir</code> / <code>SPID3R_CACHE_DIR</code>, managed via
+                <code>spkg cache</code>), with strict offline support (<code>--offline</code> / <code>--frozen</code>).
+              </li>
+              <li>Atomically stages and copies sources, <code>.spid3r-manifest.toml</code>, and validated
+                <code>_native/&lt;target&gt;/</code> binaries into <code>vendor/&lt;pkg&gt;/</code>.
+              </li>
+              <li>Computes deterministic SHA-256 digests over both sources and native wheels and pins exact metadata
+                (<code>target</code>, <code>native-sha256</code>, <code>ffi-libs</code>, <code>used_by</code>) in
+                <code>spider.lock</code>.
+              </li>
             </ol>
           </div>
           <div class="panel">
             <h3>How Imports Resolve Vendor Packages</h3>
             <p>
-              The Spid3r compiler and runtime search <code>vendor/</code> automatically alongside the project source root.
-              When a dependency <code>mathlib</code> is vendored into <code>vendor/mathlib/</code>, you import its modules directly without extra include flags:
+              The Spid3r compiler and runtime search <code>vendor/</code> automatically alongside the project source
+              root.
+              When a dependency <code>mathlib</code> is vendored into <code>vendor/mathlib/</code>, you import its
+              modules directly without extra include flags:
             </p>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>import "mathlib/lib" as math;
+              <pre>import "mathlib/lib" as math;
 
 fn main() {
     println("sum = " + math.add(20, 22).to_string());
 }</pre>
             </div>
             <p>
-              Use <code>spkg modules src/main.matrix --tree</code> to inspect every imported module and verify which files came from <code>stdlib</code>, your project, or <code>vendor/</code>.
+              Use <code>spkg modules src/main.matrix --tree</code> to inspect every imported module and verify which
+              files came from <code>stdlib</code>, your project, or <code>vendor/</code>.
             </p>
           </div>
         </div>
 
         <div class="note good">
-          <strong>Default Public Registry:</strong> Out of the box, <code>packages.registry</code> points to <code>https://spid3r-spkg.github.io</code>.
-          You can run <code>spkg install &lt;pkg&gt;</code>, <code>spkg install &lt;pkg&gt;==&lt;ver&gt;</code>, or <code>spkg search</code> right away, override the URL via <code>SPID3R_REGISTRY</code> or <code>spid3r.ini</code>, set <code>SPID3R_REGISTRY=none</code> in air-gapped environments, or install directly via <code>--path</code> / <code>--git</code>.
+          <strong>Default Public Registry:</strong> Out of the box, <code>packages.registry</code> points to
+          <code>https://spid3r-spkg.github.io</code>.
+          You can run <code>spkg install &lt;pkg&gt;</code>, <code>spkg install &lt;pkg&gt;==&lt;ver&gt;</code>, or
+          <code>spkg search</code> right away, override the URL via <code>SPID3R_REGISTRY</code> or
+          <code>spid3r.ini</code>, set <code>SPID3R_REGISTRY=none</code> in air-gapped environments, or install directly
+          via <code>--path</code> / <code>--git</code>.
         </div>
       </section>
 
       <section class="doc-section" id="sec-quickstart">
         <h2><span class="num">02</span>60-Second Quickstart</h2>
-        <p class="section-lead">Initialize a project, inspect the generated layout, and run or compile it immediately.</p>
+        <p class="section-lead">Initialize a project, inspect the generated layout, and run or compile it immediately.
+        </p>
 
         <div class="code-wrap">
           <button class="copy-btn" type="button">Copy</button>
-<pre># 1. Quickest pip-style workflow in a fresh directory:
+          <pre># 1. Quickest pip-style workflow in a fresh directory:
 mkdir hello_demo && cd hello_demo
 spkg install hello          # auto-inits spider.toml and installs latest
 spkg search                 # browse online catalog.txt + vendor/
@@ -620,19 +704,23 @@ spkg uninstall hello
 spkg dist                   # writes target/my_app.matrixc</pre>
         </div>
 
-        <p>You can invoke the same subcommands through the main <code>spid3r</code> binary (<code>spid3r init</code>, <code>spid3r add</code>, <code>spid3r install</code>, <code>spid3r tree</code>, <code>spid3r verify</code>, <code>spid3r search</code>, <code>spid3r publish</code>) or via <code>spkg &lt;command&gt;</code>.</p>
+        <p>You can invoke the same subcommands through the main <code>spid3r</code> binary (<code>spid3r init</code>,
+          <code>spid3r add</code>, <code>spid3r install</code>, <code>spid3r tree</code>, <code>spid3r verify</code>,
+          <code>spid3r search</code>, <code>spid3r publish</code>) or via <code>spkg &lt;command&gt;</code>.
+        </p>
       </section>
 
       <section class="doc-section" id="sec-authoring">
         <h2><span class="num">03</span>Developing &amp; Writing a New Package</h2>
-        <p class="section-lead">Author reusable Spid3r libraries or runnable applications with clean exports and predictable directory layout.</p>
+        <p class="section-lead">Author reusable Spid3r libraries or runnable applications with clean exports and
+          predictable directory layout.</p>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Recommended Library Layout</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>slugify/
+              <pre>slugify/
 ├── spider.toml
 ├── src/
 │   ├── lib.matrix       # public library API
@@ -641,17 +729,20 @@ spkg dist                   # writes target/my_app.matrixc</pre>
     └── basic_test.matrix</pre>
             </div>
             <p>
-              <code>spkg init</code> sets <code>entry = "src/main.matrix"</code> by default. For reusable libraries, update <code>entry = "src/lib.matrix"</code> in <code>spider.toml</code> so <code>spkg pack</code>, <code>spkg dist</code>, and tools know your library entry module.
+              <code>spkg init</code> sets <code>entry = "src/main.matrix"</code> by default. For reusable libraries,
+              update <code>entry = "src/lib.matrix"</code> in <code>spider.toml</code> so <code>spkg pack</code>,
+              <code>spkg dist</code>, and tools know your library entry module.
             </p>
           </div>
           <div class="panel">
             <h3>Exporting Symbols with <code>public</code></h3>
             <p>
-              Any symbol imported from another module (functions, constants, classes, or enums) should be marked <code>public</code>:
+              Any symbol imported from another module (functions, constants, classes, or enums) should be marked
+              <code>public</code>:
             </p>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>// slugify/src/lib.matrix
+              <pre>// slugify/src/lib.matrix
 public const VERSION: string = "0.1.0";
 
 public fn slugify(text: string) -> string {
@@ -664,7 +755,7 @@ public fn slugify(text: string) -> string {
         <h3>Using Your Package From Another Project</h3>
         <div class="code-wrap">
           <button class="copy-btn" type="button">Copy</button>
-<pre># In a separate consumer project:
+          <pre># In a separate consumer project:
 spkg init demo_app
 cd demo_app
 
@@ -674,7 +765,7 @@ spkg add slugify --path ../slugify</pre>
 
         <div class="code-wrap">
           <button class="copy-btn" type="button">Copy</button>
-<pre>// demo_app/src/main.matrix
+          <pre>// demo_app/src/main.matrix
 import "slugify/lib" as slug;
 
 fn main() {
@@ -684,21 +775,26 @@ fn main() {
         </div>
 
         <div class="note good">
-          <strong>Import Path Mapping Rule:</strong> Source files inside a package's <code>src/</code> folder are archived or vendored directly under <code>vendor/&lt;pkg&gt;/</code>.
-          That means <code>slugify/src/lib.matrix</code> becomes <code>vendor/slugify/lib.matrix</code> and is imported as <code>import "slugify/lib"</code>. Subdirectories such as <code>src/net/client.matrix</code> map to <code>import "pkg/net/client"</code>.
+          <strong>Import Path Mapping Rule:</strong> Source files inside a package's <code>src/</code> folder are
+          archived or vendored directly under <code>vendor/&lt;pkg&gt;/</code>.
+          That means <code>slugify/src/lib.matrix</code> becomes <code>vendor/slugify/lib.matrix</code> and is imported
+          as <code>import "slugify/lib"</code>. Subdirectories such as <code>src/net/client.matrix</code> map to
+          <code>import "pkg/net/client"</code>.
         </div>
       </section>
 
       <section class="doc-section" id="sec-manifest">
-        <h2><span class="num">04</span>Manifest (<code>spider.toml</code>) &amp; Lockfile (<code>spider.lock</code>)</h2>
-        <p class="section-lead">Understand every supported key, dependency syntax form, and deterministic lockfile field.</p>
+        <h2><span class="num">04</span>Manifest (<code>spider.toml</code>) &amp; Lockfile (<code>spider.lock</code>)
+        </h2>
+        <p class="section-lead">Understand every supported key, dependency syntax form, and deterministic lockfile
+          field.</p>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Full <code>spider.toml</code> Example</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>[package]
+              <pre>[package]
 name = "winplot"
 version = "0.2.0"
 entry = "src/lib.matrix"
@@ -709,8 +805,13 @@ categories = ["data-science", "gui"]
 targets = ["windows-x86_64", "linux-x86_64", "any"]
 
 [ffi]
-# Optional declarative shared library metadata for extern fn bindings
-libs = ["user32.dll", "gdi32.dll"]
+# Declarative FFI metadata — automatically verified &amp; linked on yamc / spid3r build
+libs = ["user32", "gdi32"]
+bundled = ["lib/winplot_core.lib"]
+runtime_libs = ["bin/winplot.dll"]
+
+[bin]
+winplot-cli = "src/cli.matrix"
 
 [dependencies]
 # Local path shorthand or inline table
@@ -722,7 +823,13 @@ router = { git = "https://github.com/org/router.git", rev = "v1.2.0" }
 
 # Registry dependency with SemVer / compound range
 json_fmt = { version = "&gt;=1.0.0, &lt;2.0.0" }
-internal_auth = { version = "=2.0.1", registry = "corp" }</pre>
+internal_auth = { version = "=2.0.1", registry = "corp" }
+
+[dev-dependencies]
+test_helpers = { version = "^0.4.0" }
+
+[optional-dependencies.gpu]
+cuda_accel = { version = "^0.2.0" }</pre>
             </div>
           </div>
 
@@ -730,16 +837,21 @@ internal_auth = { version = "=2.0.1", registry = "corp" }</pre>
             <h3>Generated <code>spider.lock</code> Format</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>[[package]]
-name = "json_fmt"
-version = "1.4.2"
-source = "registry+^1.4.0"
+              <pre>[[package]]
+name = "winplot"
+version = "0.2.0"
+source = "registry+^0.2.0"
 sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+target = "x86_64-pc-windows-msvc"
+native-sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+ffi-libs = ["user32", "gdi32", "lib/winplot_core.lib"]
 files = ["lib.matrix", "spider.toml"]
 used_by = ["demo_app"]</pre>
             </div>
             <p>
-              <code>spkg verify</code> hashes every listed file inside <code>vendor/&lt;pkg&gt;/</code> using exact relative paths plus raw bytes and checks for missing directories, changed hashes, extra/deleted files, or unlocked vendor directories.
+              <code>spkg verify</code> and <code>spid3r build</code> re-hash both vendored sources and
+              <code>_native/&lt;target&gt;/</code> binaries against <code>spider.lock</code>, blocking tampered or
+              mismatched files before execution or native linking.
             </p>
           </div>
         </div>
@@ -757,7 +869,8 @@ used_by = ["demo_app"]</pre>
             <tbody>
               <tr>
                 <td><code>^1.2.3</code> / <code>^0.2.1</code></td>
-                <td>Standard SemVer caret: compatible within major if &gt; 0, or within minor for <code>0.x</code> (<code>^0.2.1</code> matches <code>0.2.x</code>, excludes <code>0.3.0</code>)</td>
+                <td>Standard SemVer caret: compatible within major if &gt; 0, or within minor for <code>0.x</code>
+                  (<code>^0.2.1</code> matches <code>0.2.x</code>, excludes <code>0.3.0</code>)</td>
                 <td><code>1.2.3</code>, <code>1.9.0</code> (not <code>2.0.0</code>)</td>
               </tr>
               <tr>
@@ -767,7 +880,9 @@ used_by = ["demo_app"]</pre>
               </tr>
               <tr>
                 <td><code>&gt;=1.0.0, &lt;2.0.0</code></td>
-                <td>Compound AND ranges using <code>&gt;=</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&lt;</code></td>
+                <td>Compound AND ranges using <code>&gt;=</code>, <code>&lt;=</code>, <code>&gt;</code>,
+                  <code>&lt;</code>
+                </td>
                 <td><code>1.0.0</code>, <code>1.9.4</code> (not <code>2.0.0</code>)</td>
               </tr>
               <tr>
@@ -782,7 +897,8 @@ used_by = ["demo_app"]</pre>
 
       <section class="doc-section" id="sec-installing">
         <h2><span class="num">05</span>Installing &amp; Managing Dependencies (All 4 Sources)</h2>
-        <p class="section-lead">Choose path, Git, local directory registry, or static HTTP/HTTPS registry sources per dependency.</p>
+        <p class="section-lead">Choose path, Git, local directory registry, or static HTTP/HTTPS registry sources per
+          dependency.</p>
 
         <div class="table-wrap">
           <table>
@@ -799,25 +915,32 @@ used_by = ["demo_app"]</pre>
                 <td><span class="badge pass">Local Path</span></td>
                 <td><code>spkg add util --path ../util</code></td>
                 <td><code>util = { path = "../util" }</code></td>
-                <td>Great for monorepos and active local development; re-run <code>spkg install</code> to refresh <code>vendor/</code>.</td>
+                <td>Great for monorepos and active local development; re-run <code>spkg install</code> to refresh
+                  <code>vendor/</code>.
+                </td>
               </tr>
               <tr>
                 <td><span class="badge info">Git URL</span></td>
                 <td><code>spkg add router --git https://example.com/r.git --rev v1.0.0</code></td>
                 <td><code>router = { git = "...", rev = "v1.0.0" }</code></td>
-                <td>Supports <code>https://</code> and <code>ssh://</code> by default. Plain <code>http://</code> and local file Git repos are blocked unless explicitly opted in.</td>
+                <td>Supports <code>https://</code> and <code>ssh://</code> by default. Plain <code>http://</code> and
+                  local file Git repos are blocked unless explicitly opted in.</td>
               </tr>
               <tr>
                 <td><span class="badge pass">Local Registry</span></td>
                 <td><code>spkg add json_fmt --version "^1.2.0"</code></td>
                 <td><code>json_fmt = { version = "^1.2.0" }</code></td>
-                <td>Resolves against <code>$SPID3R_REGISTRY/&lt;name&gt;/&lt;ver&gt;/</code> (or named sub-registry subdirectory).</td>
+                <td>Resolves against <code>$SPID3R_REGISTRY/&lt;name&gt;/&lt;ver&gt;/</code> (or named sub-registry
+                  subdirectory).</td>
               </tr>
               <tr>
                 <td><span class="badge warn">HTTP(S) Registry</span></td>
                 <td><code>spkg install hello</code> or <code>spkg install hello==0.1.0</code></td>
                 <td><code>hello = { version = "^0.1.0" }</code></td>
-                <td>Defaults to <code>https://spid3r-spkg.github.io</code>; downloads <code>index.txt</code>, <code>sha256.txt</code>, optional <code>sha256.txt.sig</code>, and <code>package.tar</code> into <code>.spid3r/registry/</code>.</td>
+                <td>Defaults to <code>https://spid3r-spkg.github.io</code>; checks signed
+                  <code>index.txt</code>/<code>yanked.txt</code>, verifies <code>sha256*.txt.sig</code>, prefers
+                  per-target wheels, and stores downloads in the shared global cache (<code>spkg cache</code>).
+                </td>
               </tr>
             </tbody>
           </table>
@@ -825,37 +948,45 @@ used_by = ["demo_app"]</pre>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>Updating, Removing, and Auditing</h3>
+            <h3>Installing, Locking &amp; Auditing (CI Workflows)</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre># Install dependencies pinned to spider.lock when compatible
-spkg install
+              <pre># Install including dev dependencies and an optional extra group
+spkg install --dev --extra gpu
 
-# Ignore previous lockfile pins and resolve newest matching versions
-spkg install --update
+# Strict CI mode: fail if spider.toml or vendor/ drifts from spider.lock
+spkg install --frozen
 
-# Show full dependency graph
-spkg tree
+# Air-gapped install from shared cache without network access
+spkg install --offline
 
-# Verify vendor/ integrity against spider.lock (CI recommended)
-spkg verify
+# Security audit, outdated check, &amp; CycloneDX 1.5 JSON SBOM export
+spkg audit --json
+spkg outdated
+spkg freeze --sbom &gt; sbom.cdx.json
 
-# Remove a dependency from spider.toml, vendor/, and spider.lock
-spkg remove util</pre>
+# Global verified CLI tool shims (packages declaring [bin])
+spkg tool install mytool --path ../mytool</pre>
             </div>
           </div>
           <div class="panel">
-            <h3>Searching Local &amp; Vendored Packages</h3>
+            <h3>Inspecting, Searching &amp; Cache Management</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre># Search configured $SPID3R_REGISTRY plus current project vendor/
-spkg search json
+              <pre># Inspect locked packages, metadata, FFI surface, and cache
+spkg list --json
+spkg show winplot
+spkg cache dir
+spkg cache list
+spkg cache prune
 
-# Search only the current project vendor/ directory
+# Search configured $SPID3R_REGISTRY (+ --category) or local vendor/
+spkg search json --category data-science
 spkg search json --local</pre>
             </div>
             <p>
-              When <code>spkg add</code> or <code>spkg remove</code> edits <code>spider.toml</code>, it modifies lines textually so existing comments and section ordering remain intact.
+              When <code>spkg add</code> or <code>spkg remove</code> edits <code>spider.toml</code>, it modifies lines
+              textually so existing comments and section ordering remain intact.
             </p>
           </div>
         </div>
@@ -863,16 +994,18 @@ spkg search json --local</pre>
 
       <section class="doc-section" id="sec-workspaces">
         <h2><span class="num">06</span>Multi-Package Workspaces</h2>
-        <p class="section-lead">Manage multiple cooperating packages in one repository with shared dependency resolution and locking.</p>
+        <p class="section-lead">Manage multiple cooperating packages in one repository with shared dependency resolution
+          and locking.</p>
 
         <div class="panel">
           <h3>Workspace Root Layout &amp; Configuration</h3>
           <p>
-            A workspace root <code>spider.toml</code> declares <code>[workspace]</code> with <code>members</code>. A workspace root may omit <code>[package]</code> when it only coordinates member crates:
+            A workspace root <code>spider.toml</code> declares <code>[workspace]</code> with <code>members</code>. A
+            workspace root may omit <code>[package]</code> when it only coordinates member crates:
           </p>
           <div class="code-wrap">
             <button class="copy-btn" type="button">Copy</button>
-<pre>my_workspace/
+            <pre>my_workspace/
 ├── spider.toml
 ├── spider.lock          # single shared lockfile at workspace root
 ├── vendor/              # shared vendored dependencies
@@ -885,55 +1018,65 @@ spkg search json --local</pre>
           </div>
           <div class="code-wrap">
             <button class="copy-btn" type="button">Copy</button>
-<pre># my_workspace/spider.toml
+            <pre># my_workspace/spider.toml
 [workspace]
 members = ["core_lib", "cli_app"]</pre>
           </div>
           <p>
-            Running <code>spkg install</code> or <code>spkg tree</code> inside the workspace resolves dependencies across all listed members, unifies overlapping SemVer constraints, and checks shared integrity with <code>spkg verify</code>.
+            Running <code>spkg install</code> or <code>spkg tree</code> inside the workspace resolves dependencies
+            across all listed members, unifies overlapping SemVer constraints, and checks shared integrity with
+            <code>spkg verify</code>.
           </p>
         </div>
       </section>
 
       <section class="doc-section" id="sec-publishing">
         <h2><span class="num">07</span>Publishing, Tar Packaging &amp; Static Registries</h2>
-        <p class="section-lead">Publish immutable versioned releases to a local directory or host a zero-backend static HTTP/HTTPS registry.</p>
+        <p class="section-lead">Publish immutable versioned releases to a local directory or host a zero-backend static
+          HTTP/HTTPS registry.</p>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>Publish to a Registry Directory</h3>
+            <h3>Publish Source or Target Binary Wheels</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre># Export current package into /srv/spid3r-registry/&lt;name&gt;/&lt;version&gt;/
+              <pre># Publish pure-source release into /srv/spid3r-registry/&lt;name&gt;/&lt;version&gt;/
 spkg publish --to-dir /srv/spid3r-registry
 
-# Install from that local registry in another project
-SPID3R_REGISTRY=/srv/spid3r-registry spkg add slugify --version "^0.1.0"</pre>
+# Publish a prebuilt binary wheel for a specific host target triple
+spkg publish --to-dir /srv/spid3r-registry --target x86_64-pc-windows-msvc
+
+# Native build automatically verifies vendor hashes &amp; links [ffi] libs (opt out: --no-auto-ffi)
+yamc src/main.matrix -o app.exe --release</pre>
             </div>
             <p>
-              Publishes are <strong>immutable</strong>: if <code>&lt;dir&gt;/&lt;name&gt;/&lt;version&gt;/</code> already exists, <code>spkg publish</code> refuses to overwrite it so previously locked builds cannot silently change.
+              Publishes are <strong>immutable</strong>: existing pure-source or per-target wheels never overwrite prior
+              digests, and each target wheel signs its own <code>sha256-&lt;target&gt;.txt.sig</code> and
+              <code>manifest-&lt;target&gt;.sha256.sig</code>.
             </p>
           </div>
           <div class="panel">
             <h3>Static HTTP(S) Registry Layout</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre>&lt;base&gt;/
-├── registry.toml              # host descriptor, moved_to migration, mirrors
+              <pre>&lt;base&gt;/
+├── registry.toml[.sig]        # descriptor, moved_to migration, mirrors
 ├── registry.pub               # 64-hex Ed25519 public key
-├── catalog.txt                # searchable index + categories + targets
+├── catalog.txt[.sig]          # searchable index + categories + targets
 └── &lt;pkg-name&gt;/
-    ├── index.txt              # available versions (lazy fetch reads index first)
+    ├── index.txt[.sig]        # available versions (lazy fetch reads index first)
+    ├── yanked.txt[.sig]       # yanked releases excluded for new installs
+    ├── advisories.txt[.sig]   # security advisories checked by spkg audit
     └── &lt;version&gt;/
         ├── spider.toml
-        ├── sha256.txt         # streaming SHA-256 over src/
-        ├── sha256.txt.sig     # verified before tarball download/extract
-        ├── manifest.sha256    # canonical manifest + src/ digest
-        ├── manifest.sha256.sig
-        └── package.tar        # bounded archive (&lt;name&gt;-&lt;ver&gt;.tar fallback)</pre>
+        ├── sha256[-&lt;target&gt;].txt[.sig]     # pre-extract SHA-256 + Ed25519
+        ├── manifest[-&lt;target&gt;].sha256[.sig]
+        └── package[-&lt;target&gt;].tar          # source or binary wheel archive</pre>
             </div>
             <p>
-              To migrate domains later, copy the static files to your new host, set <code>moved_to = "https://new-host"</code> in the old <code>registry.toml</code>, or set <code>SPID3R_DEFAULT_REGISTRY</code> when building future toolchains.
+              To migrate domains later, copy the static files to your new host, set
+              <code>moved_to = "https://new-host"</code> in the old <code>registry.toml</code>, or set
+              <code>SPID3R_DEFAULT_REGISTRY</code> when building future toolchains.
             </p>
           </div>
         </div>
@@ -943,7 +1086,7 @@ SPID3R_REGISTRY=/srv/spid3r-registry spkg add slugify --version "^0.1.0"</pre>
             <h3>Self-Contained Tar Packing</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre># Bundle spider.toml and src/ into a clean POSIX ustar tar archive
+              <pre># Bundle spider.toml and src/ into a clean POSIX ustar tar archive
 spkg pack -o dist/my_pkg-0.1.0.tar
 
 # Extract into a new directory
@@ -953,8 +1096,12 @@ spkg unpack dist/my_pkg-0.1.0.tar ./extracted_pkg</pre>
           <div class="panel">
             <h3>TLS Feature Note for HTTPS Registries</h3>
             <p>
-              Prebuilt binaries compiled with the <code>tls</code> Cargo feature (<code>cargo build --features "native tls"</code>) fetch both <code>http://</code> and <code>https://</code> registries directly.
-              Binaries compiled with <code>--no-default-features</code> support local directory registries, <code>--path</code>, <code>--git</code>, and <code>http://</code> registries, and report an explicit error asking for a <code>tls</code>-enabled build if given an <code>https://</code> registry URL.
+              Prebuilt binaries compiled with the <code>tls</code> Cargo feature
+              (<code>cargo build --features "native tls"</code>) fetch both <code>http://</code> and
+              <code>https://</code> registries directly.
+              Binaries compiled with <code>--no-default-features</code> support local directory registries,
+              <code>--path</code>, <code>--git</code>, and <code>http://</code> registries, and report an explicit error
+              asking for a <code>tls</code>-enabled build if given an <code>https://</code> registry URL.
             </p>
           </div>
         </div>
@@ -962,14 +1109,15 @@ spkg unpack dist/my_pkg-0.1.0.tar ./extracted_pkg</pre>
 
       <section class="doc-section" id="sec-security">
         <h2><span class="num">08</span>Security, Ed25519 Signing &amp; <code>spid3r.ini</code></h2>
-        <p class="section-lead">Verify signed registries, enforce transport policies, and configure machine-wide defaults in <code>spid3r.ini</code>.</p>
+        <p class="section-lead">Verify signed registries, enforce transport policies, and configure machine-wide
+          defaults in <code>spid3r.ini</code>.</p>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Ed25519 Registry Signing &amp; Verification</h3>
             <div class="code-wrap">
               <button class="copy-btn" type="button">Copy</button>
-<pre># Publisher: provide a 64-hex-char Ed25519 secret seed
+              <pre># Publisher: provide a 64-hex-char Ed25519 secret seed
 # (or let publish read/generate registry.key in the target registry dir)
 SPID3R_SIGN_KEY=&lt;64-hex-seed&gt; spkg publish --to-dir /srv/registry
 # Writes registry.pub + &lt;ver&gt;/sha256.txt.sig (128-hex signature)
@@ -978,17 +1126,32 @@ SPID3R_SIGN_KEY=&lt;64-hex-seed&gt; spkg publish --to-dir /srv/registry
 SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com spkg install</pre>
             </div>
             <p>
-              When <code>SPID3R_TRUST_PK</code> or <code>packages.trust_pk</code> is set, every registry package must provide a valid <code>sha256.txt.sig</code> signed by that exact public key; missing or invalid signatures fail installation immediately.
+              When <code>SPID3R_TRUST_PK</code> or <code>packages.trust_pk</code> is set, every registry package must
+              provide a valid <code>sha256.txt.sig</code> signed by that exact public key; missing or invalid signatures
+              fail installation immediately.
             </p>
           </div>
 
           <div class="panel">
             <h3>Security Hardening Guarantees</h3>
             <ul>
-              <li><strong>No install-time code execution:</strong> <code>spkg add</code> and <code>spkg install</code> never run arbitrary pre/post-install shell scripts.</li>
-              <li><strong>Pre-extract Ed25519 &amp; manifest integrity:</strong> When <code>trust_pk</code> is set, signatures and <code>manifest.sha256</code> are checked before untrusted tarballs are extracted, and key rotation accepts comma-separated public keys.</li>
-              <li><strong>Bounded archive &amp; path sanitization:</strong> Tar extraction caps entries (10,000) and size (128 MiB), blocks traversal, Windows reserved names, case-insensitive collisions, and refuses symlinks in packages, vendoring, and Git checkouts.</li>
-              <li><strong>Atomic vendoring &amp; Git hardening:</strong> Dependencies stage and hash-verify before swapping into <code>vendor/</code>, and Git runs with symlinks, hooks, and submodules disabled.</li>
+              <li><strong>No install-time code execution:</strong> <code>spkg add</code> and <code>spkg install</code>
+                never run arbitrary pre/post-install shell scripts.</li>
+              <li><strong>Pre-extract Ed25519 &amp; metadata signing:</strong> When <code>trust_pk</code> is set,
+                <code>sha256*.txt.sig</code>, <code>manifest*.sha256.sig</code>, and registry metadata
+                (<code>registry.toml.sig</code>, <code>index.txt.sig</code>, <code>yanked.txt.sig</code>,
+                <code>advisories.txt.sig</code>) verify before extraction, supporting multi-key rotation.
+              </li>
+              <li><strong>Pre-link Auto-FFI verification &amp; SBOM:</strong> <code>yamc</code> /
+                <code>spid3r build</code> re-verify vendored source + native wheel hashes against
+                <code>spider.lock</code> before linking <code>[ffi]</code> libraries, while <code>spkg audit</code>
+                checks yanks/advisories/HTTP Git and <code>spkg freeze --sbom</code> exports CycloneDX 1.5 JSON.
+              </li>
+              <li><strong>Bounded archive, auth &amp; Git hardening:</strong> Tar extraction caps entries (10,000) and
+                size (128 MiB), blocks traversal/reserved names/symlinks, stages atomically, restricts
+                <code>SPID3R_REGISTRY_TOKEN</code> to same-origin HTTPS, and runs Git with hooks and submodules
+                disabled.
+              </li>
             </ul>
           </div>
         </div>
@@ -1009,7 +1172,8 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
                 <td><code>packages.registry</code></td>
                 <td><code>SPID3R_REGISTRY</code></td>
                 <td><code>https://spid3r-spkg.github.io</code></td>
-                <td>Default registry URL/directory or comma-separated mirror list (set <code>none</code> to disable).</td>
+                <td>Default registry URL/directory or comma-separated mirror list (set <code>none</code> to disable).
+                </td>
               </tr>
               <tr>
                 <td><code>packages.trust_pk</code></td>
@@ -1021,19 +1185,22 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
                 <td><code>packages.allow_insecure_git</code></td>
                 <td><code>SPID3R_ALLOW_INSECURE_GIT</code></td>
                 <td><code>false</code></td>
-                <td>Allow unencrypted <code>http://</code> Git dependency URLs (recommended <code>false</code> in production).</td>
+                <td>Allow unencrypted <code>http://</code> Git dependency URLs (recommended <code>false</code> in
+                  production).</td>
               </tr>
               <tr>
                 <td><code>packages.allow_local_git</code></td>
                 <td><code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code></td>
                 <td><code>false</code></td>
-                <td>Allow local filesystem paths as <code>git = "..."</code> URLs (prefer <code>path = "..."</code> instead).</td>
+                <td>Allow local filesystem paths as <code>git = "..."</code> URLs (prefer <code>path = "..."</code>
+                  instead).</td>
               </tr>
               <tr>
                 <td>N/A (auth env)</td>
                 <td><code>SPID3R_REGISTRY_TOKEN</code></td>
                 <td>Unset</td>
-                <td>Optional Bearer token sent only over <code>https://</code> to the initial registry origin (stripped on cross-origin redirects).</td>
+                <td>Optional Bearer token sent only over <code>https://</code> to the initial registry origin (stripped
+                  on cross-origin redirects).</td>
               </tr>
               <tr>
                 <td>N/A (publisher env)</td>
@@ -1048,7 +1215,9 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
 
       <section class="doc-section" id="sec-cli">
         <h2><span class="num">09</span>Complete CLI Reference</h2>
-        <p class="section-lead">All verified commands exposed by <code>spkg</code> (and mirrored through <code>spid3r</code>).</p>
+        <p class="section-lead">All verified commands exposed by <code>spkg</code> (and mirrored through
+          <code>spid3r</code>).
+        </p>
 
         <div class="table-wrap">
           <table>
@@ -1068,22 +1237,27 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg add &lt;name&gt;[==V|@V]</code></td>
                 <td><code>--path P</code> | <code>--git URL [--rev R]</code> | <code>--version V</code></td>
-                <td>Add a dependency entry to <code>spider.toml</code> (latest registry version if source omitted), vendor files into <code>vendor/</code>, and update <code>spider.lock</code>.</td>
+                <td>Add a dependency entry to <code>spider.toml</code> (latest registry version if source omitted),
+                  vendor files into <code>vendor/</code>, and update <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg remove &lt;name&gt;...</code> / <code>uninstall</code></td>
                 <td>One or more package names</td>
-                <td>Remove dependencies from <code>spider.toml</code>, delete their <code>vendor/&lt;name&gt;</code> folders, and update <code>spider.lock</code>.</td>
+                <td>Remove dependencies from <code>spider.toml</code>, delete their <code>vendor/&lt;name&gt;</code>
+                  folders, and update <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg install [&lt;pkg&gt;...]</code></td>
                 <td><code>[--update | -u] [--frozen] [--offline] [--dev] [--extra E]</code></td>
-                <td>Install named packages like <code>pip</code> or vendor project deps, dev/optional groups, and per-target native wheels.</td>
+                <td>Install named packages like <code>pip</code> or vendor project deps, dev/optional groups, and
+                  per-target native wheels.</td>
               </tr>
               <tr>
                 <td><code>spkg list</code> / <code>show &lt;pkg&gt;</code></td>
                 <td><code>[--json]</code></td>
-                <td>List locked dependencies and verification status, or show full metadata, hashes, and <code>[ffi]</code> surface for one package.</td>
+                <td>List locked dependencies and verification status, or show full metadata, hashes, and
+                  <code>[ffi]</code> surface for one package.
+                </td>
               </tr>
               <tr>
                 <td><code>spkg outdated</code></td>
@@ -1093,7 +1267,8 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg audit</code></td>
                 <td><code>[--json] [--offline]</code></td>
-                <td>Verify hashes, signatures, Git pinning, <code>[ffi]</code> binaries, yanked versions, and security advisories.</td>
+                <td>Verify hashes, signatures, Git pinning, <code>[ffi]</code> binaries, yanked versions, and security
+                  advisories.</td>
               </tr>
               <tr>
                 <td><code>spkg freeze</code></td>
@@ -1108,22 +1283,27 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg verify</code></td>
                 <td>None</td>
-                <td>Re-hash every file under <code>vendor/</code> and <code>_native/</code> against <code>spider.lock</code>.</td>
+                <td>Re-hash every file under <code>vendor/</code> and <code>_native/</code> against
+                  <code>spider.lock</code>.
+                </td>
               </tr>
               <tr>
                 <td><code>spkg search [query]</code></td>
                 <td><code>[--category CAT] [--local]</code></td>
-                <td>Search remote <code>catalog.txt</code> (or local registry directory) and <code>vendor/</code> entries; filter by ecosystem category or omit <code>query</code> to list all.</td>
+                <td>Search remote <code>catalog.txt</code> (or local registry directory) and <code>vendor/</code>
+                  entries; filter by ecosystem category or omit <code>query</code> to list all.</td>
               </tr>
               <tr>
                 <td><code>spkg publish</code></td>
                 <td><code>--to-dir &lt;dir&gt; [--target T]</code></td>
-                <td>Publish an immutable signed release (or per-target wheel) with <code>sha256*.txt.sig</code> and signed <code>index.txt.sig</code>.</td>
+                <td>Publish an immutable signed release (or per-target wheel) with <code>sha256*.txt.sig</code> and
+                  signed <code>index.txt.sig</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg pack</code></td>
                 <td><code>[-o out.tar] [--target T]</code></td>
-                <td>Create a clean POSIX ustar archive containing <code>spider.toml</code>, <code>src/</code>, and optional <code>native/&lt;target&gt;/</code>.</td>
+                <td>Create a clean POSIX ustar archive containing <code>spider.toml</code>, <code>src/</code>, and
+                  optional <code>native/&lt;target&gt;/</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg unpack &lt;archive&gt; [dir]</code></td>
@@ -1138,7 +1318,8 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg tool</code></td>
                 <td><code>install|list|uninstall &lt;pkg&gt;</code></td>
-                <td>Install verified CLI tools declaring <code>[bin]</code> into isolated environments with launcher shims in <code>bin/</code>.</td>
+                <td>Install verified CLI tools declaring <code>[bin]</code> into isolated environments with launcher
+                  shims in <code>bin/</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg dist</code></td>
@@ -1148,7 +1329,8 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg modules &lt;file&gt;</code></td>
                 <td><code>[--tree]</code></td>
-                <td>List all imported modules referenced by <code>&lt;file&gt;</code> along with their resolved origins.</td>
+                <td>List all imported modules referenced by <code>&lt;file&gt;</code> along with their resolved origins.
+                </td>
               </tr>
               <tr>
                 <td><code>spkg version</code> / <code>help</code></td>
@@ -1167,28 +1349,63 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
         <details>
           <summary>Why does <code>import "my_pkg/lib"</code> say module not found?</summary>
           <p>
-            Confirm two things: first, run <code>spkg install</code> so files exist inside <code>vendor/my_pkg/</code>; second, remember that files inside <code>my_pkg/src/</code> map directly under <code>vendor/my_pkg/</code> (so <code>src/lib.matrix</code> is imported as <code>"my_pkg/lib"</code>, without <code>src/</code> in the import string). Run <code>spkg modules src/main.matrix --tree</code> to inspect search resolution.
+            Confirm two things: first, run <code>spkg install</code> so files exist inside <code>vendor/my_pkg/</code>;
+            second, remember that files inside <code>my_pkg/src/</code> map directly under <code>vendor/my_pkg/</code>
+            (so <code>src/lib.matrix</code> is imported as <code>"my_pkg/lib"</code>, without <code>src/</code> in the
+            import string). Run <code>spkg modules src/main.matrix --tree</code> to inspect search resolution.
           </p>
         </details>
 
         <details>
           <summary>Why did <code>spkg verify</code> fail after editing a file in <code>vendor/</code>?</summary>
           <p>
-            <code>vendor/</code> is managed by <code>spkg</code> and hash-checked against <code>spider.lock</code>. Edit the original package source (for example via your <code>--path</code> folder), then run <code>spkg install</code> to re-vendor and refresh <code>spider.lock</code> cleanly.
+            <code>vendor/</code> is managed by <code>spkg</code> and hash-checked against <code>spider.lock</code>. Edit
+            the original package source (for example via your <code>--path</code> folder), then run
+            <code>spkg install</code> to re-vendor and refresh <code>spider.lock</code> cleanly.
           </p>
         </details>
 
         <details>
           <summary>Why is my <code>https://</code> registry rejected on a minimal build?</summary>
           <p>
-            If your binary was built without TLS support (for instance <code>--no-default-features</code>), HTTPS downloads cannot negotiate TLS. Build with <code>cargo build --features "native tls"</code> (or <code>--features tls</code>), or host an internal registry over a mounted directory or LAN HTTP mirror.
+            If your binary was built without TLS support (for instance <code>--no-default-features</code>), HTTPS
+            downloads cannot negotiate TLS. Build with <code>cargo build --features "native tls"</code> (or
+            <code>--features tls</code>), or host an internal registry over a mounted directory or LAN HTTP mirror.
           </p>
         </details>
 
         <details>
           <summary>Should I commit <code>spider.lock</code> and <code>vendor/</code> to Git?</summary>
           <p>
-            Commit <code>spider.toml</code> and <code>spider.lock</code> in every project and CI pipeline. Commit <code>vendor/</code> as well when you want 100% air-gapped offline builds without touching Git remotes or registries during CI; otherwise CI can run <code>spkg install &amp;&amp; spkg verify</code>.
+            Commit <code>spider.toml</code> and <code>spider.lock</code> in every project and CI pipeline, and enforce
+            them in CI with <code>spkg install --frozen &amp;&amp; spkg verify &amp;&amp; spkg audit</code>. Commit
+            <code>vendor/</code> as well when you want 100% air-gapped offline builds without touching Git remotes or
+            registries during CI.
+          </p>
+        </details>
+
+        <details>
+          <summary>How do native C/C++/Rust FFI wheels and auto-linking work?</summary>
+          <p>
+            Place platform binaries inside <code>native/&lt;target&gt;/</code> (e.g.
+            <code>native/x86_64-pc-windows-msvc/</code>) and declare <code>[ffi] libs / bundled / runtime_libs</code> in
+            <code>spider.toml</code>, then publish with
+            <code>spkg publish --to-dir &lt;dir&gt; --target &lt;triple&gt;</code>. Consumers install the wheel
+            automatically and run <code>spid3r build</code> / <code>yamc</code> with no extra linker flags; the compiler
+            verifies both source and native hashes against <code>spider.lock</code> before linking and copies
+            <code>runtime_libs</code> next to the output executable (disable with <code>--no-auto-ffi</code>).
+          </p>
+        </details>
+
+        <details>
+          <summary>How do I install and run global CLI tools built in Spid3r?</summary>
+          <p>
+            Declare <code>[bin]</code> entrypoints in <code>spider.toml</code> and run
+            <code>spkg tool install &lt;pkg&gt; [--path DIR | --git URL | --version VER]</code>. Spid3r compiles each
+            entrypoint into an isolated directory under your state directory (<code>tools/&lt;pkg&gt;/</code>) as
+            SHA-256-verified <code>.matrixc</code> bytecode and writes launcher shims in <code>bin/</code> with full CLI
+            argument forwarding. Manage them via <code>spkg tool list</code> and
+            <code>spkg tool uninstall &lt;pkg&gt;</code>.
           </p>
         </details>
       </section>
@@ -1211,7 +1428,7 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
           var root = document.documentElement;
           var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
           root.setAttribute('data-theme', next);
-          try { localStorage.setItem('spid3r-dev-theme', next); } catch (e) {}
+          try { localStorage.setItem('spid3r-dev-theme', next); } catch (e) { }
         });
       }
 
@@ -1235,4 +1452,5 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
     })();
   </script>
 </body>
+
 </html>

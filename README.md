@@ -56,10 +56,10 @@ Releases bundle **`spid3r-self`** (self-hosted compiler & dev CLI), **`spid3r`**
 
 | Route | Trust | Status |
 |---|---|---|
-| Embedded stdlib | immutable, compiled in | shipped |
+| Embedded stdlib | immutable, compiled in (`26` modules, `254` natives) | shipped |
 | Project `.matrix` / `.mt` files | your own source | shipped |
-| Vendored packages | checksummed, verified by `spid3r verify` | shipped |
-| FFI (`extern fn`) | trusted C ABI, AOT only | shipped |
+| Vendored packages &amp; binary wheels | Ed25519 + SHA-256 lock (`spkg verify` / `audit` / `--frozen`) | shipped |
+| FFI (`extern fn`) | trusted C ABI + verified vendored `[ffi]` auto-linking, AOT only | shipped |
 
 
 ## Self-hosted compiler architecture
@@ -118,7 +118,7 @@ All commands below work identically with `spid3r` or the short alias `sp`, and a
 - **`yamc`** — native AOT compiler (**YamLLVM** backend): `yamc app.mt -o app --release` (or `yamc build|check|compile|verify-runtime ...`)
 - **`yamcvm`** — bytecode compiler (emits SHA-256 `.matrixc`): `yamcvm app.mt -o app.matrixc` (or `yamcvm compile|disasm|check|dist ...`)
 - **`spvm`** — virtual machine (**`spvm_rt`**): `spvm app.matrixc`, `spvm app.mt`, `spvm exec|run|disasm|repl|debug ...`
-- **`spkg`** — package manager (`spider.toml`): `spkg init|add|remove|install|tree|verify|search|publish|pack|unpack|dist ...`
+- **`spkg`** — enterprise package manager (`spider.toml`): `spkg init|add|remove|install|list|show|outdated|audit|freeze|tree|verify|search|publish|pack|unpack|cache|tool|dist ...`
 
 | Command | Does |
 |---|---|
@@ -130,11 +130,12 @@ All commands below work identically with `spid3r` or the short alias `sp`, and a
 | `spid3r doc [--json] [--private] [-o PATH]` | generate HTML or JSON documentation from doc comments |
 | `spid3r test` | differential run across engines |
 | `spid3r lsp` | editor server (diagnostics, hover, rename, code actions) |
-| `spid3r build` | LLVM AOT native executable (`--freestanding`, `--target`, `--emit-obj`, `--enforce-budget`, `--allow-dlopen`) |
+| `spid3r build` | LLVM AOT native executable with verified `[ffi]` auto-linking (`--no-auto-ffi`, `--freestanding`, `--target`, `--emit-obj`, `--enforce-budget`, `--allow-dlopen`) |
 | `spid3r bundle --target wasm` | offline web app |
-| `spid3r init` · `install` · `dist` | projects, dependencies, release build |
-| `spid3r add` · `remove` · `tree` · `verify` | declare, inspect, and checksum-verify dependencies |
-| `spid3r modules` · `publish` · `search` | module origins and registry operations |
+| `spid3r init` · `install` · `dist` | projects, dependencies (`--frozen`, `--offline`, `--dev`, `--extra`), release build |
+| `spid3r add` · `remove` · `tree` · `verify` | declare, inspect, and SHA-256 verify vendored source + `_native/` wheels |
+| `spid3r list` · `show` · `outdated` · `audit` · `freeze` | inspect deps, check yanks/advisories/signatures, export pins or CycloneDX SBOM (`--sbom`) |
+| `spid3r cache` · `tool` · `modules` · `publish` · `search` | shared cache, isolated `[bin]` CLI tool shims, module origins, signed registries (`--target`) |
 | `spid3r magic <cmd>` | run project-root `magic` framework CLI |
 | `spid3r compile` · `gui` · `exec` · `bench` | `.matrixc` bytecode, windowed app, executor, benchmarks |
 | `spid3r disasm app.matrixc` | bytecode disassembly (`exit 4` if corrupt) |
@@ -158,7 +159,7 @@ All commands below work identically with `spid3r` or the short alias `sp`, and a
 
 | Guide | What's in it |
 |---|---|
-| [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
+| [Developer guide](docs/html/doc.html) · [Packages (`spkg`)](docs/html/package.html) | 15-chapter tutorial, API reference, enterprise package guide |
 | [Benchmarks](docs/html/benchmark.html) · [Selfhost baselines](benchmarks/selfhost/README.md) | VM/tree/PHP/Python tables, Phase 11 `P-1` & Stage-0 vs selfhost throughput |
 | [Playground](docs/html/playground.html) | run Spid3r in the browser |
 | [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
@@ -177,12 +178,11 @@ All commands below work identically with `spid3r` or the short alias `sp`, and a
 
 ## License
 
-GNU General Public License, version 3 or later — see [LICENSE.md](LICENSE.md).
+GNU General Public License, version 3 or later (with the **Spid3r Runtime Library Exception** under GPLv3 Section 7) — see [LICENSE.md](LICENSE.md).
 
 | Point | Meaning |
 |---|---|
 | **Use** | run, study, modify, and redistribute freely — commercial use included |
-| **Share alike** | distribute a modified toolchain and source stays GPL |
+| **Share alike** | distribute a modified toolchain or runtime (`spid3r_lang`) and its source stays GPL |
+| **User programs** | compiled `.matrixc`, native executables (`spid3r build` / `spid3r-self`), and `bundle` outputs can use any license of your choice under the GPLv3 Section 7 exception |
 | **No warranty** | provided as-is |
-
-`spid3r build` statically links the GPL runtime into native executables; distribute `.matrixc` bytecode (`spid3r compile`) or add a runtime exception if permissive output is required.

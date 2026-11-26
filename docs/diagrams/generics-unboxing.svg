@@ -35,7 +35,7 @@
 
 <!-- AOT -->
 <rect x="528" y="140" width="324" height="150" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2"/>
-<text x="690" y="164" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#134E4A">LLVM 23 AOT specialization</text>
+<text x="690" y="164" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="600" fill="#134E4A">YamLLVM (LLVM 23) AOT specialization</text>
 <text x="690" y="188" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#0F766E">spid3r_mono_add__int(i64, i64) -&gt; i64</text>
 <text x="690" y="212" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#115E59">unboxed scalars · list&lt;int&gt;/&lt;float&gt; (12 ulist fns)</text>
 <text x="690" y="234" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#115E59">hoisted 2D row handles (ptr, len, gen) + BCE</text>

@@ -16,7 +16,7 @@
 <rect x="0" y="0" width="880" height="360" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
 <text x="32" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0F172A">Bootstrap Chain: Stage 0 → Stage 1 → Stage 2 → Stage 3</text>
-<text x="32" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Rust Stage 0 seeds Stage 1; from there on, zero cargo/rustc calls</text>
+<text x="32" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Rust Stage 0 seeds Stage 1 via YamLLVM (LLVM 23); zero cargo/rustc from there on</text>
 
 <!-- Shared inputs -->
 <rect x="32" y="72" width="400" height="42" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
@@ -24,7 +24,7 @@
 <text x="48" y="108" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">the compiler, written in Spid3r</text>
 
 <rect x="448" y="72" width="400" height="42" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
-<text x="464" y="94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#78350F">libspid3r_lang.a</text>
+<text x="464" y="94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#78350F">spid3r_lang (.lib / .a)</text>
 <text x="464" y="108" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">SHA-256-pinned runtime staticlib</text>
 
 <!-- Stages -->
