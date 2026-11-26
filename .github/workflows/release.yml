@@ -90,7 +90,7 @@ jobs:
             export CARGO_PROFILE_RELEASE_LTO=false
             export CFLAGS="-arch x86_64"
           fi
-          if ! cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features native 2>&1 | tee cargo_build.log; then
+          if ! cargo build --release --locked --target ${{ matrix.target }} --lib --bin spid3r --no-default-features --features native 2>&1 | tee cargo_build.log; then
             (grep -E 'warning: ignoring file|ld: |error(\[|:)' cargo_build.log | head -n 8; tail -n 6 cargo_build.log) | while IFS= read -r line; do
               echo "::error::${line}"
             done
@@ -129,9 +129,15 @@ jobs:
               tar -xzf /work/spid3r-${{ matrix.target }}.tar.gz -C /tmp/sp-direct
               /tmp/sp-direct/spid3r --version
               /tmp/sp-direct/sp --version
+              /tmp/sp-direct/yamc --version
+              /tmp/sp-direct/yamcvm --version
+              /tmp/sp-direct/spvm --version
+              /tmp/sp-direct/spkg --version
               /tmp/sp-direct/spid3r-self --version
               printf "fn main() -> int { println(\"ok\"); return 0; }\n" > /tmp/hello.mt
               test "$(/tmp/sp-direct/sp run /tmp/hello.mt)" = "ok"
+              /tmp/sp-direct/yamcvm /tmp/hello.mt -o /tmp/hello.matrixc
+              test "$(/tmp/sp-direct/spvm /tmp/hello.matrixc)" = "ok"
               # 2. install.sh bin/ + lib/ layout ($ORIGIN/../lib)
               mkdir -p /tmp/sp-test/bin /tmp/sp-test/lib
               tar -xzf /work/spid3r-${{ matrix.target }}.tar.gz -C /tmp/sp-test/bin
@@ -141,8 +147,13 @@ jobs:
               fi
               /tmp/sp-test/bin/spid3r --version
               /tmp/sp-test/bin/sp --version
+              /tmp/sp-test/bin/yamc --version
+              /tmp/sp-test/bin/yamcvm --version
+              /tmp/sp-test/bin/spvm --version
+              /tmp/sp-test/bin/spkg --version
               /tmp/sp-test/bin/spid3r-self --version
               test "$(/tmp/sp-test/bin/sp run /tmp/hello.mt)" = "ok"
+              test "$(/tmp/sp-test/bin/spvm /tmp/hello.mt)" = "ok"
             '
 
       - name: Upload build artifact
@@ -254,8 +265,9 @@ jobs:
           cargo build --release --locked --lib --no-default-features --features native
           New-Item -ItemType Directory -Force -Path target/rt-native | Out-Null
           Copy-Item -Force target/release/spid3r_lang.lib target/rt-native/spid3r_lang.lib
-          # Build full-featured Stage-0 CLI & GUI control host binaries.
-          cargo build --release --locked --bins --no-default-features --features gui,native,tls
+          # Build full-featured Stage-0 CLI & GUI control host binaries (NSIS installs
+          # sp, yamc, yamcvm, spvm, spkg as solid-LZMA copies of spid3r.exe).
+          cargo build --release --locked --bin spid3r --bin spid3r-control --no-default-features --features gui,native,tls
 
       - name: Build self-hosted release compiler & NSIS installer (spid3r-self)
         shell: bash
@@ -322,6 +334,9 @@ jobs:
             aarch64-apple-darwin; do
             test -s "spid3r-${t}.tar.gz" || { echo "MISSING: spid3r-${t}.tar.gz"; exit 1; }
             tar tzf "spid3r-${t}.tar.gz" | grep -q '^spid3r-self$' || { echo "MISSING spid3r-self in spid3r-${t}.tar.gz"; exit 1; }
+            for alias_bin in sp yamc yamcvm spvm spkg; do
+              tar tzf "spid3r-${t}.tar.gz" | grep -q "^${alias_bin}$" || { echo "MISSING ${alias_bin} in spid3r-${t}.tar.gz"; exit 1; }
+            done
             tar tzf "spid3r-${t}.tar.gz" | grep -q '^spid3r-formatter\.vsix$' || { echo "MISSING spid3r-formatter.vsix in spid3r-${t}.tar.gz"; exit 1; }
           done
           ls Spid3r-Setup-*.exe || { echo "MISSING: Spid3r-Setup-*.exe"; exit 1; }

@@ -7,7 +7,7 @@
 
 ## 1. Language Model & Scope
 
-Spid3r is a general-purpose, gradually and statically checkable programming language (`.matrix` source files) with four execution backends (`tree` reference interpreter, `vm` bytecode VM, LLVM 23.1 AOT `native`, and `wasm32`) plus a self-hosted native compiler pipeline (`selfhost/`, `spid3r-self`).
+Spid3r is a general-purpose, gradually and statically checkable programming language (`.matrix` / `.mt` source files) with four **Spid3r Engine** execution backends (`tree` reference interpreter and `vm` bytecode VM under `spvm_rt` / `spvm`, **YamLLVM** LLVM 23.1 AOT `native` via `yamc` / `spid3r build`, and `wasm32`) plus a self-hosted native compiler pipeline (`selfhost/`, `spid3r-self`), bytecode compiler (`yamcvm` → `.matrixc`), package manager (`spkg` / `spider.toml`), and **YamGC** memory reclamation.
 
 Core surface inventory (verified against the repository):
 - **26** embedded `.matrix` standard library modules (`stdlib/`)

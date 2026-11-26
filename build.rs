@@ -721,6 +721,10 @@ fn windows_resources() {
     let bins = vec![
         ("spid3r", "Spid3r Language Toolchain", "spid3r.exe"),
         ("sp", "Spid3r Language Toolchain", "sp.exe"),
+        ("yamc", "Spid3r Native AOT Compiler (YamLLVM)", "yamc.exe"),
+        ("yamcvm", "Spid3r Bytecode Compiler", "yamcvm.exe"),
+        ("spvm", "Spid3r Virtual Machine (spvm_rt)", "spvm.exe"),
+        ("spkg", "Spid3r Package Manager", "spkg.exe"),
         (
             "spid3r-control",
             "Spid3r Control Panel",

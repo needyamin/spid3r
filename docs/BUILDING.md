@@ -76,11 +76,16 @@ cargo run --release -- build examples/hello.matrix -o hello
 ./hello
 ```
 
-The `spid3r` and short-alias `sp` binaries are at `target/release/spid3r` and
-`target/release/sp` (`.exe` on Windows). On Linux, `build.rs` and
+The `spid3r` and short-alias `sp` binaries — plus the zero-overhead additive
+component CLIs (`yamc` AOT compiler / **YamLLVM**, `yamcvm` bytecode compiler,
+`spvm` virtual machine / **`spvm_rt`**, and `spkg` package manager) — are built
+into `target/release/` (`.exe` on Windows). On Linux, `build.rs` and
 `selfhost/link.matrix` set `-Wl,-rpath,$ORIGIN:$ORIGIN/../lib` and release
-tarballs bundle `libLLVM.so.23.1` under `lib/` (plus a `sp -> spid3r` symlink)
-so installed binaries run on clean Linux hosts with no system `libllvm23`.
+tarballs bundle `libLLVM.so.23.1` under `lib/` (plus 0-byte `sp`, `yamc`,
+`yamcvm`, `spvm`, `spkg` -> `spid3r` symlinks) so installed binaries run on
+clean Linux hosts with no system `libllvm23`. On Windows, the NSIS installer
+packs `sp.exe`, `yamc.exe`, `yamcvm.exe`, `spvm.exe`, and `spkg.exe` using
+solid LZMA deduplication over `spid3r.exe` (multicall `argv[0]` dispatch).
 
 > **Build all targets, not just `--bin spid3r`.** `spid3r build` links apps
 > against `target/release/spid3r_lang.lib`, the crate's `staticlib` artifact.

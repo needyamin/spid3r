@@ -8,8 +8,8 @@ It satisfies **Phase 9.1** of the self-hosting program ([SELFHOST.md](SELFHOST.m
 implements architecture decision **SH-6** ([SELFHOST.md](SELFHOST.md)):
 
 - Compilers built by Stage 1/Stage 2 (`selfhost/main.matrix`) never invoke
-  `cargo` or `rustc` — they emit native machine code via LLVM-C (`selfhost/codegen.matrix`)
-  and link the prebuilt, versioned, SHA-256-pinned runtime staticlib (`selfhost/link.matrix`).
+  `cargo` or `rustc` — they emit native machine code via **YamLLVM** / LLVM-C (`selfhost/codegen.matrix`)
+  and link the prebuilt, versioned, SHA-256-pinned `spid3r_lang` runtime staticlib (`selfhost/link.matrix`, including **YamGC** frame roots & AOT arena reclamation).
 - Per **Phase 9.2 (ADR in [SELFHOST.md](SELFHOST.md))**, the ~2.2k-line trampoline layer
   (`src/native/rt.rs`) stays in Rust inside the pinned runtime staticlib rather
   than being ported to Spid3r, keeping `Value`, `vm_eval_binary`, `value::collections`,

@@ -501,8 +501,12 @@ fn n_mysql_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
                 write_packet(&mut stream, &mut seq, &answer)?;
             }
             0x01 => {
-                // AuthMoreData: caching_sha2 "fast auth failed, do full auth"
-                // which needs RSA or TLS — neither is supported, so say so.
+                // AuthMoreData: for caching_sha2_password, 0x03 means fast-auth
+                // succeeded and an OK packet follows immediately; 0x04 means the
+                // server requires full RSA/TLS authentication.
+                if pkt.get(1) == Some(&0x03) {
+                    continue;
+                }
                 return Err(format!(
                     "{}: server requires full caching_sha2_password authentication (RSA/TLS), which this client does not support. Create the user with IDENTIFIED WITH mysql_native_password, or authenticate once with an official client.",
                     WHO

@@ -31,11 +31,372 @@ fn is_source_path(p: &Path) -> bool {
     )
 }
 
+/// Return true when `p` has a recognized Spid3r source extension (`.matrix` or `.mt`),
+/// matching ASCII case-insensitively for CLI shorthand dispatch.
+#[inline]
+fn is_source_path_ci(p: &Path) -> bool {
+    p.extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("matrix") || e.eq_ignore_ascii_case("mt"))
+}
+
+/// Return true when `p` has the Spid3r bytecode extension (`.matrixc`).
+#[inline]
+fn is_bytecode_path(p: &Path) -> bool {
+    p.extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("matrixc"))
+}
+
+/// Which additive CLI front-end persona invoked the Spid3r toolchain.
+///
+/// All personas execute in-process through the same `run_tool` dispatch with
+/// zero wrapper overhead or extra process spawn. On Unix they can be 0-byte
+/// symlinks to `spid3r`; on Windows NSIS deduplicates copies via solid LZMA;
+/// and Cargo also builds dedicated binaries for `cargo run` / `cargo install`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliTool {
+    /// Unified toolchain CLI (`spid3r` / `sp`).
+    Spid3r,
+    /// Native AOT compiler front end (`yamc`, YamLLVM backend).
+    Yamc,
+    /// Bytecode compiler front end (`yamcvm`, emits `.matrixc`).
+    Yamcvm,
+    /// Virtual machine runner & disassembler (`spvm`, `spvm_rt`).
+    Spvm,
+    /// Package manager & project workflow CLI (`spkg`, `spider.toml`).
+    Spkg,
+}
+
+impl CliTool {
+    /// Infer the CLI persona from `argv[0]` (basename stem, case-insensitive,
+    /// stripping `.exe`). Unknown or synthetic names default to `CliTool::Spid3r`.
+    pub fn from_argv0(argv0: Option<&str>) -> Self {
+        let Some(raw) = argv0 else {
+            return Self::Spid3r;
+        };
+        let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+        let stem =
+            if base.len() >= 4 && base.as_bytes()[base.len() - 4..].eq_ignore_ascii_case(b".exe") {
+                &base[..base.len() - 4]
+            } else {
+                base
+            };
+        if stem.eq_ignore_ascii_case("yamc") {
+            Self::Yamc
+        } else if stem.eq_ignore_ascii_case("yamcvm") {
+            Self::Yamcvm
+        } else if stem.eq_ignore_ascii_case("spvm") {
+            Self::Spvm
+        } else if stem.eq_ignore_ascii_case("spkg") {
+            Self::Spkg
+        } else {
+            Self::Spid3r
+        }
+    }
+
+    #[inline]
+    fn name(self) -> &'static str {
+        match self {
+            Self::Spid3r => "spid3r",
+            Self::Yamc => "yamc",
+            Self::Yamcvm => "yamcvm",
+            Self::Spvm => "spvm",
+            Self::Spkg => "spkg",
+        }
+    }
+}
+
+const HELP_YAMC: &str = "\
+yamc - Spid3r native AOT compiler (YamLLVM backend; alongside spid3r / sp / spid3r-self)
+
+USAGE:
+    yamc <file.matrix|.mt> [-o out] [--release] [build options]
+    yamc <command> [options]
+
+COMMANDS:
+    build <file> [-o out] [--release] ...  Compile to a native executable (default)
+    compile <file> [-o out] [--dump]       Emit SHA-256 verified .matrixc bytecode
+    check <file> [--json] [--deny-warnings]
+                                           Lex, parse, and semantic-check without running
+    verify-runtime [PATH]                  Verify spid3r_lang runtime staticlib SHA-256 pin
+    bundle <file> [--target wasm|desktop|android] [-o out]
+                                           Package a standalone application bundle
+    dist [-o out] [--no-opt]               Build project entry from spider.toml
+    fmt [--check] [files...]               Format Spid3r source files
+    test [--filter SUBSTR] [--list]        Run differential test suite
+    tokens <file> [--json]                 Dump deterministic token stream JSON
+    parse <file> [--dump-ast-json]         Dump deterministic AST JSON
+    version                                Print yamc version
+    help                                   Print this help
+";
+
+const HELP_YAMCVM: &str = "\
+yamcvm - Spid3r bytecode compiler (emits SHA-256 verified .matrixc)
+
+USAGE:
+    yamcvm <file.matrix|.mt> [-o out.matrixc] [--dump] [--no-opt] [--json]
+    yamcvm <command> [options]
+
+COMMANDS:
+    compile <file> [-o out] [--dump] [--no-opt] [--json]
+                                           Compile source to .matrixc bytecode (default)
+    disasm <file.matrixc>                  Disassemble a .matrixc bytecode file
+    check <file> [--json] [--deny-warnings]
+                                           Lex, parse, and semantic-check source
+    dist [-o out] [--no-opt]               Compile spider.toml entry to target/<pkg>.matrixc
+    version                                Print yamcvm version
+    help                                   Print this help
+";
+
+const HELP_SPVM: &str = "\
+spvm - Spid3r virtual machine (spvm_rt / Spid3r Engine)
+
+USAGE:
+    spvm <file.matrixc> [--sandbox]
+    spvm <file.matrix|.mt> [script args...]
+    spvm <command> [options]
+
+COMMANDS:
+    exec <file.matrixc> [--sandbox]        Run verified .matrixc bytecode (default for .matrixc)
+    run [--engine vm|tree|native] [--sandbox] [--prof] [--budget N] <file> [args...]
+                                           Compile and run source (default for .matrix/.mt)
+    disasm <file.matrixc>                  Disassemble a .matrixc bytecode file
+    repl                                   Interactive read-eval-print loop
+    debug <file> [--break L[,L...]]        Line-based VM debugger
+    bench [--engine vm|tree] [files...]    Run Spid3r benchmarks
+    version                                Print spvm version
+    help                                   Print this help
+";
+
+const HELP_SPKG: &str = "\
+spkg - Spid3r package manager & project workflow tool (spider.toml)
+
+USAGE:
+    spkg <command> [options]
+
+COMMANDS:
+    init [dir]                             Create spider.toml + src/main.matrix
+    add <name> --path P | --git URL [--rev R] | --version V
+                                           Declare a dependency and vendor it
+    remove <name>                          Remove a dependency and its vendor/ copy
+    install [--update]                     Vendor dependencies and write spider.lock
+    tree                                   Print the dependency tree
+    verify                                 Re-hash vendor/ against spider.lock
+    search <query> [--local]               Search local registry and vendor/
+    publish --to-dir <dir>                 Write versioned package with sha256.txt
+    pack [-o out.tar]                      Archive spider.toml + src/
+    unpack <archive> [dir]                 Extract a packed project archive
+    dist [-o out] [--no-opt]               Compile project entry into target/<pkg>.matrixc
+    modules <file> [--tree]                List imported modules and their origins
+    version                                Print spkg version
+    help                                   Print this help
+";
+
+fn tool_help(tool: CliTool) -> &'static str {
+    match tool {
+        CliTool::Spid3r => HELP,
+        CliTool::Yamc => HELP_YAMC,
+        CliTool::Yamcvm => HELP_YAMCVM,
+        CliTool::Spvm => HELP_SPVM,
+        CliTool::Spkg => HELP_SPKG,
+    }
+}
+
+fn tool_version_text(tool: CliTool) -> String {
+    match tool {
+        CliTool::Spid3r => version_text(),
+        CliTool::Yamc => format!(
+            "yamc {} (Spid3r {} — YamLLVM AOT compiler)",
+            VERSION, LANGUAGE_VERSION
+        ),
+        CliTool::Yamcvm => format!(
+            "yamcvm {} (Spid3r {} — bytecode compiler)",
+            VERSION, LANGUAGE_VERSION
+        ),
+        CliTool::Spvm => format!(
+            "spvm {} (Spid3r {} — spvm_rt virtual machine)",
+            VERSION, LANGUAGE_VERSION
+        ),
+        CliTool::Spkg => format!(
+            "spkg {} (Spid3r {} — package manager)",
+            VERSION, LANGUAGE_VERSION
+        ),
+    }
+}
+
+#[inline]
+fn is_yamc_build_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-o" | "--release"
+            | "--target"
+            | "--target-cpu"
+            | "--link-lib"
+            | "--icon"
+            | "--product-name"
+            | "--version"
+            | "--subsystem"
+            | "--allow-gui"
+            | "--bundle-runtime"
+            | "--allow-dlopen"
+            | "--enforce-budget"
+            | "--freestanding"
+            | "--entry"
+            | "--sysroot"
+            | "--emit-obj"
+            | "--bytecode"
+            | "--embed"
+    )
+}
+
+#[inline]
+fn is_yamcvm_compile_flag(arg: &str) -> bool {
+    matches!(arg, "-o" | "--dump" | "--no-opt" | "--json")
+}
+
+#[inline]
+fn is_spvm_run_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--engine"
+            | "--native"
+            | "--no-opt"
+            | "--prof"
+            | "--coverage"
+            | "--coverage-out"
+            | "--sandbox"
+            | "--budget"
+            | "--max-steps"
+            | "--max-call-depth"
+    ) || arg.starts_with("--engine=")
+        || arg.starts_with("--budget=")
+        || arg.starts_with("--max-steps=")
+        || arg.starts_with("--max-call-depth=")
+        || arg.starts_with("--coverage-out=")
+}
+
+/// Return true when `cmd` is a first-class subcommand of `tool`.
+#[inline]
+fn is_allowed_tool_command(tool: CliTool, cmd: &str) -> bool {
+    match tool {
+        CliTool::Spid3r => true,
+        CliTool::Yamc => matches!(
+            cmd,
+            "build"
+                | "compile"
+                | "check"
+                | "verify-runtime"
+                | "tokens"
+                | "parse"
+                | "fmt"
+                | "test"
+                | "dist"
+                | "bundle"
+        ),
+        CliTool::Yamcvm => matches!(cmd, "compile" | "disasm" | "check" | "dist"),
+        CliTool::Spvm => matches!(cmd, "exec" | "run" | "disasm" | "repl" | "debug" | "bench"),
+        CliTool::Spkg => matches!(
+            cmd,
+            "init"
+                | "add"
+                | "remove"
+                | "install"
+                | "tree"
+                | "verify"
+                | "search"
+                | "publish"
+                | "pack"
+                | "unpack"
+                | "dist"
+                | "modules"
+        ),
+    }
+}
+
+/// Normalize `(cmd, rest)` for an additive component CLI persona (`yamc`,
+/// `yamcvm`, `spvm`, `spkg`) into a canonical `spid3r` subcommand + argument list.
+/// Returns `Err(exit_code)` when the command is unknown for this persona.
+fn normalize_tool_command(
+    tool: CliTool,
+    cmd: String,
+    mut rest: Vec<String>,
+) -> Result<(String, Vec<String>), i32> {
+    if is_allowed_tool_command(tool, cmd.as_str()) {
+        return Ok((cmd, rest));
+    }
+    match tool {
+        CliTool::Spid3r => Ok((cmd, rest)),
+        CliTool::Yamc => {
+            if is_source_path_ci(Path::new(&cmd)) || is_yamc_build_flag(&cmd) {
+                rest.insert(0, cmd);
+                return Ok(("build".to_string(), rest));
+            }
+            eprintln!(
+                "error[usage]: unknown {} command '{}' (try `{} --help`)",
+                tool.name(),
+                cmd,
+                tool.name()
+            );
+            Err(EXIT_USAGE)
+        }
+        CliTool::Yamcvm => {
+            if is_source_path_ci(Path::new(&cmd)) || is_yamcvm_compile_flag(&cmd) {
+                rest.insert(0, cmd);
+                return Ok(("compile".to_string(), rest));
+            }
+            eprintln!(
+                "error[usage]: unknown {} command '{}' (try `{} --help`)",
+                tool.name(),
+                cmd,
+                tool.name()
+            );
+            Err(EXIT_USAGE)
+        }
+        CliTool::Spvm => {
+            if is_bytecode_path(Path::new(&cmd)) {
+                rest.insert(0, cmd);
+                return Ok(("exec".to_string(), rest));
+            }
+            if cmd == "--sandbox" {
+                let first_non_flag = rest.iter().find(|a| !a.starts_with('-'));
+                if first_non_flag.is_some_and(|p| is_bytecode_path(Path::new(p))) {
+                    rest.insert(0, cmd);
+                    return Ok(("exec".to_string(), rest));
+                }
+                rest.insert(0, cmd);
+                return Ok(("run".to_string(), rest));
+            }
+            if is_source_path_ci(Path::new(&cmd)) || is_spvm_run_flag(&cmd) {
+                rest.insert(0, cmd);
+                return Ok(("run".to_string(), rest));
+            }
+            eprintln!(
+                "error[usage]: unknown {} command '{}' (try `{} --help`)",
+                tool.name(),
+                cmd,
+                tool.name()
+            );
+            Err(EXIT_USAGE)
+        }
+        CliTool::Spkg => {
+            eprintln!(
+                "error[usage]: unknown {} command '{}' (try `{} --help`)",
+                tool.name(),
+                cmd,
+                tool.name()
+            );
+            Err(EXIT_USAGE)
+        }
+    }
+}
+
 const HELP: &str = "\
-spid3r (alias: sp) - the Spid3r language toolchain (.matrix / .mt)
+spid3r (alias: sp; component CLIs: yamc, yamcvm, spvm, spkg) - the Spid3r language toolchain (.matrix / .mt)
 
 USAGE:
     spid3r <command> [options]   (or: sp <command> [options])
+      Component CLIs: yamc (AOT/YamLLVM) · yamcvm (bytecode) · spvm (VM) · spkg (packages)
 
 COMMANDS:
     run [--engine tree|vm] [--prof] [--coverage] [--no-opt] [--budget N]
@@ -202,28 +563,62 @@ pub fn version_text() -> String {
 }
 
 pub fn run(args: Vec<String>) -> i32 {
+    let tool = CliTool::from_argv0(args.first().map(String::as_str));
+    run_tool(tool, args)
+}
+
+/// Execute the Spid3r CLI under an explicit additive tool persona (`spid3r`,
+/// `yamc`, `yamcvm`, `spvm`, or `spkg`) with zero wrapper indirection.
+pub fn run_tool(tool: CliTool, args: Vec<String>) -> i32 {
     let mut it = args.into_iter().skip(1);
-    let cmd = match it.next() {
+    let first = match it.next() {
         Some(c) => c,
         None => {
-            eprint!("{}", HELP);
+            eprint!("{}", tool_help(tool));
             return EXIT_USAGE;
         }
     };
-    let mut rest: Vec<String> = it.collect();
-    if rest.is_empty() {
-        match cmd.as_str() {
-            "version" | "--version" | "-V" => {
-                println!("{}", version_text());
-                return EXIT_OK;
-            }
-            "help" | "--help" | "-h" => {
-                print!("{}", HELP);
-                return EXIT_OK;
-            }
-            _ => {}
+    let rest: Vec<String> = it.collect();
+    match first.as_str() {
+        "version" | "-V" => {
+            println!("{}", tool_version_text(tool));
+            return EXIT_OK;
         }
+        "--version" if rest.is_empty() || tool != CliTool::Yamc => {
+            println!("{}", tool_version_text(tool));
+            return EXIT_OK;
+        }
+        "--help" | "-h" => {
+            print!("{}", tool_help(tool));
+            return EXIT_OK;
+        }
+        "help" if rest.is_empty() => {
+            print!("{}", tool_help(tool));
+            return EXIT_OK;
+        }
+        "help" if tool != CliTool::Spid3r => {
+            let sub = &rest[0];
+            if is_allowed_tool_command(tool, sub.as_str()) {
+                print!(
+                    "{}",
+                    subcommand_help(sub).unwrap_or_else(|| tool_help(tool))
+                );
+                return EXIT_OK;
+            }
+            eprintln!(
+                "error[usage]: unknown {} command '{}' (try `{} --help`)",
+                tool.name(),
+                sub,
+                tool.name()
+            );
+            return EXIT_USAGE;
+        }
+        _ => {}
     }
+    let (cmd, mut rest) = match normalize_tool_command(tool, first, rest) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
     crate::config::schema::install_tz_validator(crate::stdlib::tz::check_timezone_setting);
     // Default `args()` to empty for every subcommand; `run` replaces this with
     // the real script arguments. Without this, programs executed via `exec`,
@@ -4231,7 +4626,144 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::{differ_report, is_dispatchable_name};
+    use super::{differ_report, is_dispatchable_name, normalize_tool_command, CliTool, EXIT_USAGE};
+
+    #[test]
+    fn cli_tool_from_argv0_handles_paths_case_and_exe() {
+        assert_eq!(CliTool::from_argv0(None), CliTool::Spid3r);
+        assert_eq!(CliTool::from_argv0(Some("spid3r")), CliTool::Spid3r);
+        assert_eq!(CliTool::from_argv0(Some("sp")), CliTool::Spid3r);
+        assert_eq!(
+            CliTool::from_argv0(Some("C:\\Spid3r\\sp.exe")),
+            CliTool::Spid3r
+        );
+        assert_eq!(CliTool::from_argv0(Some("yamc")), CliTool::Yamc);
+        assert_eq!(
+            CliTool::from_argv0(Some("/usr/local/bin/yamc")),
+            CliTool::Yamc
+        );
+        assert_eq!(
+            CliTool::from_argv0(Some("C:\\Spid3r\\YAMC.EXE")),
+            CliTool::Yamc
+        );
+        assert_eq!(
+            CliTool::from_argv0(Some("C:\\Spid3r\\yamc.Exe")),
+            CliTool::Yamc
+        );
+        assert_eq!(CliTool::from_argv0(Some("yamcvm")), CliTool::Yamcvm);
+        assert_eq!(
+            CliTool::from_argv0(Some("C:\\Spid3r\\yamcvm.exe")),
+            CliTool::Yamcvm
+        );
+        assert_eq!(CliTool::from_argv0(Some("spvm")), CliTool::Spvm);
+        assert_eq!(
+            CliTool::from_argv0(Some("/opt/spid3r/bin/spvm")),
+            CliTool::Spvm
+        );
+        assert_eq!(CliTool::from_argv0(Some("Spvm.eXe")), CliTool::Spvm);
+        assert_eq!(CliTool::from_argv0(Some("spkg")), CliTool::Spkg);
+        assert_eq!(
+            CliTool::from_argv0(Some("C:\\Program Files\\Spid3r\\spkg.exe")),
+            CliTool::Spkg
+        );
+        assert_eq!(CliTool::from_argv0(Some("spid3r-self")), CliTool::Spid3r);
+        assert_eq!(
+            CliTool::from_argv0(Some("/tmp/yamc/spid3r")),
+            CliTool::Spid3r
+        );
+    }
+
+    #[test]
+    fn normalize_tool_command_maps_shorthands_and_rejects_unknowns() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+
+        // yamc
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamc, "app.mt".into(), s(&["-o", "app"])),
+            Ok(("build".into(), s(&["app.mt", "-o", "app"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamc, "APP.MT".into(), s(&["-o", "app"])),
+            Ok(("build".into(), s(&["APP.MT", "-o", "app"])))
+        );
+        assert_eq!(
+            normalize_tool_command(
+                CliTool::Yamc,
+                "--version".into(),
+                s(&["2.0.0", "app.mt", "-o", "app"])
+            ),
+            Ok((
+                "build".into(),
+                s(&["--version", "2.0.0", "app.mt", "-o", "app"])
+            ))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamc, "--release".into(), s(&["app.matrix"])),
+            Ok(("build".into(), s(&["--release", "app.matrix"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamc, "check".into(), s(&["app.mt"])),
+            Ok(("check".into(), s(&["app.mt"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamc, "bogus".into(), vec![]),
+            Err(EXIT_USAGE)
+        );
+
+        // yamcvm
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamcvm, "app.mt".into(), s(&["--dump"])),
+            Ok(("compile".into(), s(&["app.mt", "--dump"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamcvm, "--json".into(), s(&["app.mt"])),
+            Ok(("compile".into(), s(&["--json", "app.mt"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamcvm, "disasm".into(), s(&["app.matrixc"])),
+            Ok(("disasm".into(), s(&["app.matrixc"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Yamcvm, "run".into(), s(&["app.mt"])),
+            Err(EXIT_USAGE)
+        );
+
+        // spvm
+        assert_eq!(
+            normalize_tool_command(CliTool::Spvm, "app.matrixc".into(), s(&["--sandbox"])),
+            Ok(("exec".into(), s(&["app.matrixc", "--sandbox"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spvm, "--sandbox".into(), s(&["app.matrixc"])),
+            Ok(("exec".into(), s(&["--sandbox", "app.matrixc"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spvm, "--sandbox".into(), s(&["app.mt"])),
+            Ok(("run".into(), s(&["--sandbox", "app.mt"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spvm, "app.mt".into(), s(&["arg1"])),
+            Ok(("run".into(), s(&["app.mt", "arg1"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spvm, "install".into(), vec![]),
+            Err(EXIT_USAGE)
+        );
+
+        // spkg
+        assert_eq!(
+            normalize_tool_command(CliTool::Spkg, "init".into(), s(&["demo"])),
+            Ok(("init".into(), s(&["demo"])))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spkg, "verify".into(), vec![]),
+            Ok(("verify".into(), vec![]))
+        );
+        assert_eq!(
+            normalize_tool_command(CliTool::Spkg, "build".into(), s(&["app.mt"])),
+            Err(EXIT_USAGE)
+        );
+    }
 
     /// The dispatch filter is a security boundary, so it is pinned directly:
     /// deleting any clause of `is_dispatchable_name` must fail here.

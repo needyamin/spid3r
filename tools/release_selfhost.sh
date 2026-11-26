@@ -418,8 +418,10 @@ cmd_build() {
     cp -f "$stage0" "$out_dir/_work/tar/spid3r${exe_suf}"
     tar_members+=("spid3r${exe_suf}")
     if [ "$is_win" -eq 0 ]; then
-      ln -sf spid3r "$out_dir/_work/tar/sp"
-      tar_members+=("sp")
+      for alias_bin in sp yamc yamcvm spvm spkg; do
+        ln -sf spid3r "$out_dir/_work/tar/${alias_bin}"
+        tar_members+=("${alias_bin}")
+      done
     fi
   fi
   # Bundle libLLVM shared library on Linux so the prebuilt tarball runs on
@@ -578,12 +580,34 @@ cmd_build() {
       local win_sin
       win_sin="$(to_win_path "$sin_dir")"
       MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$inst_out" /S /NOEDITOR "/D=${win_sin}"
-      for req in spid3r-self.exe spid3r.exe spid3r_lang.lib spid3r_lang.lib.sha256 runtime-manifest.json LLVM-C.dll LLVM-C.lib; do
+      for req in spid3r-self.exe spid3r.exe sp.exe yamc.exe yamcvm.exe spvm.exe spkg.exe spid3r_lang.lib spid3r_lang.lib.sha256 runtime-manifest.json LLVM-C.dll LLVM-C.lib; do
         [ -f "$sin_dir/$req" ] || {
           echo "FAIL: installed file missing: $sin_dir/$req" >&2
           exit 1
         }
       done
+      # Verify multicall argv[0] persona dispatch and VM round-trip on installed copies.
+      for comp in yamc yamcvm spvm spkg; do
+        local comp_ver
+        comp_ver="$("$sin_dir/${comp}.exe" --version)"
+        case "$comp_ver" in
+          *"$comp"*) ;;
+          *)
+            echo "FAIL: installed ${comp}.exe --version unexpected: $comp_ver" >&2
+            exit 1
+            ;;
+        esac
+      done
+      local cli_smoke_src="$out_dir/_work/cli_smoke.mt"
+      local cli_smoke_bc="$out_dir/_work/cli_smoke.matrixc"
+      printf 'fn main() -> int { println("nsis-cli-ok"); return 0; }\n' > "$cli_smoke_src"
+      "$sin_dir/yamcvm.exe" "$cli_smoke_src" -o "$cli_smoke_bc" >/dev/null
+      local cli_smoke_out
+      cli_smoke_out="$("$sin_dir/spvm.exe" "$cli_smoke_bc" | tr -d '\r')"
+      if [ "$cli_smoke_out" != "nsis-cli-ok" ]; then
+        echo "FAIL: installed yamcvm/spvm smoke expected 'nsis-cli-ok', got '$cli_smoke_out'" >&2
+        exit 1
+      fi
       if [ "$has_vsix" -eq 1 ]; then
         [ -f "$sin_dir/editor/spid3r-formatter.vsix" ] || {
           echo "FAIL: installed offline formatter VSIX missing: $sin_dir/editor/spid3r-formatter.vsix" >&2

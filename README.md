@@ -21,24 +21,24 @@ $ sp run hello.mt
   Hello, Spid3r!
 ```
 
-Both `.matrix` and `.mt` source extensions and both `spid3r` and `sp` CLI binaries are first-class equivalents with zero runtime overhead.
+Both `.matrix` and `.mt` source extensions and the CLI binaries (`spid3r`, short alias `sp`, plus additive component CLIs `yamc`, `yamcvm`, `spvm`, `spkg`) execute in-process with zero runtime overhead.
 
 ## How it works
 
-Source passes through one front end (`lexer` → `parser` → `semantic` → `lower`) into a checked AST consumed by four backends:
+Source passes through one front end (`lexer` → `parser` → `semantic` → `lower`) into a checked AST consumed by four **Spid3r Engine** backends:
 
-- **`tree`** — AST interpreter and reference oracle when engines disagree.
-- **`vm`** — 60-opcode bytecode VM with peephole/loop-rotation optimizations (`--no-opt` disables them).
-- **`native`** — LLVM 23 ahead-of-time machine code (built by Rust Stage 0 or self-hosted `spid3r-self`).
+- **`tree`** — AST interpreter and reference oracle when engines disagree (`spvm_rt`).
+- **`vm`** — 60-opcode bytecode VM (**`spvm`** / **`spvm_rt`**) compiled by **`yamcvm`** (`spid3r compile` → `.matrixc`) with peephole/loop-rotation optimizations (`--no-opt` disables them).
+- **`native`** — **YamLLVM** (LLVM 23 ahead-of-time machine code via `yamc` / `spid3r build` or self-hosted `spid3r-self`).
 - **`wasm`** — the same bytecode VM compiled to `wasm32` for browsers.
 
 `spid3r test` checks the three native engines together against identical **stdout**, **error phase**, and **exit code**.
 
-## Memory
+## Memory (YamGC)
 
 ![Reference counting plus a cycle collector](docs/diagrams/memory.svg)
 
-Values use deterministic reference counting for immediate drop cleanup, paired with a mark-and-sweep cycle collector (`gc_collect()`, `gc_live_cells()`).
+**YamGC** pairs deterministic reference counting for immediate drop cleanup with a mark-and-sweep cycle collector (`gc_collect()`, `gc_live_cells()`) and bounded `ValueV2`/`AOT_HEAP` frame-root reclamation in native builds.
 
 ## Ship it five ways
 
@@ -142,11 +142,16 @@ curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | 
 cargo install --path . --no-default-features
 ```
 
-**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release (bundles `spid3r-self`, `spid3r`, `sp`, `spid3r-control`, LLVM, `.matrix`/`.mt` associations, and the SHA-256-pinned runtime).
+**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release (bundles `spid3r-self`, `spid3r`, `sp`, `yamc`, `yamcvm`, `spvm`, `spkg`, `spid3r-control`, LLVM, `.matrix`/`.mt` associations, and the SHA-256-pinned `spid3r_lang` runtime).
 
 ## Toolchain
 
-All commands below work identically with `spid3r` or the short alias `sp`, and accept both `.matrix` and `.mt` source files.
+All commands below work identically with `spid3r` or the short alias `sp`, and accept both `.matrix` and `.mt` source files. Focused zero-overhead component CLIs are also installed alongside them:
+
+- **`yamc`** — native AOT compiler (**YamLLVM** backend): `yamc app.mt -o app --release` (or `yamc build|check|compile|verify-runtime ...`)
+- **`yamcvm`** — bytecode compiler (emits SHA-256 `.matrixc`): `yamcvm app.mt -o app.matrixc` (or `yamcvm compile|disasm|check|dist ...`)
+- **`spvm`** — virtual machine (**`spvm_rt`**): `spvm app.matrixc`, `spvm app.mt`, `spvm exec|run|disasm|repl|debug ...`
+- **`spkg`** — package manager (`spider.toml`): `spkg init|add|remove|install|tree|verify|search|publish|pack|unpack|dist ...`
 
 | Command | Does |
 |---|---|

@@ -15,9 +15,9 @@ packages, and native FFI.
 | Route | Today | Trust | Notes |
 | --- | --- | --- | --- |
 | Embedded stdlib | ✅ | T0 | Compiled into the binary; immutable, no disk override from the install tree |
-| Project `.matrix` files | ✅ | T1 | Same trust as the project's own source |
-| Vendored packages (`vendor/`, `spider.lock`) | ✅ | T2 | Checksummed on install |
-| FFI (`extern fn`) | ✅ | T5 | **Trusted code**, AOT-only — see `docs/FFI.md` |
+| Project `.matrix` / `.mt` files | ✅ | T1 | Same trust as the project's own source |
+| Vendored packages (`vendor/`, `spider.lock`) | ✅ | T2 | Checksummed on install (`spid3r verify` / `spkg verify`) |
+| FFI (`extern fn`) | ✅ | T5 | **Trusted code**, AOT-only (**YamLLVM** via `yamc` / `spid3r build`) — see `docs/FFI.md` |
 
 The trust tiers rank routes by who controls the code, from T0
 (immutable, compiled in) to T5 (arbitrary trusted native code). The one rule

@@ -4,11 +4,11 @@ Everything documenting Spid3r's self-hosted compiler (`selfhost/`) lives in this
 
 ## Short answer: does Spid3r run only on selfhost in the future?
 
-- **For compiler & AOT release builds (`spid3r-self`):** **Yes.** Rebuilding the 17-module compiler (`selfhost/*.matrix`), formatting/checking/testing/packaging projects (both `.matrix` and `.mt` sources), and producing release compiler binaries runs purely on `spid3r-self` with zero `cargo` or `rustc` calls.
+- **For compiler & AOT release builds (`spid3r-self`, YamLLVM backend):** **Yes.** Rebuilding the 17-module compiler (`selfhost/*.matrix`), formatting/checking/testing/packaging projects (both `.matrix` and `.mt` sources), and producing release compiler binaries runs purely on `spid3r-self` with zero `cargo` or `rustc` calls.
 - **For the full repository:** **No — Rust Stage 0 (`src/`) stays permanently** as:
   1. The cold bootstrap seed and semantic parity oracle (`src/oracle.rs`, `SH-1`, `SH-5`),
-  2. The SHA-256-pinned runtime staticlib (`src/native/rt.rs` + `src/stdlib/`, 117 C-ABI trampolines & 254 stdlib natives, `SH-6`), and
-  3. Non-compiler runtimes & host tooling (`tree`/`vm`, `repl`, `debug`, `lsp`, `doc`, `control` / `spid3r-control`, `gui`, `wasm32`, `sp` / `spid3r` CLI binaries, plus `tools/` harnesses, `SH-2`).
+  2. The SHA-256-pinned runtime staticlib (`spid3r_lang`: `src/native/rt.rs` + `src/stdlib/` + **YamGC**, 117 C-ABI trampolines & 254 stdlib natives, `SH-6`), and
+  3. Non-compiler runtimes & host tooling (`spvm_rt` / `tree` / `spvm` VM, `repl`, `debug`, `lsp`, `doc`, `control` / `spid3r-control`, `gui`, `wasm32`, `spid3r` / `sp` plus additive `yamc` / `yamcvm` / `spvm` / `spkg` CLI binaries, and `tools/` harnesses, `SH-2`).
 
 ---
 

@@ -313,19 +313,35 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
 
     if [ -n "$FEATURES" ]; then
         say "Features: ${FEATURES}"
-        cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
-            --root "$PARENT_DIR" --no-default-features --features "$FEATURES"
+        case ",${FEATURES}," in
+            *,gui,*|*" gui "*|*" gui,"*|*",gui "*)
+                cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
+                    --bin spid3r --bin spid3r-control \
+                    --root "$PARENT_DIR" --no-default-features --features "$FEATURES"
+                ;;
+            *)
+                cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
+                    --bin spid3r \
+                    --root "$PARENT_DIR" --no-default-features --features "$FEATURES"
+                ;;
+        esac
     else
         say "Features: core only (VM + interpreter, zero dependencies)"
         cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
+            --bin spid3r \
             --root "$PARENT_DIR" --no-default-features
     fi
 
     if [ -f "${PARENT_DIR}/bin/spid3r" ] && [ "${INSTALL_DIR}" != "${PARENT_DIR}/bin" ]; then
         cp -f "${PARENT_DIR}/bin/spid3r" "${INSTALL_DIR}/spid3r"
+        if [ -f "${PARENT_DIR}/bin/spid3r-control" ]; then
+            cp -f "${PARENT_DIR}/bin/spid3r-control" "${INSTALL_DIR}/spid3r-control"
+        fi
     fi
-    if [ ! -e "${INSTALL_DIR}/sp" ] && [ -x "${INSTALL_DIR}/spid3r" ]; then
-        ln -sf spid3r "${INSTALL_DIR}/sp"
+    if [ -x "${INSTALL_DIR}/spid3r" ]; then
+        for alias_bin in sp yamc yamcvm spvm spkg; do
+            ln -sf spid3r "${INSTALL_DIR}/${alias_bin}"
+        done
     fi
 
     # A source build is a single self-contained binary too: the stdlib is
@@ -399,7 +415,9 @@ SELF_SRC="$(find "$TMPDIR_DL" -type f -name spid3r-self | head -n 1 || true)"
 mkdir -p "$INSTALL_DIR"
 chmod +x "$BIN_SRC"
 mv -f "$BIN_SRC" "${INSTALL_DIR}/spid3r"
-ln -sf spid3r "${INSTALL_DIR}/sp"
+for alias_bin in sp yamc yamcvm spvm spkg; do
+    ln -sf spid3r "${INSTALL_DIR}/${alias_bin}"
+done
 if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ]; then
     chmod +x "$SELF_SRC"
     mv -f "$SELF_SRC" "${INSTALL_DIR}/spid3r-self"
@@ -492,7 +510,10 @@ else
     say "PATH already configured. Try:"
 fi
 say "    spid3r --help              # or: sp --help"
-say "    spid3r run hello.matrix    # or: sp run hello.mt"
+say "    spid3r run hello.matrix    # or: sp run hello.mt  /  spvm hello.mt"
+say "    yamc hello.mt -o hello     # native AOT build (YamLLVM)"
+say "    yamcvm hello.mt            # compile .matrixc bytecode"
+say "    spkg init myapp            # package & project commands"
 say "    spid3r control status      # runtime dashboard (config, safety, logs)"
 
 # On GitHub Actions the PATH edits above only reach NEW shells; the current

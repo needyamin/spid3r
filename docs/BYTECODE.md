@@ -1,8 +1,10 @@
-# Spid3r bytecode, VM, and runtime
+# Spid3r bytecode (`yamcvm`), VM (`spvm`), and runtime (`spvm_rt`)
 
-This document describes the on-disk bytecode format (`.matrixc`), the virtual
-machine that executes it, the concurrency model, and the memory strategy. All of
-it is implemented in `src/vm/` (and the shared value layer in `src/value/`).
+This document describes the on-disk bytecode format (`.matrixc`, emitted by
+`spid3r compile` / **`yamcvm`**), the **`spvm`** virtual machine (`spid3r exec` /
+`spvm`) and **`spvm_rt`** runtime layer that executes it, the concurrency model,
+and the **YamGC** memory strategy. All of it is implemented in `src/vm/` (and
+the shared value layer in `src/value/`).
 
 ## The `.matrixc` file format
 

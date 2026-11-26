@@ -9,9 +9,11 @@ else.
 ## The contract
 
 For a source program `P`, let `C` be the canonical artifact the front end
-produces (`source → lexer → parser → semantic → lower → Chunk`). Every backend
-`B` ∈ { tree (oracle), vm, native/AOT, wasm, future JIT } **must produce
-identical observable behavior** for `P`:
+produces (`source → lexer → parser → semantic → lower → Chunk`). Every
+**Spid3r Engine** backend `B` ∈ { `tree` oracle (`spvm_rt`), `vm` (`spvm` /
+`spvm_rt`), `native`/AOT (**YamLLVM** via `yamc` / `spid3r build` /
+`spid3r-self`), `wasm`, future JIT } **must produce identical observable
+behavior** for `P`:
 
 1. **stdout** — byte-for-byte identical.
 2. **stderr** — identical `Phase` label (`error[runtime]`, `error[semantic]`,

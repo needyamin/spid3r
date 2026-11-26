@@ -51,10 +51,10 @@ Trying to pretend Rust is completely absent would misstate the system architectu
 
 ### 3.3 Retained Rust-side runtime & optional developer tools (`SH-2`)
 Explicitly excluded from the self-hosting compiler target in [SELFHOST.md](SELFHOST.md):
-- Script engines & runtime commands (`spid3r` / `sp` `run` tree/VM interpreters, `exec`, `disasm`, `verify-runtime`)
+- Script engines & runtime commands (`spid3r` / `sp` plus additive `spvm` / `yamcvm` / `yamc` / `spkg` — `spvm_rt` tree/VM interpreters, `exec`, `disasm`, `verify-runtime`)
 - Interactive tools (`repl`, VM line `debug`, `lsp`, `doc`, `control`, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
 - GUI host (`gui` feature via `wry`/`tao`, `spid3r-control.exe`) and WASM browser bundle (`wasm32-unknown-unknown` `cdylib` powering `web/`)
-- Cross-target bootstrap convenience: on Linux, release tarballs bundle `libLLVM.so.23.1` under `lib/` and link `spid3r` / `spid3r-self` with `-Wl,-rpath,$ORIGIN:$ORIGIN/../lib`, plus a `sp -> spid3r` symlink, so clean Linux hosts run out of the box without system `libllvm23`. On Windows, the NSIS installer ships `spid3r.exe`, `sp.exe`, `spid3r-self.exe`, `spid3r-control.exe`, `LLVM-C.dll` + `LLVM-C.lib`, and SHA-256-pinned `spid3r_lang.lib`, associating both `.matrix` and `.mt` files.
+- Cross-target bootstrap convenience: on Linux, release tarballs bundle `libLLVM.so.23.1` under `lib/` and link `spid3r` / `spid3r-self` with `-Wl,-rpath,$ORIGIN:$ORIGIN/../lib`, plus 0-byte `sp`, `yamc`, `yamcvm`, `spvm`, `spkg -> spid3r` symlinks, so clean Linux hosts run out of the box without system `libllvm23`. On Windows, the NSIS installer ships `spid3r.exe`, `sp.exe`, `yamc.exe`, `yamcvm.exe`, `spvm.exe`, `spkg.exe`, `spid3r-self.exe`, `spid3r-control.exe`, `LLVM-C.dll` + `LLVM-C.lib` (**YamLLVM**), and SHA-256-pinned `spid3r_lang.lib` (**YamGC** + runtime trampolines), associating both `.matrix` and `.mt` files.
 
 ### 3.4 Verification & benchmark harnesses
 - `tools/*.sh`, `tools/*.py`, `tools/*.js`, `tools/*.ps1` stay script-side tooling and do not ship in releases.

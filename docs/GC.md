@@ -1,6 +1,6 @@
-# Reference-cycle collection — design
+# YamGC: Reference-cycle collection & bounded AOT reclamation — design
 
-> Status: **v1.2 implemented** — **all container and instance types**
+> Status: **v1.2 implemented** — **YamGC** (Spid3r's deterministic RC + cycle collector + AOT arena & frame-root allocator) tracks **all container and instance types**
 > (`list`/`vec`, `stack`, `queue`, `deque`, `linked_list`/`singly_linked_list`/`doubly_linked_list`,
 > `set`, `map`, `tuple`, `binary_tree`, `bst`, `heap`, `priority_queue`, `graph`,
 > `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,

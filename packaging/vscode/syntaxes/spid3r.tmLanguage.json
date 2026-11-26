@@ -2,29 +2,37 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Spid3r",
   "scopeName": "source.spid3r",
-  "patterns": [{ "include": "#main" }],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#raw-strings" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#null-operators" },
+    { "include": "#operators" },
+    { "include": "#types" },
+    { "include": "#builtins" },
+    { "include": "#calls" },
+    { "include": "#class-names" },
+    { "include": "#self-super" }
+  ],
   "repository": {
-    "main": {
-      "patterns": [
-        { "include": "#comments" },
-        { "include": "#strings" },
-        { "include": "#numbers" },
-        { "include": "#keywords" },
-        { "include": "#types" },
-        { "include": "#declarations" },
-        { "include": "#operators" }
-      ]
-    },
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.double-slash.spid3r",
-          "match": "//.*$"
+          "name": "comment.line.documentation.spid3r",
+          "match": "(///).*$\\n?",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.spid3r" }
+          }
         },
         {
-          "name": "comment.block.spid3r",
-          "begin": "/\\*",
-          "end": "\\*/"
+          "name": "comment.line.double-slash.spid3r",
+          "match": "(//).*$\\n?",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.spid3r" }
+          }
         }
       ]
     },
@@ -33,105 +41,301 @@
         {
           "name": "string.quoted.double.spid3r",
           "begin": "\"",
+          "end": "\"",
           "beginCaptures": {
             "0": { "name": "punctuation.definition.string.begin.spid3r" }
           },
-          "end": "\"",
           "endCaptures": {
             "0": { "name": "punctuation.definition.string.end.spid3r" }
           },
           "patterns": [
-            {
-              "name": "constant.character.escape.spid3r",
-              "match": "\\\\[nrt\\\\\"']|\\\\u\\{[0-9a-fA-F]+\\}"
-            },
-            {
-              "name": "meta.embedded.expression.spid3r",
-              "match": "\\{[a-zA-Z_][a-zA-Z0-9_.]*\\}",
-              "captures": {
-                "0": { "name": "variable.other.interpolation.spid3r" }
-              }
-            }
+            { "include": "#string-escapes" },
+            { "include": "#interpolation" }
           ]
+        }
+      ]
+    },
+    "string-escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.unicode.spid3r",
+          "match": "\\\\u\\{[0-9a-fA-F_]+\\}"
         },
         {
-          "name": "string.quoted.single.spid3r",
-          "begin": "'",
-          "beginCaptures": {
-            "0": { "name": "punctuation.definition.string.begin.spid3r" }
-          },
-          "end": "'",
-          "endCaptures": {
-            "0": { "name": "punctuation.definition.string.end.spid3r" }
+          "name": "constant.character.escape.spid3r",
+          "match": "\\\\[nrt0\"\\\\{}]"
+        }
+      ]
+    },
+    "interpolation": {
+      "patterns": [
+        {
+          "name": "meta.interpolation.spid3r",
+          "match": "\\{\\s*[a-zA-Z_]\\w*(\\.[a-zA-Z_]\\w*)*\\s*\\}",
+          "captures": {
+            "0": {
+              "name": "meta.template.expression.spid3r",
+              "patterns": [
+                {
+                  "name": "punctuation.definition.interpolation.begin.spid3r",
+                  "match": "\\{"
+                },
+                {
+                  "name": "variable.other.interpolated.spid3r",
+                  "match": "[a-zA-Z_]\\w*(\\.[a-zA-Z_]\\w*)*"
+                },
+                {
+                  "name": "punctuation.definition.interpolation.end.spid3r",
+                  "match": "\\}"
+                }
+              ]
+            }
           }
+        },
+        {
+          "name": "invalid.illegal.unrecognized-escape.spid3r",
+          "match": "\\\\[^nrt0\"\\\\{}u]"
+        }
+      ]
+    },
+    "raw-strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.raw.hash.spid3r",
+          "match": "r#\"[^\"]*\"#"
+        },
+        {
+          "name": "string.quoted.double.raw.spid3r",
+          "match": "r\"[^\"]*\""
         }
       ]
     },
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.spid3r",
-          "match": "(?<![\\w.])\\d+(\\.\\d+)?([eE][+-]?\\d+)?|0[xX][0-9a-fA-F]+|0[bB][01]+"
-        }
-      ]
-    },
-    "keywords": {
-      "patterns": [
-        {
-          "name": "keyword.control.spid3r",
-          "match": "\\b(if|elif|else|while|for|in|break|continue|return|match|try|catch|finally|throw|spawn|await|async)\\b"
+          "name": "constant.numeric.bigint.spid3r",
+          "match": "\\b\\d[\\d_]*n\\b"
         },
         {
-          "name": "keyword.other.spid3r",
-          "match": "\\b(fn|let|const|class|interface|enum|implements|extends|new|import|as|public|private|and|or|not|self)\\b"
+          "name": "constant.numeric.hexadecimal.spid3r",
+          "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b"
         },
         {
-          "name": "constant.language.spid3r",
-          "match": "\\b(true|false|null)\\b"
-        }
-      ]
-    },
-    "types": {
-      "patterns": [
+          "name": "constant.numeric.octal.spid3r",
+          "match": "\\b0[oO][0-7][0-7_]*\\b"
+        },
         {
-          "name": "storage.type.spid3r",
-          "match": "\\b(int|float|bool|string|any|list|map|set|tuple|stack|queue|deque|vec|tree|graph|heap|matrix|bytes|bag|option|result)\\b"
+          "name": "constant.numeric.binary.spid3r",
+          "match": "\\b0[bB][01][01_]*\\b"
+        },
+        {
+          "name": "constant.numeric.float.scientific.spid3r",
+          "match": "\\b\\d[\\d_]*\\.?\\d[\\d_]*[eE][+-]?\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.float.spid3r",
+          "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.spid3r",
+          "match": "\\b\\d[\\d_]*\\b"
         }
       ]
     },
     "declarations": {
       "patterns": [
         {
-          "name": "meta.function.spid3r",
-          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "name": "meta.function.declaration.spid3r",
+          "match": "(\\bfn\\b)\\s+([a-zA-Z_]\\w*)\\s*\\(",
           "captures": {
-            "1": { "name": "keyword.other.fn.spid3r" },
+            "1": { "name": "storage.type.function.spid3r keyword.declaration.fn.spid3r" },
             "2": { "name": "entity.name.function.spid3r" }
           }
         },
         {
-          "name": "meta.class.spid3r",
-          "match": "\\b(class|interface|enum)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "name": "meta.class.declaration.spid3r",
+          "match": "(\\bclass\\b)\\s+([a-zA-Z_]\\w*)",
           "captures": {
-            "1": { "name": "keyword.other.type.spid3r" },
-            "2": { "name": "entity.name.type.spid3r" }
+            "1": { "name": "storage.type.class.spid3r keyword.declaration.class.spid3r" },
+            "2": { "name": "entity.name.type.class.spid3r" }
           }
         },
         {
-          "name": "meta.variable.spid3r",
-          "match": "\\b(let|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "name": "meta.interface.declaration.spid3r",
+          "match": "(\\binterface\\b)\\s+([a-zA-Z_]\\w*)",
           "captures": {
-            "1": { "name": "keyword.other.spid3r" },
-            "2": { "name": "variable.other.spid3r" }
+            "1": { "name": "storage.type.interface.spid3r" },
+            "2": { "name": "entity.name.type.interface.spid3r" }
           }
+        },
+        {
+          "name": "meta.enum.declaration.spid3r",
+          "match": "(\\benum\\b)\\s+([a-zA-Z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.type.enum.spid3r" },
+            "2": { "name": "entity.name.type.enum.spid3r" }
+          }
+        },
+        {
+          "name": "meta.import.spid3r",
+          "match": "\\b(import)(\\s+\\{[^}]*\\}\\s+(from))?\\s+\"[^\"]*\"",
+          "captures": {
+            "1": { "name": "keyword.control.import.spid3r" },
+            "2": { "name": "meta.import.braces.spid3r" },
+            "3": { "name": "keyword.control.from.spid3r" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.branch.spid3r",
+          "match": "\\b(if|elif|else|while|for|in|break|continue|return|match|try|catch|finally|throw|yield)\\b"
+        },
+        {
+          "name": "keyword.concurrency.spid3r",
+          "match": "\\b(spawn|async|await)\\b"
+        },
+        {
+          "name": "keyword.declaration.visibility.spid3r",
+          "match": "\\b(public|private|abstract)\\b"
+        },
+        {
+          "name": "keyword.declaration.inheritance.spid3r",
+          "match": "\\b(extends|implements)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.word.spid3r",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "constant.language.boolean.spid3r",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.spid3r",
+          "match": "\\b(null)\\b"
+        },
+        {
+          "name": "keyword.operator.new.spid3r",
+          "match": "\\bnew\\b"
+        },
+        {
+          "name": "storage.modifier.spid3r",
+          "match": "\\b(let|const|as)\\b"
+        }
+      ]
+    },
+    "null-operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.null-coalescing.spid3r",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.null-safe.spid3r",
+          "match": "\\?\\."
+        },
+        {
+          "name": "keyword.operator.nullable.spid3r",
+          "match": "(?<=\\b(?:int|float|bool|string|bytes|list|map|set|tuple|vector|matrix|channel|atomic_int)\\s)\\?(?=\\s*[),;=]|$)"
         }
       ]
     },
     "operators": {
       "patterns": [
         {
-          "name": "keyword.operator.spid3r",
-          "match": "(\\?\\?|\\?\\.|->|=>|==|!=|<=|>=|&&|\\|\\||<<|>>|[+\\-*/%=<>!&|^])"
+          "name": "keyword.operator.arrow.spid3r",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.assignment.compound.spid3r",
+          "match": "\\+=|-=|\\*=|/=|%=|\\*\\*=|//="
+        },
+        {
+          "name": "keyword.operator.comparison.spid3r",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.symbol.spid3r",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.arithmetic.spid3r",
+          "match": "\\+|-|\\*|/|%|\\*\\*"
+        },
+        {
+          "name": "keyword.operator.assignment.spid3r",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.range.spid3r",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.tuple-index.spid3r",
+          "match": "(?<=[\\w\\)])\\.\\d+"
+        },
+        {
+          "name": "punctuation.terminator.spid3r",
+          "match": ";"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.spid3r",
+          "match": "\\b(int|float|bool|string|bytes|null)\\b(?![\\w(])"
+        },
+        {
+          "name": "support.type.collection.spid3r",
+          "match": "\\b(list|map|set|tuple|vector|matrix|channel|atomic_int)\\b(?![\\w])"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.spid3r",
+          "match": "\\b(println|print|len|range|typeof|str|int|float|bool|bytes|vec|vector|matrix|stack|queue|deque|priority_queue|hash_table|bst|trie|linked_list|doubly_linked_list|singly_linked_list|bag|binary_tree|heap|ok|err|some|none|nan|inf|sleep|gc_collect|gc_live_cells|weak|spid3rinfo|exe_path|uuid4|cmp|assert|assert_eq|bcrypt_hash|bcrypt_verify|abs|min|max|floor|ceil|round|sqrt|pow|random|read_file|write_file|append_file|file_exists|config_get|config_set|config_reload|run_payload|run_payload_strict|decode|encode)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "name": "meta.method-call.spid3r",
+          "match": "(?<=\\.)\\s*([a-zA-Z_]\\w*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.method.spid3r" }
+          }
+        },
+        {
+          "name": "entity.name.function.call.spid3r",
+          "match": "\\b([a-zA-Z_]\\w*)(?=\\s*\\()",
+          "patterns": []
+        }
+      ]
+    },
+    "class-names": {
+      "patterns": [
+        {
+          "name": "entity.name.type.reference.spid3r",
+          "match": "\\b([A-Z]\\w*)\\b"
+        }
+      ]
+    },
+    "self-super": {
+      "patterns": [
+        {
+          "name": "variable.language.self.spid3r",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "variable.language.super.spid3r",
+          "match": "\\bsuper\\b"
         }
       ]
     }

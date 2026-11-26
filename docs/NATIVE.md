@@ -1,11 +1,11 @@
-# Spid3r native AOT backend (LLVM)
+# Spid3r native AOT backend (YamLLVM / LLVM 23)
 
-This document describes the `native` backend: `spid3r build` compiles a
-`.matrix` program all the way to a standalone machine-code executable, the
-same way `rustc` builds a binary. It is gated behind the `native` Cargo
-feature (adds `inkwell` and requires LLVM 23.1+ — see
-[BUILDING.md](BUILDING.md)). The core toolchain itself stays
-zero-dependency.
+This document describes the `native` (**YamLLVM**) backend: `spid3r build` (or
+the additive **`yamc`** compiler CLI: `yamc app.mt -o app`) compiles a `.matrix`
+/ `.mt` program all the way to a standalone machine-code executable, the same
+way `rustc` builds a binary. It is gated behind the `native` Cargo feature
+(adds `inkwell` and requires LLVM 23.1+ — see [BUILDING.md](BUILDING.md)). The
+core toolchain itself stays zero-dependency.
 
 Everything here is implemented in `src/native/` (`rt.rs`, `ir.rs`, `llvm.rs`,
 `link.rs`) and verified against the reference engines — the differential

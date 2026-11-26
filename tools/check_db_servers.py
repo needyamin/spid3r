@@ -84,7 +84,8 @@ def pg_authenticate(port, method_index, password):
     else:  # scram-sha-256
         assert payload[:4] == struct.pack(">I", 10), payload[:4]
         nonce = "c2FsdA==extra"
-        client_first = "n=,r=" + nonce
+        client_first_bare = "n=,r=" + nonce
+        client_first = "n,," + client_first_bare
         mech = b"SCRAM-SHA-256\0"
         # The frame length counts the 4-byte length field itself.
         frame_len = 4 + len(mech) + 4 + len(client_first)
@@ -99,14 +100,14 @@ def pg_authenticate(port, method_index, password):
         salt = base64.b64decode(attrs["s"])
         iterations = int(attrs["i"])
         client_final_bare = "c=biws,r=" + attrs["r"]
-        auth_message = ",".join([client_first, server_first, client_final_bare])
+        auth_message = ",".join([client_first_bare, server_first, client_final_bare])
         salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations, 32)
         client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
         stored_key = hashlib.sha256(client_key).digest()
         client_sig = hmac.new(stored_key, auth_message.encode(), hashlib.sha256).digest()
         proof = bytes(a ^ b for a, b in zip(client_key, client_sig))
         final = client_final_bare + ",p=" + base64.b64encode(proof).decode()
-        s.sendall(b"p" + struct.pack(">I", len(final) + 5) + final.encode() + b"\0")
+        s.sendall(b"p" + struct.pack(">I", len(final) + 4) + final.encode())
         kind, fin = read_pg(s)
         assert fin[:4] == struct.pack(">I", 12), fin[:4]
         server_sig = hmac.new(

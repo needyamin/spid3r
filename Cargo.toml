@@ -21,6 +21,22 @@ path = "src/main.rs"
 name = "sp"
 path = "src/sp_main.rs"
 
+[[bin]]
+name = "yamc"
+path = "src/yamc_main.rs"
+
+[[bin]]
+name = "yamcvm"
+path = "src/yamcvm_main.rs"
+
+[[bin]]
+name = "spvm"
+path = "src/spvm_main.rs"
+
+[[bin]]
+name = "spkg"
+path = "src/spkg_main.rs"
+
 # The desktop control panel. Requires the gui stack (wry/tao), so core-only
 # builds — the Linux/macOS release tarballs, CI --no-default-features — skip
 # it entirely; those platforms manage the runtime with `spid3r control`.

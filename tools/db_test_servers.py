@@ -206,7 +206,11 @@ def serve_pg(conn):
             mech_end = init.index(b"\0")
             (bare_len,) = struct.unpack(">I", init[mech_end + 1 : mech_end + 5])
             client_first = init[mech_end + 5 : mech_end + 5 + bare_len].decode()
-            client_nonce = client_first.split("r=")[1].split(",")[0]
+            if not client_first.startswith("n,,"):
+                pg_send(conn, b"E", b"SFATAL\0C08P01\0Mmalformed SCRAM message (missing n,, GS2 header)\0\0")
+                return
+            client_first_bare = client_first[3:]
+            client_nonce = client_first_bare.split("r=")[1].split(",")[0]
             server_nonce = "hNlF$k0extra"
             server_first = "r=%s%s,s=%s,i=%d" % (
                 client_nonce,
@@ -218,7 +222,11 @@ def serve_pg(conn):
 
             data = pg_read_exact(conn, 5)
             (plen,) = struct.unpack(">I", data[1:5])
-            final_msg = pg_read_exact(conn, plen - 4).rstrip(b"\0").decode()
+            raw_final = pg_read_exact(conn, plen - 4)
+            if raw_final.endswith(b"\0"):
+                pg_send(conn, b"E", b"SFATAL\0C08P01\0Mmalformed SCRAM SASLResponse (trailing NUL)\0\0")
+                return
+            final_msg = raw_final.decode()
             # SCRAM attributes are key=value separated by commas, but base64
             # values may themselves contain '=' padding, so split on the known
             # keys rather than on every '='.
@@ -232,7 +240,7 @@ def serve_pg(conn):
                     attrs[key] = final_msg[start:] if end < 0 else final_msg[start:end]
             proof = base64.b64decode(attrs["p"])
             client_final_bare = "c=biws,r=" + attrs["r"]
-            auth_message = ",".join([client_first, server_first, client_final_bare])
+            auth_message = ",".join([client_first_bare, server_first, client_final_bare])
             client_sig = hmac.new(PG_STORED_KEY, auth_message.encode(), hashlib.sha256).digest()
             client_key = bytes(a ^ b for a, b in zip(proof, client_sig))
             if hashlib.sha256(client_key).digest() != PG_STORED_KEY:

@@ -252,10 +252,9 @@ fn scram_client_final(
         return Err("postgres: SCRAM reply has an empty salt".to_string());
     }
 
-    // SaltedPassword = Hi(password, salt, i). Commas and '=' in a password
-    // must be escaped per RFC 5802, or the derived keys silently differ.
-    let escaped = password.replace(",", "\\,").replace("=", "\\=");
-    let salted = crate::stdlib::kdf::pbkdf2(escaped.as_bytes(), &salt, iterations, 32);
+    // SaltedPassword = Hi(password, salt, i). RFC 5802 §3 only escapes ',' and '='
+    // in usernames (`n=`), never in passwords.
+    let salted = crate::stdlib::kdf::pbkdf2(password.as_bytes(), &salt, iterations, 32);
     let client_key = hmac_sha256(&salted, b"Client Key");
     let stored_key = crate::pkg::sha256_bytes(&client_key);
     let client_final_no_proof = format!("c=biws,r={}", server_nonce);
@@ -483,17 +482,23 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                         write_message(&mut stream, b'p', &p)?;
                     }
                     10 => {
-                        // SASL: negotiate SCRAM-SHA-256.
+                        // SASL: negotiate SCRAM-SHA-256 (RFC 5802 + PG SASLInitialResponse).
                         let client_nonce = crate::stdlib::next_random().to_le_bytes();
                         let nonce = b64_encode(&client_nonce);
                         let client_first_bare = format!("n=,r={}", nonce);
+                        let client_first = format!("n,,{}", client_first_bare);
                         let mut init = b"SCRAM-SHA-256\0".to_vec();
-                        let bare = client_first_bare.as_bytes();
-                        init.extend_from_slice(&(bare.len() as u32).to_be_bytes());
-                        init.extend_from_slice(bare);
+                        let cf_bytes = client_first.as_bytes();
+                        init.extend_from_slice(&(cf_bytes.len() as u32).to_be_bytes());
+                        init.extend_from_slice(cf_bytes);
                         write_message(&mut stream, b'p', &init)?;
                         // The server's SASLContinue carries its first message.
                         let cont = read_message(&mut stream)?;
+                        if cont.kind == b'E' {
+                            return Ok(Value::err(Value::Str(
+                                format!("{}: {}", WHO, error_fields(&cont.payload)).into(),
+                            )));
+                        }
                         if cont.kind != b'R' {
                             return Err(format!("{}: expected SASLContinue, got '{}'", WHO, cont.kind as char));
                         }
@@ -509,10 +514,13 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                             &client_first_bare,
                             &nonce,
                         )?;
-                        let mut p = fin_msg.message.as_bytes().to_vec();
-                        p.push(0);
-                        write_message(&mut stream, b'p', &p)?;
+                        write_message(&mut stream, b'p', fin_msg.message.as_bytes())?;
                         let fin = read_message(&mut stream)?;
+                        if fin.kind == b'E' {
+                            return Ok(Value::err(Value::Str(
+                                format!("{}: {}", WHO, error_fields(&fin.payload)).into(),
+                            )));
+                        }
                         if fin.kind != b'R' {
                             return Err(format!("{}: expected SASLFinal, got '{}'", WHO, fin.kind as char));
                         }

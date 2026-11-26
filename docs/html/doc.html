@@ -1600,12 +1600,12 @@
               external dependencies via <code>--no-default-features</code>. Three optional Cargo features add
               <code>native</code> (LLVM 23 AOT), <code>gui</code> (<code>wry</code>/<code>tao</code>), and
               <code>tls</code> (OS-backed <code>native-tls</code>).</li>
-            <li><strong>Three Native Execution Engines + WebAssembly:</strong> Run programs on the default pre-decoded
-              <code>--engine vm</code> (bytecode VM with general fused superinstructions), the pure reference
-              <code>--engine tree</code> (AST tree-walk oracle), the LLVM 23 ahead-of-time native compiler
-              (<code>spid3r build</code> / self-hosted <code>spid3r-self</code>), or <code>wasm32</code> in the browser
+            <li><strong>Three Native Execution Engines + WebAssembly (Spid3r Engine):</strong> Run programs on the default pre-decoded
+              <code>--engine vm</code> (<strong><code>spvm</code></strong> / <strong><code>spvm_rt</code></strong> bytecode VM with general fused superinstructions, bytecode compiled by <strong><code>yamcvm</code></strong>), the pure reference
+              <code>--engine tree</code> (AST tree-walk oracle), the <strong>YamLLVM</strong> (LLVM 23) ahead-of-time native compiler
+              (<code>yamc</code> / <code>spid3r build</code> / self-hosted <code>spid3r-self</code>), or <code>wasm32</code> in the browser
               — all pinned to identical stdout, error phase, and exit code.</li>
-            <li><strong>Compact 16-Byte <code>Value</code> &amp; Bounded Memory:</strong> Deterministic reference
+            <li><strong>Compact 16-Byte <code>Value</code> &amp; Bounded Memory (YamGC):</strong> Deterministic reference
               counting with 8-byte <code>ThinArcStr</code>, lock-free single-threaded <code>FastMutex</code>, a
               mark-and-sweep cycle collector (30 <code>GcTrace</code> implementations with automatic registry pruning),
               and bounded <code>ValueV2</code>/<code>AOT_HEAP</code> reclamation with precise frame roots and loop
@@ -1640,7 +1640,7 @@
             </h4>
             <p style="font-size: 13.5px; margin-bottom: 8px;">
               Run this single command in your terminal. It detects your operating system and CPU architecture, downloads
-              the release tarball, installs both <code>spid3r</code> and the self-hosted compiler
+              the release tarball, installs <code>spid3r</code> (with 0-byte symlinks <code>sp</code>, <code>yamc</code>, <code>yamcvm</code>, <code>spvm</code>, <code>spkg</code>) and the self-hosted compiler
               <code>spid3r-self</code> into <code>~/.spid3r/bin</code> (override with
               <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), deletes any <code>stdlib/</code>
               folder
@@ -1662,7 +1662,7 @@
               automated installer configures:
             </p>
             <ul style="font-size: 13px; margin-bottom: 18px; color: var(--fg-secondary);">
-              <li>Adds <code>spid3r-self.exe</code> (self-hosted native AOT compiler &amp; dev CLI), <code>spid3r.exe</code> (VM/interpreter/REPL/LSP), and <code>spid3r-control.exe</code> to your system <code>PATH</code>.</li>
+              <li>Adds <code>spid3r-self.exe</code> (self-hosted native AOT compiler &amp; dev CLI), <code>spid3r.exe</code> / <code>sp.exe</code> (unified CLI), additive component CLIs (<code>yamc.exe</code>, <code>yamcvm.exe</code>, <code>spvm.exe</code>, <code>spkg.exe</code>), and <code>spid3r-control.exe</code> to your system <code>PATH</code>.</li>
               <li>Bundles <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the SHA-256-pinned runtime staticlib (<code>spid3r_lang.lib</code> + <code>spid3r_lang.lib.sha256</code> + <code>runtime-manifest.json</code>) for out-of-the-box AOT compilation.</li>
               <li>Registers <code>.matrix</code> source files so double-clicking executes them, with all 26 stdlib modules compiled directly into the binaries.</li>
             </ul>
@@ -1879,22 +1879,22 @@
                   and TTY-gated ANSI colors (respecting <code>NO_COLOR</code>).</td>
               </tr>
               <tr>
-                <td><code>spid3r compile &lt;file.matrix&gt;</code></td>
-                <td><code>spid3r compile app.matrix -o app.matrixc</code></td>
-                <td>Compile source file into standalone binary bytecode (<code>.matrixc</code>). Use <code>--dump</code>
+                <td><code>spid3r compile &lt;file.matrix&gt;</code><br><code>yamcvm &lt;file.mt&gt;</code></td>
+                <td><code>spid3r compile app.matrix -o app.matrixc</code> · <code>yamcvm app.mt</code></td>
+                <td>Compile source file into standalone binary bytecode (<code>.matrixc</code>) via <code>yamcvm</code> or <code>spid3r compile</code>. Use <code>--dump</code>
                   to inspect disassembled bytecode opcodes. Output is written in the version-3 container format with a
                   SHA-256 integrity checksum over the payload.</td>
               </tr>
               <tr>
-                <td><code>spid3r disasm &lt;file.matrixc&gt;</code></td>
-                <td><code>spid3r disasm app.matrixc</code></td>
+                <td><code>spid3r disasm &lt;file.matrixc&gt;</code><br><code>spvm disasm &lt;file.matrixc&gt;</code></td>
+                <td><code>spid3r disasm app.matrixc</code> · <code>yamcvm disasm app.matrixc</code></td>
                 <td>Load a compiled bytecode file and print human-readable disassembly. Exits 4 if the file is corrupt
                   or fails its integrity checksum.</td>
               </tr>
               <tr>
-                <td><code>spid3r build &lt;file.matrix&gt;</code></td>
-                <td><code>spid3r build app.matrix --release</code></td>
-                <td>Compile into a standalone native machine-code executable for your operating system (split-staticlib
+                <td><code>spid3r build &lt;file.matrix&gt;</code><br><code>yamc &lt;file.mt&gt;</code></td>
+                <td><code>spid3r build app.matrix --release</code> · <code>yamc app.mt --release -o app</code></td>
+                <td>Compile into a standalone native machine-code executable via the <strong>YamLLVM</strong> backend (split-staticlib
                   linking pulls in <code>spid3r_reg_core</code> plus only referenced subsystem groups). Flags:
                   <code>--release</code>, <code>-o &lt;path&gt;</code>, <code>--target &lt;triple&gt;</code>,
                   <code>--target-cpu &lt;x86-64|x86-64-v2|x86-64-v3|native&gt;</code> (<code>--release</code> defaults
@@ -1909,9 +1909,9 @@
                 </td>
               </tr>
               <tr>
-                <td><code>spid3r exec &lt;file.matrixc&gt;</code></td>
-                <td><code>spid3r exec app.matrixc</code></td>
-                <td>Directly execute a pre-compiled bytecode file on the virtual machine with instant startup. Flags:
+                <td><code>spid3r exec &lt;file.matrixc&gt;</code><br><code>spvm &lt;file.matrixc&gt;</code></td>
+                <td><code>spid3r exec app.matrixc</code> · <code>spvm app.matrixc</code></td>
+                <td>Directly execute a pre-compiled bytecode file on the <strong><code>spvm</code></strong> virtual machine (<strong><code>spvm_rt</code></strong>) with instant startup. Flags:
                   <code>--sandbox</code> (same capability denials as <code>run --sandbox</code> — this is the
                   untrusted-bytecode distribution path). A corrupt or checksum-invalid <code>.matrixc</code> exits with
                   code 4.</td>
@@ -2030,9 +2030,9 @@
                   <code>valid:false</code>.</td>
               </tr>
               <tr>
-                <td><code>spid3r init [dir]</code></td>
-                <td><code>spid3r init my_project</code></td>
-                <td>Create a project skeleton (<code>spider.toml</code> + <code>src/main.matrix</code>).</td>
+                <td><code>spid3r init [dir]</code><br><code>spkg init [dir]</code></td>
+                <td><code>spid3r init my_project</code> · <code>spkg init my_project</code></td>
+                <td>Create a project skeleton (<code>spider.toml</code> + <code>src/main.matrix</code>). All package workflow commands (<code>init</code>, <code>add</code>, <code>remove</code>, <code>install</code>, <code>tree</code>, <code>verify</code>, <code>search</code>, <code>publish</code>, <code>pack</code>, <code>unpack</code>, <code>dist</code>, <code>modules</code>) also work via the additive <code>spkg</code> CLI.</td>
               </tr>
               <tr>
                 <td><code>spid3r install [--update]</code></td>
@@ -2385,8 +2385,8 @@
 
         <h3 class="section-h3" id="native-compilation">Native Machine-Code Compilation (AOT)</h3>
         <p>
-          Spid3r includes an Ahead-Of-Time (AOT) native compiler powered by LLVM 23 (available via both Stage 0
-          <code>spid3r build</code> and the self-hosted <code>spid3r-self build</code>). Release builds link a split
+          Spid3r includes an Ahead-Of-Time (AOT) native compiler powered by <strong>YamLLVM</strong> (LLVM 23, available via Stage 0
+          <code>spid3r build</code> / <code>yamc</code> and self-hosted <code>spid3r-self build</code>). Release builds link a split
           runtime staticlib (<code>spid3r_rt_start_slim</code> + <code>spid3r_reg_core</code> plus only the opt-in
           subsystem groups your program calls, dead-stripping unused stdlib and scheduler code) and default to
           <code>--target-cpu x86-64-v3</code> on AVX2/BMI2/FMA hosts:
@@ -5922,8 +5922,8 @@ errors.level = warn
             </tr>
             <tr>
               <td>Native (AOT)</td>
-              <td><code>spid3r build</code> (Stage 0) / <code>spid3r-self build</code> (selfhost)</td>
-              <td>LLVM 23 compiles to machine code linked against split SHA-256-pinned <code>spid3r_lang</code>
+              <td><code>spid3r build</code> / <code>yamc</code> (Stage 0) · <code>spid3r-self build</code> (selfhost)</td>
+              <td><strong>YamLLVM</strong> (LLVM 23) compiles to machine code linked against split SHA-256-pinned <code>spid3r_lang</code>
                 (<code>spid3r_rt_start_slim</code> + <code>spid3r_reg_core</code> + referenced subsystem groups,
                 <code>--target-cpu x86-64-v3</code> default for <code>--release</code> on AVX2/BMI2/FMA hosts). Two
                 documented trades: the GUI bridge is not linked, and the execution budget is off by default for zero

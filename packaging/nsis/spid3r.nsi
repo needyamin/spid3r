@@ -147,6 +147,10 @@ Section "Spid3r compiler & runtime (required)" SecCore
   SetOutPath "$INSTDIR"
   File "${SPID3R_EXE}"
   File "/oname=sp.exe" "${SPID3R_EXE}"
+  File "/oname=yamc.exe" "${SPID3R_EXE}"
+  File "/oname=yamcvm.exe" "${SPID3R_EXE}"
+  File "/oname=spvm.exe" "${SPID3R_EXE}"
+  File "/oname=spkg.exe" "${SPID3R_EXE}"
 !ifdef SPID3R_SELF_EXE
   File "/oname=spid3r-self.exe" "${SPID3R_SELF_EXE}"
 !endif
@@ -561,6 +565,10 @@ Section "Uninstall"
   ; --- files ---
   Delete "$INSTDIR\spid3r.exe"
   Delete "$INSTDIR\sp.exe"
+  Delete "$INSTDIR\yamc.exe"
+  Delete "$INSTDIR\yamcvm.exe"
+  Delete "$INSTDIR\spvm.exe"
+  Delete "$INSTDIR\spkg.exe"
   Delete "$INSTDIR\spid3r-self.exe"
   Delete "$INSTDIR\spid3r-control.exe"
   Delete "$INSTDIR\calculator.exe"
