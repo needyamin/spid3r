@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r Privacy Policy</title>
+  <meta name="description" content="Privacy Policy for the Spid3r programming language toolchain, runtime engines, WebAssembly playground, Windows NSIS installer, and Microsoft Store MSIX package published by ANSNEW TECH.">
+  <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('spid3r-dev-theme'); } catch (_) { }
+      if (!t) {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    :root {
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: 'JetBrains Mono', "SF Mono", Consolas, monospace;
+
+      --bg-base: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: #161e2e;
+      --bg-card-alt: #1a2335;
+      --bg-code: #080c13;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-line: #1e293b;
+      --border-hover: rgba(56, 189, 248, 0.35);
+
+      --fg-primary: #f1f5f9;
+      --fg-secondary: #94a3b8;
+      --fg-muted: #64748b;
+
+      --w3-green: #04AA6D;
+      --w3-green-hover: #059862;
+      --w3-green-light: rgba(4, 170, 109, 0.12);
+      --w3-green-border: rgba(4, 170, 109, 0.4);
+      --cyan: #38bdf8;
+      --indigo: #818cf8;
+      --purple: #c084fc;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --teal: #2dd4bf;
+
+      --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.4);
+      --radius: 12px;
+      --topbar-height: 58px;
+      --max-width: 1240px;
+    }
+    html[data-theme="light"] {
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --bg-card-alt: #f1f5f9;
+      --bg-code: #f1f5f9;
+      --border-subtle: rgba(0, 0, 0, 0.08);
+      --border-line: #e2e8f0;
+      --border-hover: rgba(4, 170, 109, 0.4);
+      --fg-primary: #0f172a;
+      --fg-secondary: #475569;
+      --fg-muted: #64748b;
+      --w3-green-light: #e8f5e9;
+      --w3-green-border: #a5d6a7;
+      --cyan: #0284c7;
+      --indigo: #6366f1;
+      --amber: #b45309;
+      --rose: #e11d48;
+      --teal: #0d9488;
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; font-family: var(--font-body);
+      background: var(--bg-base); color: var(--fg-primary);
+      line-height: 1.6;
+    }
+    h1, h2, h3, h4 { font-family: var(--font-heading); letter-spacing: -0.02em; }
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 200;
+      height: var(--topbar-height);
+      background: rgba(11, 15, 23, 0.92);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border-line);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 22px; gap: 12px;
+    }
+    html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.94); }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 800; font-size: 1.15rem; color: var(--fg-primary); text-decoration: none !important; flex-shrink: 0; }
+    .brand img { width: 30px; height: 30px; border-radius: 7px; }
+    .brand .accent { color: var(--w3-green); }
+    .brand .sub { font-size: 12.5px; font-weight: 500; color: var(--fg-secondary); margin-left: 2px; }
+    .topbar-nav { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+    .topbar-nav::-webkit-scrollbar { display: none; }
+    .nav-tab {
+      font-size: 13px; font-weight: 600; color: var(--fg-secondary);
+      padding: 6px 10px; border-radius: 6px; white-space: nowrap; text-decoration: none !important;
+    }
+    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); }
+    .nav-tab.active { background: var(--w3-green-light); color: var(--w3-green); }
+    .btn-top {
+      height: 34px; width: 34px; border-radius: 8px;
+      background: var(--bg-surface); border: 1px solid var(--border-line);
+      color: var(--fg-secondary); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .btn-top:hover { border-color: var(--w3-green); color: var(--fg-primary); }
+
+    main { max-width: var(--max-width); margin: 0 auto; padding: 30px 24px 80px; }
+    .hero { margin-bottom: 24px; border-bottom: 1px solid var(--border-line); padding-bottom: 22px; }
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 11.5px; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--w3-green); font-weight: 600; margin-bottom: 8px;
+    }
+    h1 {
+      font-size: clamp(1.85rem, 3.2vw, 2.5rem); margin: 0 0 10px; line-height: 1.15;
+      background: linear-gradient(135deg, var(--fg-primary) 35%, var(--cyan) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .lead { color: var(--fg-secondary); max-width: 82ch; margin: 0 0 14px; font-size: 15.5px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg-secondary);
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: 999px; padding: 4px 12px;
+    }
+    .chip b { color: var(--fg-primary); font-weight: 600; }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 22px 0 34px; }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); padding: 16px 18px;
+    }
+    .card .k { font-size: 11.5px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+    .card .v { font-family: var(--font-heading); font-size: 1.65rem; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+    .card .v.green { color: var(--w3-green); }
+    .card .v.cyan { color: var(--cyan); }
+    .card .n { font-size: 12.5px; color: var(--fg-secondary); }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 14px 0 24px; }
+    .panel {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px;
+    }
+    .panel h3 { margin: 0 0 8px; font-size: 1rem; color: var(--fg-primary); }
+    .panel p { margin: 0 0 10px; color: var(--fg-secondary); font-size: 14px; }
+    .panel p:last-child { margin-bottom: 0; }
+
+    h2 {
+      font-size: 1.45rem; font-weight: 700; margin: 44px 0 10px;
+      padding-bottom: 8px; border-bottom: 2px solid var(--border-line);
+      display: flex; align-items: baseline; gap: 10px;
+      scroll-margin-top: calc(var(--topbar-height) + 18px);
+    }
+    h2 .num { font-family: var(--font-mono); color: var(--w3-green); font-size: 1rem; }
+    .section-lead { color: var(--fg-secondary); margin: 0 0 16px; max-width: 82ch; font-size: 14.5px; }
+
+    .table-wrap {
+      overflow-x: auto; background: var(--bg-card);
+      border: 1px solid var(--border-line); border-radius: var(--radius); margin-bottom: 20px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; text-align: left; }
+    thead th {
+      background: var(--bg-card-alt); color: var(--fg-secondary);
+      font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+      padding: 11px 14px; border-bottom: 1px solid var(--border-line); white-space: nowrap;
+    }
+    tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--bg-card-alt); }
+    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .dim { color: var(--fg-muted); font-size: 12px; }
+    .name { font-weight: 600; }
+    .name small { display: block; font-weight: 400; color: var(--fg-muted); font-size: 12px; }
+
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; letter-spacing: .03em;
+      font-family: var(--font-mono); white-space: nowrap;
+    }
+    .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
+    .badge.info { background: rgba(56, 189, 248, 0.14); color: var(--cyan); border: 1px solid rgba(56, 189, 248, 0.4); }
+    .badge.warn { background: rgba(251, 191, 36, 0.14); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.4); }
+    .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
+
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border-line);
+      border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+      font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+      color: var(--fg-primary); margin: 12px 0 0;
+    }
+    code { font-family: var(--font-mono); font-size: 0.9em; }
+    p code, li code, td code { background: var(--bg-card-alt); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 5px; }
+
+    .note {
+      border-left: 3px solid var(--cyan); background: var(--bg-card);
+      padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 14px 0;
+      color: var(--fg-secondary); font-size: 13.5px;
+    }
+    .note b, .note strong { color: var(--fg-primary); }
+    ul { padding-left: 20px; margin: 8px 0; }
+    li { margin: 5px 0; color: var(--fg-secondary); font-size: 14px; }
+    li b, li strong { color: var(--fg-primary); }
+
+    footer {
+      max-width: var(--max-width); margin: 0 auto; padding: 22px 24px;
+      border-top: 1px solid var(--border-line);
+      color: var(--fg-muted); font-size: 12.5px;
+      display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between;
+    }
+    @media print {
+      .topbar, .btn-top { display: none !important; }
+      body { background: #fff; color: #000; }
+      .card, .panel, .table-wrap { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a href="doc.html" class="brand">
+      <img src="../../src/assets/spid3r.png" alt="Spid3r Logo">
+      <div>Spid<span class="accent">3</span>r <span class="sub">Privacy</span></div>
+      <span class="chip" data-spid3r-version="v" style="padding:2px 9px;font-size:11px;">v1.1.1</span>
+    </a>
+    <nav class="topbar-nav">
+      <a href="#sec-scope" class="nav-tab">Scope</a>
+      <a href="#sec-collection" class="nav-tab">Data Policy</a>
+      <a href="#sec-network" class="nav-tab">Network Matrix</a>
+      <a href="#sec-storage" class="nav-tab">Local Storage</a>
+      <a href="#sec-security" class="nav-tab">Security</a>
+      <a href="#sec-thirdparty" class="nav-tab">Stores &amp; Hosts</a>
+      <a href="#sec-rights" class="nav-tab">Rights</a>
+      <a href="#sec-contact" class="nav-tab">Contact</a>
+      <a href="doc.html" class="nav-tab">Docs</a>
+      <a href="benchmark.html" class="nav-tab">Benchmarks</a>
+      <a href="playground.html" target="_blank" class="nav-tab">Playground</a>
+    </nav>
+    <button class="btn-top" id="themeBtn" title="Toggle Light/Dark Theme">&#127769;</button>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Zero Telemetry &middot; Local-First Toolchain &middot; Microsoft Store &amp; Enterprise Policy</div>
+      <h1>Spid3r Privacy Policy</h1>
+      <p class="lead">
+        Spid3r is an offline-first general-purpose programming language toolchain built to respect developer
+        confidentiality and enterprise source-code isolation. Neither the Spid3r compiler, virtual machine,
+        self-hosted AOT compiler, Control Panel, nor WebAssembly playground collects, transmits, or sells
+        personal information or source code.
+      </p>
+      <div class="chips">
+        <span class="chip"><b>Effective:</b> 2026-11-26</span>
+        <span class="chip"><b>Publisher:</b> ANSNEW TECH.</span>
+        <span class="chip"><b>Store Identity:</b> <code>ANSNEWTECH.Spid3r</code></span>
+        <span class="chip"><b>Store ID:</b> <code>9NPH5XX0F6KF</code></span>
+        <span class="chip"><b>License:</b> GPL-3.0-or-later</span>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Telemetry Collected</div>
+        <div class="v green">None (0)</div>
+        <div class="n">Zero analytics, usage beacons, or automated crash uploads</div>
+      </div>
+      <div class="card">
+        <div class="k">Compiler Network Access</div>
+        <div class="v cyan">Zero</div>
+        <div class="n"><code>check</code>, <code>compile</code>, <code>build</code>, <code>fmt</code>, <code>doc</code> run 100% offline</div>
+      </div>
+      <div class="card">
+        <div class="k">Accounts Required</div>
+        <div class="v green">None</div>
+        <div class="n">No sign-in, license activation, or cloud account</div>
+      </div>
+      <div class="card">
+        <div class="k">Browser Playground</div>
+        <div class="v cyan">100% Local</div>
+        <div class="n">Executes client-side inside WebAssembly (<code>spid3r.wasm</code>)</div>
+      </div>
+    </div>
+
+    <h2 id="sec-scope"><span class="num">01</span>Scope &amp; Covered Software</h2>
+    <p class="section-lead">
+      This Privacy Policy applies to all official Spid3r programming language distributions, developer tools,
+      and static web documentation published by <strong>ANSNEW TECH.</strong>:
+    </p>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Desktop &amp; CLI Toolchain</h3>
+        <ul>
+          <li><b>Core CLI &amp; runtime executables:</b> <code>spid3r</code>, <code>sp</code>, <code>yamc</code>, <code>yamcvm</code>, <code>spvm</code>, and <code>spkg</code>.</li>
+          <li><b>Self-hosted AOT compiler:</b> <code>spid3r-self</code> powered by <strong>YamLLVM</strong> (LLVM 23) and the SHA-256-pinned <code>spid3r_lang</code> static library.</li>
+          <li><b>Desktop Control Panel:</b> <code>spid3r-control</code> (optional GUI binary) and <code>spid3r control</code> for editing local <code>spid3r.ini</code> settings.</li>
+          <li><b>Editor extension:</b> Bundled VS Code formatter package (<code>spid3r-formatter.vsix</code>).</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Installers, Store Packages &amp; Web Runtime</h3>
+        <ul>
+          <li><b>Microsoft Store MSIX package:</b> Package Identity <code>ANSNEWTECH.Spid3r</code> (Store ID <code>9NPH5XX0F6KF</code>, <code>Spid3r-&lt;ver&gt;-x64.msix</code>).</li>
+          <li><b>Standalone installers &amp; archives:</b> Windows NSIS installer (<code>Spid3r-Setup-&lt;ver&gt;.exe</code>) and Linux/macOS release tarballs.</li>
+          <li><b>WebAssembly browser tools:</b> Offline-capable documentation (<a href="doc.html">doc.html</a>), benchmark report (<a href="benchmark.html">benchmark.html</a>), and browser playground (<a href="playground.html">playground.html</a>) backed by <code>web/spid3r.wasm</code>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 id="sec-collection"><span class="num">02</span>Data Collection &amp; Telemetry</h2>
+    <p class="section-lead">
+      By design, the Spid3r software contains <strong>no telemetry subsystem</strong>, <strong>no advertising SDKs</strong>,
+      and <strong>no background network services</strong>. When you install or run Spid3r, ANSNEW TECH. does not collect,
+      access, log, or sell any of the following:
+    </p>
+    <div class="panel">
+      <ul>
+        <li><strong>No personal identifiers:</strong> Names, email addresses, Microsoft Store account identities, IP addresses, or payment details are never accessed or transmitted by Spid3r binaries.</li>
+        <li><strong>No device or usage telemetry:</strong> Spid3r never reports hardware fingerprints, OS versions, CPU metrics, command frequency, or feature usage statistics.</li>
+        <li><strong>No source code or build output:</strong> Your <code>.matrix</code> / <code>.mt</code> source files, <code>.matrixc</code> bytecode, compiled binaries, and <code>spid3r.ini</code> policies never leave your machine through Spid3r tooling.</li>
+        <li><strong>No silent crash reporting or background daemons:</strong> Errors and stack traces are printed strictly to your local terminal or stderr. Spid3r does not install background telemetry or remote update services.</li>
+      </ul>
+    </div>
+
+    <h2 id="sec-network"><span class="num">03</span>Network Activity &amp; Component Matrix</h2>
+    <p class="section-lead">
+      Every network-capable path in the Spid3r ecosystem is strictly user-initiated or explicitly written inside
+      your own program code. The table below documents exact behavior across every component:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Component / Feature</th>
+            <th>Network Behavior</th>
+            <th>Data Transmitted &amp; Verification</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="name">Compiler &amp; Dev CLI<small><code>check</code>, <code>compile</code>, <code>build</code>, <code>fmt</code>, <code>doc</code>, <code>disasm</code>, <code>test</code>, <code>bench</code>, <code>lsp</code>, <code>repl</code>, <code>debug</code></small></td>
+            <td><span class="badge pass">Zero Network</span></td>
+            <td>Reads and writes local project files only. Guaranteed zero outbound or inbound network connections by policy.</td>
+          </tr>
+          <tr>
+            <td class="name">Control Panel<small><code>spid3r-control</code> &middot; <code>spid3r control</code></small></td>
+            <td><span class="badge pass">Local Only</span></td>
+            <td>Reads and updates local <code>spid3r.ini</code> configuration files on disk. Contacts zero remote endpoints.</td>
+          </tr>
+          <tr>
+            <td class="name">Package Manager<small><code>spkg</code> &middot; <code>spid3r install</code>, <code>add</code>, <code>search</code>, <code>publish</code></small></td>
+            <td><span class="badge info">User-Initiated Only</span></td>
+            <td>Connects only to the explicit <code>path</code>, <code>git</code>, or <code>http(s)://</code> registry you specify (<code>SPID3R_REGISTRY</code> / <code>packages.registry</code>). Verifies <code>spider.lock</code> SHA-256 checksums and Ed25519 <code>sha256.txt.sig</code> signatures; executes zero install-time build scripts.</td>
+          </tr>
+          <tr>
+            <td class="name">User Scripts &amp; Stdlib Networking<small><code>http_fetch</code>, TCP/UDP, WebSocket, TLS, PostgreSQL/MySQL, SMTP/FTP</small></td>
+            <td><span class="badge info">Strictly User-Coded</span></td>
+            <td>Transmits only to hosts explicitly targeted by the <code>.matrix</code> program you run, using OS-backed <code>native-tls</code> when enabled. Script engines support opt-in denial via <code>--sandbox</code>, <code>spid3r.ini</code> (<code>security.deny_network</code>), or <code>Engine::deny</code>.</td>
+          </tr>
+          <tr>
+            <td class="name">Web Docs &amp; Playground<small><code>doc.html</code>, <code>benchmark.html</code>, <code>playground.html</code></small></td>
+            <td><span class="badge pass">Client-Side WASM</span></td>
+            <td>Your Spid3r code runs locally inside <code>spid3r.wasm</code> and is never uploaded to any server. When viewed online, your browser performs normal static GET requests to the hosting origin (and Google Fonts stylesheets in <code>doc.html</code> if reachable).</td>
+          </tr>
+          <tr>
+            <td class="name">Windows WebView2 Bootstrapper<small>Optional GUI runtime prerequisite on older Windows builds</small></td>
+            <td><span class="badge warn">Opt-In Only</span></td>
+            <td>Disabled by default; fetches the Microsoft WebView2 runtime only if explicitly requested and verifies its pinned SHA-256 digest before execution.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="sec-storage"><span class="num">04</span>Local Files, Configuration &amp; Data Deletion</h2>
+    <p class="section-lead">
+      All data created during normal use stays exclusively on your device under directories you control:
+    </p>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>What Is Stored Locally</h3>
+        <ul>
+          <li><strong>Configuration:</strong> Optional <code>spid3r.ini</code> files (local project directory, user config directory, or system path; 45 schema keys across 12 sections).</li>
+          <li><strong>Project &amp; package files:</strong> Your <code>.matrix</code> / <code>.mt</code> sources, compiled executables, <code>.matrixc</code> artifacts, <code>spider.toml</code>, <code>spider.lock</code>, and vendored packages.</li>
+          <li><strong>Web documentation preferences:</strong> Browser <code>localStorage</code> stores UI theme selection (<code>spid3r-dev-theme</code>: light or dark) and local editor scratch state in the playground. No third-party tracking cookies are set.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>How to Delete Your Data</h3>
+        <ul>
+          <li><strong>Microsoft Store package:</strong> Right-click <b>Spid3r</b> in the Windows Start Menu &rarr; <b>Uninstall</b>, or remove via <b>Windows Settings &rarr; Apps &rarr; Installed apps</b>.</li>
+          <li><strong>Windows NSIS / tarballs:</strong> Run the Spid3r uninstaller from Windows Apps or remove the extracted toolchain directory (for example <code>~/.spid3r</code>).</li>
+          <li><strong>Configuration &amp; browser state:</strong> Delete any local <code>spid3r.ini</code> files and project folders you created, and clear site storage / <code>localStorage</code> in your browser settings if desired.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 id="sec-security"><span class="num">05</span>Security &amp; Execution Trust Model</h2>
+    <p class="section-lead">
+      Privacy and execution integrity go hand in hand. Spid3r separates trusted compilation from opt-in script
+      capability controls:
+    </p>
+    <div class="panel">
+      <ul>
+        <li><strong>Script authority model:</strong> Just like Python or shell scripts, a <code>.matrix</code> program executes with the permissions of the user account that launches it unless restricted with <code>--sandbox</code>, <code>--budget N</code>, <code>spid3r.ini</code> (<code>security.deny_*</code>, <code>security.basedir</code>, <code>modules.disable</code>), or Rust embed <code>Engine::deny_all()</code>.</li>
+        <li><strong>Tamper verification:</strong> v3 <code>.matrixc</code> bytecode containers and <code>spid3r_lang</code> runtime staticlibs verify SHA-256 digests before execution and fail closed with exit code <code>4</code> on mismatch.</li>
+        <li><strong>Fail-closed configuration pinning:</strong> Setting <code>SPID3R_INI</code> requires the pinned config file to load cleanly (exiting with code <code>1</code> rather than falling back to defaults if missing or malformed).</li>
+        <li><strong>Vulnerability reporting:</strong> Security issues can be reported privately through <a href="https://github.com/needyamin/spid3r/security/advisories/new" target="_blank" rel="noopener noreferrer">GitHub Security Advisories</a> or our full <a href="https://github.com/needyamin/spid3r/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security Policy</a>.</li>
+      </ul>
+    </div>
+
+    <h2 id="sec-thirdparty"><span class="num">06</span>Distribution Platforms &amp; Third-Party Services</h2>
+    <p class="section-lead">
+      While Spid3r itself collects zero data, downloading or interacting with external platforms involves those
+      platform providers under their own privacy policies:
+    </p>
+    <div class="panel">
+      <ul>
+        <li><strong>Microsoft Store (<code>ANSNEWTECH.Spid3r</code> &middot; Store ID <code>9NPH5XX0F6KF</code>):</strong> Installation, updates, crash diagnostics you opt into via Windows Privacy Settings, and regional store distribution are governed by the <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noopener noreferrer">Microsoft Privacy Statement</a>. ANSNEW TECH. receives only anonymized, aggregate Store Partner Center statistics and never receives personal user data from inside the Spid3r app.</li>
+        <li><strong>GitHub Hosting (<a href="https://github.com/needyamin/spid3r" target="_blank" rel="noopener noreferrer">needyamin/spid3r</a>):</strong> Accessing source code, release tarballs, issue trackers, or security advisories on GitHub is governed by the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noopener noreferrer">GitHub Privacy Statement</a>.</li>
+        <li><strong>Third-Party Package Registries:</strong> When you invoke <code>spkg</code> / <code>spid3r install</code> against a custom HTTP/Git registry, network requests are governed by the operator of that registry URL.</li>
+      </ul>
+    </div>
+
+    <h2 id="sec-rights"><span class="num">07</span>Children's Privacy &amp; Statutory Rights (GDPR / CCPA)</h2>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Children's Privacy</h3>
+        <p>
+          Spid3r does not collect personal information from anyone, including children under 13 (or the minimum
+          age of digital consent in your jurisdiction). Because there are no accounts, ads, profiling, or
+          telemetry endpoints, no child data is ever gathered or stored by the software.
+        </p>
+      </div>
+      <div class="panel">
+        <h3>GDPR, CCPA &amp; Direct Correspondence</h3>
+        <p>
+          ANSNEW TECH. does not sell, rent, share, or process personal data through the Spid3r software. If you
+          voluntarily contact us by email (for support or security advisories), we use your email address solely
+          to respond to your inquiry and will delete the correspondence upon request.
+        </p>
+      </div>
+    </div>
+
+    <h2 id="sec-contact"><span class="num">08</span>Policy Updates &amp; Contact Information</h2>
+    <div class="note">
+      <strong>Changes to this policy:</strong> Material updates to this Privacy Policy are published directly in the
+      open-source repository history of <code>docs/html/privacy_policy.html</code> alongside an updated effective date.
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="name">Publisher</td>
+            <td><strong>ANSNEW TECH.</strong> (<a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer">https://inside.ansnew.com/</a>)</td>
+          </tr>
+          <tr>
+            <td class="name">Privacy &amp; Security Contact</td>
+            <td class="mono"><a href="mailto:needyamin@gmail.com">needyamin@gmail.com</a></td>
+          </tr>
+          <tr>
+            <td class="name">Source Repository</td>
+            <td><a href="https://github.com/needyamin/spid3r" target="_blank" rel="noopener noreferrer">https://github.com/needyamin/spid3r</a></td>
+          </tr>
+          <tr>
+            <td class="name">Microsoft Store Listing</td>
+            <td><a href="https://apps.microsoft.com/detail/9NPH5XX0F6KF" target="_blank" rel="noopener noreferrer">https://apps.microsoft.com/detail/9NPH5XX0F6KF</a> (<span class="mono">ANSNEWTECH.Spid3r</span>)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <footer>
+    <span>Spid3r Privacy Policy &middot; <span data-spid3r-version="v">v1.1.1</span> &middot; Effective 2026-11-26</span>
+    <span><a href="doc.html">Documentation</a> &middot; <a href="benchmark.html">Benchmarks</a> &middot; <a href="playground.html">Playground</a> &middot; <a href="https://github.com/needyamin/spid3r/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security Policy</a> &middot; Developed by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer">ANSNEW TECH.</a></span>
+  </footer>
+
+  <script src="version.js"></script>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      document.getElementById('themeBtn').addEventListener('click', function () {
+        var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        root.setAttribute('data-theme', next);
+        try { localStorage.setItem('spid3r-dev-theme', next); } catch (_) { }
+      });
+    })();
+  </script>
+</body>
+</html>
