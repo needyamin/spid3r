@@ -710,11 +710,10 @@ cmd_build() {
         cp -f "$ROOT/packaging/vscode/spid3r-formatter.vsix" "$msix_stage/editor/spid3r-formatter.vsix"
       fi
 
-      local control_block="" cli_applist="" cli_default_tile=""
+      local control_block="" cli_default_tile=""
       if [ "$with_gui" -eq 1 ]; then
         cp -f "$control_bin" "$msix_stage/spid3r-control.exe"
         control_block=$'    <Application\n      Id="Spid3rControl"\n      Executable="spid3r-control.exe"\n      EntryPoint="Windows.FullTrustApplication">\n      <uap:VisualElements\n        DisplayName="Spid3r"\n        Description="Spid3r Control Panel and language settings dashboard"\n        BackgroundColor="transparent"\n        Square150x150Logo="Assets\\Square150x150Logo.png"\n        Square44x44Logo="Assets\\Square44x44Logo.png">\n        <uap:DefaultTile\n          Wide310x150Logo="Assets\\Wide310x150Logo.png"\n          Square310x310Logo="Assets\\Square310x310Logo.png"\n          Square71x71Logo="Assets\\Square71x71Logo.png" />\n      </uap:VisualElements>\n      <Extensions>\n        <uap5:Extension Category="windows.appExecutionAlias" Executable="spid3r-control.exe" EntryPoint="Windows.FullTrustApplication">\n          <uap5:AppExecutionAlias>\n            <uap5:ExecutionAlias Alias="spid3r-control.exe" />\n          </uap5:AppExecutionAlias>\n        </uap5:Extension>\n      </Extensions>\n    </Application>\n\n'
-        cli_applist=$'\n        AppListEntry="none"'
       else
         cli_default_tile=$'\n        <uap:DefaultTile\n          Wide310x150Logo="Assets\\Wide310x150Logo.png"\n          Square310x310Logo="Assets\\Square310x310Logo.png"\n          Square71x71Logo="Assets\\Square71x71Logo.png" />\n      '
       fi
@@ -727,7 +726,6 @@ cmd_build() {
       tpl="${tpl//@MSIX_VERSION@/$msix_ver}"
       tpl="${tpl//@MSIX_ARCH@/$msix_arch}"
       tpl="${tpl//@MSIX_CONTROL_BLOCK@/$control_block}"
-      tpl="${tpl//@MSIX_CLI_APPLIST@/$cli_applist}"
       tpl="${tpl//@MSIX_CLI_DEFAULT_TILE@/$cli_default_tile}"
       printf '%s\n' "$tpl" > "$msix_stage/AppxManifest.xml"
 

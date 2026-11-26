@@ -839,7 +839,6 @@ fn msix_manifest_and_packaging_are_valid() {
         "@MSIX_VERSION@",
         "@MSIX_ARCH@",
         "@MSIX_CONTROL_BLOCK@",
-        "@MSIX_CLI_APPLIST@",
         "@MSIX_CLI_DEFAULT_TILE@",
         r#"Name="Windows.Desktop""#,
         r#"<rescap:Capability Name="runFullTrust" />"#,
@@ -942,8 +941,11 @@ fn msix_manifest_and_packaging_are_valid() {
         .replace("@MSIX_VERSION@", "1.1.1.0")
         .replace("@MSIX_ARCH@", "x64")
         .replace("@MSIX_CONTROL_BLOCK@", control_block)
-        .replace("@MSIX_CLI_APPLIST@", "\n        AppListEntry=\"none\"")
         .replace("@MSIX_CLI_DEFAULT_TILE@", "");
+    assert!(
+        !rendered.contains("AppListEntry=\"none\""),
+        "Store MSIX must not declare AppListEntry=\"none\" (requires HeadlessAppBypass waiver)"
+    );
     std::fs::write(stage.join("AppxManifest.xml"), rendered).expect("write AppxManifest.xml");
 
     let output = Command::new(&makeappx)
