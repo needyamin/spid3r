@@ -192,7 +192,7 @@ FunctionEnd
 
 ; Delete relative filename $0 inside $INSTDIR even if locked by a running
 ; process. Order: direct delete -> stop Spid3r processes + retry -> rename to
-; *.old + Delete /REBOOTOK -> fallback Delete /REBOOTOK.
+; *.old and delete without prompting for a reboot.
 Function ${UN}ForceDeletePath
   Push $1
   Push $2
@@ -220,9 +220,7 @@ Function ${UN}ForceDeletePath
         ClearErrors
         Rename "$INSTDIR\$0" "$INSTDIR\$0.old"
         ${IfNot} ${Errors}
-          Delete /REBOOTOK "$INSTDIR\$0.old"
-        ${Else}
-          Delete /REBOOTOK "$INSTDIR\$0"
+          Delete "$INSTDIR\$0.old"
         ${EndIf}
       ${EndIf}
     ${EndIf}
@@ -430,6 +428,7 @@ Section "Spid3r compiler & runtime (required)" SecCore
   WriteRegStr   HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify"             1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair"             1
+  SetRebootFlag false
 SectionEnd
 
 Section "Add Spid3r to PATH (recommended for cmd / PowerShell)" SecPath
@@ -850,7 +849,6 @@ Section "Uninstall"
   Delete "$INSTDIR\*.old"
   Delete "$INSTDIR\*.tmp"
   Delete "$INSTDIR\uninstall.exe"
-  Delete /REBOOTOK "$INSTDIR\uninstall.exe"
 
   ; README.md, docs, examples, benchmarks and stdlib/ are no longer installed,
   ; but an install made by an earlier version still has them: remove them on
@@ -862,8 +860,6 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\editor"
 
   RMDir "$INSTDIR"
-  ${If} ${FileExists} "$INSTDIR\*.*"
-    RMDir /REBOOTOK "$INSTDIR"
-  ${EndIf}
   RMDir /r "$LOCALAPPDATA\Spid3r"
+  SetRebootFlag false
 SectionEnd

@@ -3838,10 +3838,22 @@ pub(crate) fn fetch_bytes_with_tls(
         Box::new(tcp)
     };
 
+    let has_ua = headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("user-agent"));
+    let has_accept = headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("accept"));
     let mut req = format!(
-        "{} {} HTTP/1.1\r\nhost: {}\r\nuser-agent: spid3r\r\naccept: */*\r\nconnection: close\r\n",
+        "{} {} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\n",
         method, path, authority
     );
+    if !has_ua {
+        req.push_str("user-agent: spid3r\r\n");
+    }
+    if !has_accept {
+        req.push_str("accept: */*\r\n");
+    }
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();
         if matches!(

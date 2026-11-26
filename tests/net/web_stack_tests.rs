@@ -1121,3 +1121,68 @@ fn main() {{
         server_thread.join().unwrap();
     }
 }
+
+#[test]
+fn http_fetch_caller_accept_and_user_agent_do_not_duplicate_defaults() {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (hdr_tx, hdr_rx) = mpsc::channel();
+
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let mut raw = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = hdr_tx.send(String::from_utf8_lossy(&raw).to_string());
+            let body = br#"{"Status":0}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        }
+    });
+
+    let src = format!(
+        r#"import "http";
+fn main() {{
+    let res = http_fetch(
+        "GET",
+        "http://{addr}/dns-query?name=example.com&type=A",
+        map("Accept", "application/dns-json", "User-Agent", "custom-ua/1.0"),
+        null,
+        null
+    );
+    assert(res.is_ok());
+    let r = res.unwrap();
+    assert_eq(r["status"], 200);
+    return 0;
+}}
+"#,
+        addr = addr
+    );
+    run_both("http_fetch_override_headers", &src);
+
+    for _ in 0..2 {
+        let raw = hdr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(lower.contains("accept: application/dns-json\r\n"), "{raw}");
+        assert!(lower.contains("user-agent: custom-ua/1.0\r\n"), "{raw}");
+        assert!(!lower.contains("accept: */*"), "{raw}");
+        assert!(!lower.contains("user-agent: spid3r"), "{raw}");
+    }
+    server.join().unwrap();
+}

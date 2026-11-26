@@ -587,7 +587,11 @@ fn nsis_installer_script_is_valid_and_compiles() {
     assert!(content.contains("WelcomeLeave"));
     assert!(content.contains(r#"SetOutPath "$TEMP""#));
     assert!(content.contains("taskkill.exe"));
-    assert!(content.contains("/REBOOTOK"));
+    assert!(
+        !content.contains("/REBOOTOK"),
+        "per-user NSIS installer must not use /REBOOTOK or prompt for reboot"
+    );
+    assert!(content.contains("SetRebootFlag false"));
     assert!(content.contains("Rename"));
     assert!(content.contains("SecEditorExt"));
     assert!(content.contains("FORMATTER_VSIX"));
