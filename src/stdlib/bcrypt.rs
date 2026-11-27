@@ -177,7 +177,26 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The raw 23-byte bcrypt output for a 16-byte salt.
-pub fn bcrypt_raw(password: &[u8], cost: u32, salt: &[u8; 16]) -> [u8; 23] {
+/// Audit A-14: upper cost ceiling (`2^18` rounds ≈ ~15 s) so a single call
+/// cannot park a host for hours/days (`cost = 31` is 2^31 rounds).
+pub const MAX_BCRYPT_COST: u32 = 18;
+
+pub fn bcrypt_raw(password: &[u8], cost: u32, salt: &[u8; 16]) -> Result<[u8; 23], String> {
+    bcrypt_raw_impl(password, cost, salt, false)
+}
+
+fn bcrypt_raw_impl(
+    password: &[u8],
+    cost: u32,
+    salt: &[u8; 16],
+    poll_wall: bool,
+) -> Result<[u8; 23], String> {
+    if !(4..=MAX_BCRYPT_COST).contains(&cost) {
+        return Err(format!(
+            "bcrypt: cost must be 4..{}, got {}",
+            MAX_BCRYPT_COST, cost
+        ));
+    }
     let mut key = password.to_vec();
     key.push(0);
     if key.len() > 72 {
@@ -186,7 +205,12 @@ pub fn bcrypt_raw(password: &[u8], cost: u32, salt: &[u8; 16]) -> [u8; 23] {
     let mut bf = Blowfish::new();
     bf.expand(&key, Some(salt));
     let rounds = 1u32 << cost;
-    for _ in 0..rounds {
+    for i in 0..rounds {
+        if poll_wall && (i & 255) == 0 {
+            if let Some(msg) = crate::budget::active_wall_message() {
+                return Err(msg);
+            }
+        }
         bf.expand(&key, None);
         bf.expand(salt, None);
     }
@@ -204,23 +228,51 @@ pub fn bcrypt_raw(password: &[u8], cost: u32, salt: &[u8; 16]) -> [u8; 23] {
     }
     let mut out = [0u8; 23];
     out.copy_from_slice(&data[..23]);
-    out
+    Ok(out)
 }
 
 /// Hash with an explicit salt, producing the `$2b$cost$salt+hash` string.
-pub fn bcrypt_with_salt(password: &[u8], cost: u32, salt: &[u8; 16]) -> String {
-    let raw = bcrypt_raw(password, cost, salt);
-    format!("$2b${:02}${}{}", cost, b64_encode(salt), b64_encode(&raw))
+pub fn bcrypt_with_salt(password: &[u8], cost: u32, salt: &[u8; 16]) -> Result<String, String> {
+    let raw = bcrypt_raw_impl(password, cost, salt, false)?;
+    Ok(format!(
+        "$2b${:02}${}{}",
+        cost,
+        b64_encode(salt),
+        b64_encode(&raw)
+    ))
 }
 
-/// Hash with a fresh random salt drawn from the process PRNG.
-pub fn bcrypt_hash(password: &[u8], cost: u32) -> String {
-    let mut salt = [0u8; 16];
-    for chunk in salt.chunks_mut(8) {
-        let r = crate::stdlib::next_random().to_le_bytes();
-        chunk.copy_from_slice(&r[..chunk.len()]);
+fn bcrypt_with_salt_checked(password: &[u8], cost: u32, salt: &[u8; 16]) -> Result<String, String> {
+    let raw = bcrypt_raw_impl(password, cost, salt, true)?;
+    Ok(format!(
+        "$2b${:02}${}{}",
+        cost,
+        b64_encode(salt),
+        b64_encode(&raw)
+    ))
+}
+
+/// Hash with a fresh random salt drawn from the OS CSPRNG (SEC-C1).
+/// Fails closed if OS entropy is unavailable rather than degrading to a
+/// non-cryptographic PRNG.
+pub fn bcrypt_hash(password: &[u8], cost: u32) -> Result<String, String> {
+    bcrypt_hash_inner(password, cost, false)
+}
+
+fn bcrypt_hash_inner(password: &[u8], cost: u32, poll_wall: bool) -> Result<String, String> {
+    if !(4..=MAX_BCRYPT_COST).contains(&cost) {
+        return Err(format!(
+            "bcrypt: cost must be 4..{}, got {}",
+            MAX_BCRYPT_COST, cost
+        ));
     }
-    bcrypt_with_salt(password, cost, &salt)
+    let mut salt = [0u8; 16];
+    crate::stdlib::entropy::fill_random(&mut salt)?;
+    if poll_wall {
+        bcrypt_with_salt_checked(password, cost, &salt)
+    } else {
+        bcrypt_with_salt(password, cost, &salt)
+    }
 }
 
 /// Parse `$2[aby]$cost$salt+hash` into (cost, salt, hash-bytes).
@@ -232,7 +284,12 @@ fn bcrypt_parse(hash: &str) -> Result<(u32, [u8; 16], Vec<u8>), String> {
     let version = parts
         .next()
         .ok_or_else(|| "bcrypt: missing version field".to_string())?;
-    if !matches!(version, "2a" | "2b" | "2y" | "2x") {
+    if version == "2x" {
+        return Err(
+            "bcrypt: unsupported legacy '$2x$' variant (use '$2b$', '$2a$', or '$2y$')".to_string(),
+        );
+    }
+    if !matches!(version, "2a" | "2b" | "2y") {
         return Err(format!("bcrypt: unsupported version '{}'", version));
     }
     let cost_text = parts
@@ -241,8 +298,11 @@ fn bcrypt_parse(hash: &str) -> Result<(u32, [u8; 16], Vec<u8>), String> {
     let cost: u32 = cost_text
         .parse()
         .map_err(|_| format!("bcrypt: bad cost '{}'", cost_text))?;
-    if !(4..=31).contains(&cost) {
-        return Err(format!("bcrypt: cost must be 4..31, got {}", cost));
+    if !(4..=MAX_BCRYPT_COST).contains(&cost) {
+        return Err(format!(
+            "bcrypt: cost must be 4..{}, got {}",
+            MAX_BCRYPT_COST, cost
+        ));
     }
     let body = parts
         .next()
@@ -253,20 +313,30 @@ fn bcrypt_parse(hash: &str) -> Result<(u32, [u8; 16], Vec<u8>), String> {
             body.len()
         ));
     }
-    let salt_bytes = b64_decode(&body[..22])?;
+    let salt_part = body
+        .get(..22)
+        .ok_or_else(|| "bcrypt: salt field must be 22 ASCII base64 characters".to_string())?;
+    let digest_part = body
+        .get(22..)
+        .ok_or_else(|| "bcrypt: hash field must be ASCII base64".to_string())?;
+    let salt_bytes = b64_decode(salt_part)?;
     if salt_bytes.len() < 16 {
         return Err("bcrypt: salt is too short".to_string());
     }
     let mut salt = [0u8; 16];
     salt.copy_from_slice(&salt_bytes[..16]);
-    let digest = b64_decode(&body[22..])?;
+    let digest = b64_decode(digest_part)?;
     Ok((cost, salt, digest))
 }
 
 /// Constant-time comparison of the computed and stored digests.
 pub fn bcrypt_verify(password: &[u8], hash: &str) -> Result<bool, String> {
+    bcrypt_verify_inner(password, hash, false)
+}
+
+fn bcrypt_verify_inner(password: &[u8], hash: &str, poll_wall: bool) -> Result<bool, String> {
     let (cost, salt, expected) = bcrypt_parse(hash)?;
-    let raw = bcrypt_raw(password, cost, &salt);
+    let raw = bcrypt_raw_impl(password, cost, &salt, poll_wall)?;
     if expected.len() != raw.len() {
         return Ok(false);
     }
@@ -301,7 +371,12 @@ fn n_bcrypt_hash(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let password = password_arg(&args[0], "bcrypt_hash")?;
     let cost = if args.len() >= 2 {
         match &args[1] {
-            Value::Int(c) => *c as u32,
+            Value::Int(c) => u32::try_from(*c).map_err(|_| {
+                format!(
+                    "bcrypt_hash: cost must be 4..{}, got {}",
+                    MAX_BCRYPT_COST, c
+                )
+            })?,
             other => {
                 return Err(format!(
                     "bcrypt_hash: cost must be an int, found {}",
@@ -312,8 +387,11 @@ fn n_bcrypt_hash(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     } else {
         10
     };
-    if !(4..=31).contains(&cost) {
-        return Err(format!("bcrypt_hash: cost must be 4..31, got {}", cost));
+    if !(4..=MAX_BCRYPT_COST).contains(&cost) {
+        return Err(format!(
+            "bcrypt_hash: cost must be 4..{}, got {}",
+            MAX_BCRYPT_COST, cost
+        ));
     }
     if args.len() == 3 {
         let salt_text = match &args[2] {
@@ -331,9 +409,11 @@ fn n_bcrypt_hash(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
         let mut salt = [0u8; 16];
         salt.copy_from_slice(&decoded[..16]);
-        return Ok(Value::Str(bcrypt_with_salt(&password, cost, &salt).into()));
+        let hash = bcrypt_with_salt_checked(&password, cost, &salt)?;
+        return Ok(Value::Str(hash.into()));
     }
-    Ok(Value::Str(bcrypt_hash(&password, cost).into()))
+    let hash = bcrypt_hash_inner(&password, cost, true)?;
+    Ok(Value::Str(hash.into()))
 }
 
 /// `bcrypt_verify(password, hash)` -> bool (false on a malformed hash).
@@ -354,7 +434,7 @@ fn n_bcrypt_verify(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
             ))
         }
     };
-    match bcrypt_verify(&password, &hash) {
+    match bcrypt_verify_inner(&password, &hash, true) {
         Ok(ok) => Ok(Value::Bool(ok)),
         Err(_) => Ok(Value::Bool(false)),
     }
@@ -389,11 +469,11 @@ mod tests {
         let mut s = [0u8; 16];
         s.copy_from_slice(&salt[..16]);
         assert_eq!(
-            bcrypt_with_salt(b"U*U", 5, &s),
+            bcrypt_with_salt(b"U*U", 5, &s).unwrap(),
             "$2b$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"
         );
         assert_eq!(
-            bcrypt_with_salt(b"U*U*", 5, &s),
+            bcrypt_with_salt(b"U*U*", 5, &s).unwrap(),
             "$2b$05$CCCCCCCCCCCCCCCCCCCCC.VGOzA784oUp/Z0DY336zx7pLYAy0lwK"
         );
         // (A third vector for "U*U*U" circulates with the wrong digest; the two
@@ -402,7 +482,7 @@ mod tests {
 
     #[test]
     fn verify_roundtrip() {
-        let hash = bcrypt_hash(b"correct horse battery staple", 5);
+        let hash = bcrypt_hash(b"correct horse battery staple", 5).expect("CSPRNG salt available");
         assert!(bcrypt_verify(b"correct horse battery staple", &hash).unwrap());
         assert!(!bcrypt_verify(b"wrong", &hash).unwrap());
         // The $2a$ prefix from the OpenBSD vectors must verify too.
@@ -426,5 +506,69 @@ mod tests {
         let encoded = b64_encode(&digest);
         assert_eq!(encoded.len(), 31);
         assert_eq!(b64_decode(&encoded).unwrap(), digest);
+    }
+
+    /// SEC-C4: a 53-byte body whose multi-byte UTF-8 character straddles byte
+    /// offset 22 (bytes 21..24) previously panicked in `&body[..22]`; it must
+    /// return a clean parse error instead.
+    #[test]
+    fn parse_rejects_non_ascii_straddling_offset_22_cleanly() {
+        let mut body = String::new();
+        body.push_str(&"a".repeat(21));
+        body.push('日'); // 3 bytes at offsets 21, 22, 23 — straddles offset 22!
+        body.push_str(&"b".repeat(29));
+        assert_eq!(body.len(), 53);
+        assert!(!body.is_char_boundary(22));
+        let hash = format!("$2b$05${}", body);
+        let r = bcrypt_verify(b"pw", &hash);
+        assert!(
+            r.is_err(),
+            "non-ASCII body straddling offset 22 must be a clean error, not a panic"
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_2x_and_excessive_cost() {
+        let err_2x = bcrypt_verify(
+            b"U*U",
+            "$2x$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",
+        )
+        .unwrap_err();
+        assert!(err_2x.contains("$2x$"), "unexpected: {}", err_2x);
+
+        let err_31 = bcrypt_hash(b"pw", 31).unwrap_err();
+        assert!(err_31.contains("4..18"), "unexpected: {}", err_31);
+
+        let err_19 = bcrypt_verify(
+            b"pw",
+            "$2b$19$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",
+        )
+        .unwrap_err();
+        assert!(err_19.contains("4..18"), "unexpected: {}", err_19);
+    }
+
+    #[test]
+    fn runtime_native_bcrypt_honors_wall_clock_deadline() {
+        let _serial = crate::budget::tests::LIMIT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _restore = crate::budget::ActiveLimitGuard::clear_for_test();
+        let wc = crate::budget::WallClock::new(1);
+        let _guard = crate::budget::ActiveLimitGuard::enter(None, Some(&wc), None);
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let err = bcrypt_hash_inner(b"pw", 10, true).unwrap_err();
+        assert!(err.contains("wall-clock limit exceeded"), "{err}");
+    }
+
+    #[test]
+    fn native_bcrypt_hash_rejects_truncating_and_negative_costs() {
+        let ctx = NativeCtx {
+            sched: crate::sched::Scheduler::shared(),
+        };
+        for bad_cost in [-1i64, (1i64 << 32) + 10] {
+            let err = n_bcrypt_hash(&ctx, vec![Value::Str("pw".into()), Value::Int(bad_cost)])
+                .expect_err("out-of-range cost must not truncate");
+            assert!(err.contains("4..18"), "cost={bad_cost}: {err}");
+        }
     }
 }

@@ -653,6 +653,10 @@ pub fn run() -> Result<(), String> {
 
     let builder = wry::WebViewBuilder::new()
         .with_initialization_script(INIT_SCRIPT)
+        // SEC-M2 (audit fix): pin navigation strictly to the panel's own
+        // origin so the IPC bridge cannot follow a navigation onto remote or
+        // lookalike origins (e.g. `https://spid3r.app.evil.com`).
+        .with_navigation_handler(|url| crate::gui::window::is_allowed_webview_url(&url))
         .with_ipc_handler({
             let proxy = proxy.clone();
             move |request: wry::http::Request<String>| {

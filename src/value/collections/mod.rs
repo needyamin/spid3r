@@ -159,6 +159,32 @@ pub(crate) fn take_children_pooled(
             }
         }
         Value::Graph(a) => flat!(a, nodes),
+        Value::HashTable(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                for bucket in std::mem::take(&mut d.buckets) {
+                    out.extend(bucket.into_iter().map(|(_, v)| v));
+                }
+            }
+        }
+        Value::Bst(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                d.drain_values(out);
+            }
+        }
+        Value::BinTree(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                d.drain_values(out);
+            }
+        }
+        Value::LinkedList(a) | Value::SinglyList(a) | Value::DoublyList(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                d.drain_values(out);
+            }
+        }
         Value::RefBox(a) => {
             if let Ok(data) = Arc::try_unwrap(a) {
                 let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
@@ -178,17 +204,37 @@ pub(crate) fn take_children_pooled(
         Value::Tuple(a) => {
             if let Ok(items) = Arc::try_unwrap(a) {
                 let mut items = items.into_inner().unwrap_or_else(|e| e.into_inner());
-                out.append(&mut items);
+                out.append(&mut items.0);
             }
         }
         Value::Option(o) => {
-            if let Some(inner) = o {
-                out.push(*inner);
+            if let Some(a) = o {
+                if let Ok(mut d) = Arc::try_unwrap(a) {
+                    out.push(std::mem::replace(&mut d.0, Value::Null));
+                }
             }
         }
-        Value::Result(r) => match *r {
-            Ok(inner) | Err(inner) => out.push(inner),
-        },
+        Value::Result(a) => {
+            if let Ok(mut d) = Arc::try_unwrap(a) {
+                let inner = match &mut d.0 {
+                    Ok(v) | Err(v) => std::mem::replace(v, Value::Null),
+                };
+                out.push(inner);
+            }
+        }
+        Value::Channel(a) => {
+            if let Ok(ch) = Arc::try_unwrap(a) {
+                out.extend(ch.take_all());
+            }
+        }
+        Value::MutexVal(a) => {
+            if let Ok(mu) = Arc::try_unwrap(a) {
+                let inner = mu.take_value();
+                if !crate::value::is_scalar(&inner) {
+                    out.push(inner);
+                }
+            }
+        }
         other => drop(other),
     }
 }
@@ -375,7 +421,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
             Ok(Value::Set(new_ref(s)))
         }
-        "tuple" => Ok(Value::Tuple(new_ref(args))),
+        "tuple" => Ok(Value::tuple(args)),
         "binary_tree" => {
             let mut tree = nodes::BinTreeData::new();
             for a in args {
@@ -639,7 +685,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 std::sync::atomic::AtomicI64::new(init),
             )))
         }
-        "some" => Ok(Value::Option(Some(Box::new(one(name, &args)?)))),
+        "some" => Ok(Value::some(one(name, &args)?)),
         "none" => {
             if !args.is_empty() {
                 return Err("none takes no arguments".to_string());
@@ -1101,9 +1147,9 @@ pub fn call_method_host(
         Value::RefBox(d) => d.lock().unwrap().method(name, &args),
         Value::Str(s) => string_method(s, name, &args),
         Value::Tuple(t) => misc::tuple_method(&t.lock().unwrap(), name, &args),
-        Value::Option(o) => option_method(host, o.as_deref(), name, &args),
+        Value::Option(o) => option_method(host, o.as_ref().map(|b| &b.0), name, &args),
         Value::Result(r) => {
-            let rr: Result<&Value, &Value> = match r.as_ref() {
+            let rr: Result<&Value, &Value> = match &r.0 {
                 Ok(v) => Ok(v),
                 Err(e) => Err(e),
             };
@@ -1620,9 +1666,7 @@ fn option_method(
         "map" => {
             let f = want_fn(name, args, 1)?.clone();
             match o {
-                Some(v) => Ok(Value::Option(Some(Box::new(
-                    host.call_callback(&f, vec![v.clone()])?,
-                )))),
+                Some(v) => Ok(Value::some(host.call_callback(&f, vec![v.clone()])?)),
                 None => Ok(Value::Option(None)),
             }
         }
@@ -1811,7 +1855,7 @@ fn channel_method(c: &Arc<ChannelData>, name: &str, args: Vec<Value>) -> Result<
         "try_recv" => {
             want(name, &args, 0)?;
             Ok(match c.try_recv() {
-                Some(v) => Value::Option(Some(Box::new(v))),
+                Some(v) => Value::some(v),
                 None => Value::Option(None),
             })
         }

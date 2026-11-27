@@ -45,6 +45,16 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
     let entries = read_lock(root)?;
     let mut report = VerifyReport::default();
     let vendor = root.join("vendor");
+    if let Ok(vmeta) = std::fs::symlink_metadata(&vendor) {
+        if vmeta.file_type().is_symlink() {
+            report.issues.push(VerifyIssue {
+                name: "vendor".to_string(),
+                kind: "hash",
+                detail: "vendor/ is a symlink — refusing to trust unverified directory".to_string(),
+            });
+            return Ok(report);
+        }
+    }
 
     for entry in &entries {
         valid_pkg_name(&entry.name)?;
@@ -938,28 +948,72 @@ fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), St
         }
     }
 
-    let key_path = dir.join("registry.key");
-    let seed = if key_path.is_file() {
-        let text = std::fs::read_to_string(&key_path)
-            .map_err(|e| format!("cannot read {}: {}", key_path.display(), e))?;
-        parse_seed_hex(&text, &key_path.display().to_string())?
+    // Audit A-5: keep auto-generated private signing keys out of the published
+    // registry directory so syncing/serving `dir` cannot leak `registry.key`.
+    let canon_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir_tag =
+        &super::sha256::sha256_hex(canon_dir.to_string_lossy().replace('\\', "/").as_bytes())[..32];
+    let safe_key_dir = crate::config::state_dir().join("registry-keys");
+    let safe_key_path = safe_key_dir.join(format!("{}.key", dir_tag));
+    let legacy_key_path = dir.join("registry.key");
+
+    let check_not_symlink = |p: &Path| -> Result<(), String> {
+        if let Ok(meta) = std::fs::symlink_metadata(p) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("refusing symlinked signing key '{}'", p.display()));
+            }
+        }
+        Ok(())
+    };
+    check_not_symlink(&safe_key_path)?;
+    check_not_symlink(&legacy_key_path)?;
+
+    let seed = if safe_key_path.is_file() {
+        let text = std::fs::read_to_string(&safe_key_path)
+            .map_err(|e| format!("cannot read {}: {}", safe_key_path.display(), e))?;
+        parse_seed_hex(&text, &safe_key_path.display().to_string())?
+    } else if legacy_key_path.is_file() {
+        eprintln!(
+            "warning[pkg]: found legacy private signing key inside published registry directory at {}; move it outside the publish directory and set SPID3R_SIGN_KEY",
+            legacy_key_path.display()
+        );
+        let text = std::fs::read_to_string(&legacy_key_path)
+            .map_err(|e| format!("cannot read {}: {}", legacy_key_path.display(), e))?;
+        parse_seed_hex(&text, &legacy_key_path.display().to_string())?
     } else {
         let mut seed = [0u8; 32];
         crate::stdlib::entropy::fill_random(&mut seed)?;
-        std::fs::write(&key_path, format!("{}\n", super::sha256::hex_encode(&seed)))
-            .map_err(|e| format!("cannot write {}: {}", key_path.display(), e))?;
+        std::fs::create_dir_all(&safe_key_dir)
+            .map_err(|e| format!("cannot create {}: {}", safe_key_dir.display(), e))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&key_path) {
+            if let Ok(meta) = std::fs::metadata(&safe_key_dir) {
                 let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                let _ = std::fs::set_permissions(&key_path, perms);
+                perms.set_mode(0o700);
+                let _ = std::fs::set_permissions(&safe_key_dir, perms);
             }
         }
+        // Atomic create (`create_new`, mode 0600 on Unix) closes the CWE-377 race
+        // where a freshly written key file is briefly world-readable or follows
+        // a symlink.
+        let key_body = format!("{}\n", super::sha256::hex_encode(&seed));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        use std::io::Write;
+        let mut f = opts
+            .open(&safe_key_path)
+            .map_err(|e| format!("cannot write {}: {}", safe_key_path.display(), e))?;
+        f.write_all(key_body.as_bytes())
+            .map_err(|e| format!("cannot write {}: {}", safe_key_path.display(), e))?;
         eprintln!(
-            "note: generated signing key at {}; keep private keys outside git/cloud folders and prefer SPID3R_SIGN_KEY",
-            key_path.display()
+            "note: generated signing key outside publish directory at {}; prefer SPID3R_SIGN_KEY for production registries",
+            safe_key_path.display()
         );
         seed
     };

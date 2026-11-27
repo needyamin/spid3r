@@ -677,7 +677,7 @@ impl Nfa {
     /// Semantics are unchanged: the earliest start that can match wins, and for
     /// that start the longest end is reported (the old `match_from` also kept
     /// the last `Match` it saw).
-    fn search(&self, chars: &[char], from: usize) -> Option<(usize, usize)> {
+    fn search(&self, chars: &[char], from: usize) -> Result<Option<(usize, usize)>, String> {
         let n = chars.len();
         let num_states = self.states.len();
         // (state, start) — the start index is what makes the result leftmost.
@@ -691,7 +691,18 @@ impl Nfa {
         // index as a *position* (thread starts, `cur_idx`) and runs one step
         // past the last character, where there is no element to iterate.
         let mut i = from;
+        // SEC-V4: poll any armed wall-clock deadline proportional to actual
+        // NFA work (`active.len() + 1`), catching both huge subjects and wide
+        // patterns without significant per-char overhead.
+        let mut wall_work = 0usize;
         loop {
+            wall_work = wall_work.saturating_add(active.len().saturating_add(1));
+            if wall_work >= 65_536 {
+                wall_work = 0;
+                if let Some(msg) = crate::budget::active_wall_message() {
+                    return Err(msg);
+                }
+            }
             // `active` already holds the closures reached at position `i`.
             // Existing threads started earlier, so they claim states first and
             // a later start can never displace them.
@@ -703,7 +714,7 @@ impl Nfa {
             // position*, and a later start can still match — that is how `$`
             // finds the empty match at the end of a non-empty string.
             if active.is_empty() && best.is_some() {
-                return best;
+                return Ok(best);
             }
             if i == n {
                 break;
@@ -754,7 +765,7 @@ impl Nfa {
             i += 1;
         }
 
-        best
+        Ok(best)
     }
 
     /// Epsilon-closure of `start`, computed with an explicit stack. A
@@ -828,14 +839,14 @@ fn regex_compile(pattern: &str) -> Result<Nfa, String> {
 pub fn regex_match(pattern: &str, text: &str) -> Result<bool, String> {
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
-    Ok(nfa.search(&chars, 0).is_some())
+    Ok(nfa.search(&chars, 0)?.is_some())
 }
 
 pub fn regex_find(pattern: &str, text: &str) -> Result<Option<String>, String> {
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
     Ok(nfa
-        .search(&chars, 0)
+        .search(&chars, 0)?
         .map(|(s, e)| chars[s..e].iter().collect()))
 }
 
@@ -844,10 +855,17 @@ pub fn regex_find_all(pattern: &str, text: &str) -> Result<Vec<String>, String> 
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut pos = 0;
+    let mut iters = 0usize;
     // Each iteration resumes the scan where the last match ended, so the input
     // is walked once overall rather than once per candidate start.
     while pos <= chars.len() {
-        match nfa.search(&chars, pos) {
+        iters += 1;
+        if (iters & 1023) == 0 {
+            if let Some(msg) = crate::budget::active_wall_message() {
+                return Err(msg);
+            }
+        }
+        match nfa.search(&chars, pos)? {
             Some((s, e)) => {
                 out.push(chars[s..e].iter().collect());
                 pos = if e > s { e } else { s + 1 };
@@ -863,8 +881,15 @@ pub fn regex_replace(pattern: &str, text: &str, replacement: &str) -> Result<Str
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut pos = 0;
+    let mut iters = 0usize;
     while pos <= chars.len() {
-        match nfa.search(&chars, pos) {
+        iters += 1;
+        if (iters & 1023) == 0 {
+            if let Some(msg) = crate::budget::active_wall_message() {
+                return Err(msg);
+            }
+        }
+        match nfa.search(&chars, pos)? {
             Some((s, e)) => {
                 out.extend(&chars[pos..s]);
                 out.push_str(replacement);

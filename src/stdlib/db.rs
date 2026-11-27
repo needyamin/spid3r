@@ -378,6 +378,246 @@ fn errmsg_of(api: &SqliteApi, db: *mut c_void) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, PartialEq, Eq)]
+enum SqlTok {
+    Word(String),
+    Str(String),
+    Param(Option<usize>),
+    Other(char),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tokenize_sql(text: &str) -> Result<Vec<SqlTok>, String> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        let ch = b[i];
+        if ch.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        // Line comment `-- ... \n`
+        if ch == b'-' && i + 1 < b.len() && b[i + 1] == b'-' {
+            i += 2;
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment `/* ... */`
+        if ch == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+            continue;
+        }
+        // Single- or double-quoted SQL string literal ('' / "" escapes).
+        if ch == b'\'' || ch == b'"' {
+            let q = ch;
+            let mut j = i + 1;
+            let mut lit = String::new();
+            let mut closed = false;
+            while j < b.len() {
+                if b[j] == q {
+                    if j + 1 < b.len() && b[j + 1] == q {
+                        lit.push(q as char);
+                        j += 2;
+                        continue;
+                    }
+                    closed = true;
+                    j += 1;
+                    break;
+                }
+                let rest = &text[j..];
+                let Some(c) = rest.chars().next() else {
+                    break;
+                };
+                lit.push(c);
+                j += c.len_utf8();
+            }
+            if !closed {
+                return Err("sql: unterminated string literal".to_string());
+            }
+            out.push(SqlTok::Str(lit));
+            i = j;
+            continue;
+        }
+        // Positional bind parameter `?` or `?NNN`.
+        if ch == b'?' {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let idx = if j > i + 1 {
+                let n = text[i + 1..j]
+                    .parse::<usize>()
+                    .map_err(|_| "sql: invalid parameter index".to_string())?;
+                Some(n)
+            } else {
+                None
+            };
+            out.push(SqlTok::Param(idx));
+            i = j;
+            continue;
+        }
+        // Bare ASCII keyword / identifier.
+        if ch.is_ascii_alphabetic() || ch == b'_' {
+            let start = i;
+            i += 1;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            out.push(SqlTok::Word(text[start..i].to_ascii_lowercase()));
+            continue;
+        }
+        let rest = &text[i..];
+        let c = rest.chars().next().unwrap();
+        out.push(SqlTok::Other(c));
+        i += c.len_utf8();
+    }
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_sql_path_token(tok: &SqlTok, params: &[Value]) -> Result<String, String> {
+    match tok {
+        SqlTok::Str(s) => Ok(s.clone()),
+        SqlTok::Param(opt_idx) => {
+            let one_based = opt_idx.unwrap_or(1);
+            if one_based == 0 {
+                return Err(
+                    "sql: invalid positional parameter ?0 under security.basedir".to_string(),
+                );
+            }
+            match params.get(one_based - 1) {
+                Some(Value::Str(s)) => Ok(s.to_string()),
+                _ => Err(
+                    "sql statement opens a database file via parameter, but no string value was bound for it; denied by security.basedir"
+                        .to_string(),
+                ),
+            }
+        }
+        _ => Err(
+            "sql statement opens a database file using a dynamic expression; under security.basedir only a simple string literal or positional ? parameter is allowed"
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn policy_check_sql_with_checker(
+    sql_text: &str,
+    params: &[Value],
+    checker: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut toks = tokenize_sql(sql_text)?;
+    while matches!(toks.last(), Some(SqlTok::Other(';'))) {
+        toks.pop();
+    }
+    let Some(SqlTok::Word(first)) = toks.first() else {
+        return Ok(());
+    };
+    let path = match first.as_str() {
+        // `ATTACH [DATABASE] <path> AS <schema>`: only a simple literal or `?`
+        // parameter is permitted under basedir so expressions (`||`, `char()`,
+        // subqueries, `[brackets]`) cannot smuggle an unchecked path past the
+        // allowlist.
+        "attach" => {
+            let idx = if matches!(toks.get(1), Some(SqlTok::Word(w)) if w == "database") {
+                2
+            } else {
+                1
+            };
+            let rest = &toks[idx..];
+            if rest.len() != 3
+                || !matches!(&rest[1], SqlTok::Word(w) if w == "as")
+                || !matches!(&rest[2], SqlTok::Word(_) | SqlTok::Str(_))
+            {
+                return Err(
+                    "ATTACH under security.basedir requires a simple string literal or positional ? parameter"
+                        .to_string(),
+                );
+            }
+            Some(resolve_sql_path_token(&rest[0], params)?)
+        }
+        // `VACUUM [<schema>]` (in-place, no new file) vs `VACUUM [<schema>] INTO <path>`.
+        "vacuum" => {
+            if toks.len() == 1
+                || (toks.len() == 2 && matches!(&toks[1], SqlTok::Word(w) if w != "into")
+                    || (toks.len() == 2 && matches!(&toks[1], SqlTok::Str(_))))
+            {
+                None
+            } else if toks.len() == 3 && matches!(&toks[1], SqlTok::Word(w) if w == "into") {
+                Some(resolve_sql_path_token(&toks[2], params)?)
+            } else if toks.len() == 4
+                && matches!(&toks[1], SqlTok::Word(_) | SqlTok::Str(_))
+                && matches!(&toks[2], SqlTok::Word(w) if w == "into")
+            {
+                Some(resolve_sql_path_token(&toks[3], params)?)
+            } else {
+                return Err(
+                    "VACUUM INTO under security.basedir requires a simple string literal or positional ? parameter"
+                        .to_string(),
+                );
+            }
+        }
+        // `PRAGMA temp_store_directory` / `data_store_directory` redirect
+        // SQLite temp/data files outside basedir. Check both bare and quoted
+        // identifier tokens case-insensitively so `PRAGMA "temp_store_directory"`
+        // cannot bypass the filter.
+        "pragma" => {
+            let redirects_dir = toks[1..].iter().any(|t| {
+                matches!(
+                    t,
+                    SqlTok::Word(w) | SqlTok::Str(w)
+                        if w.eq_ignore_ascii_case("temp_store_directory")
+                            || w.eq_ignore_ascii_case("data_store_directory")
+                )
+            });
+            if redirects_dir {
+                return Err(
+                    "PRAGMA temp_store_directory/data_store_directory is denied under security.basedir"
+                        .to_string(),
+                );
+            }
+            None
+        }
+        _ => None,
+    };
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if path == ":memory:" {
+        return Ok(());
+    }
+    let trimmed = path.trim_start();
+    if trimmed
+        .as_bytes()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"file:"))
+    {
+        return Err(
+            "SQLite URI filenames ('file:...') are denied under security.basedir".to_string(),
+        );
+    }
+    checker(&path)
+}
+
+/// SEC-F1: enforce `security.basedir` on SQL statements that open or create
+/// database files (`ATTACH`, `VACUUM INTO`, directory-redirecting `PRAGMA`).
+/// Inert when no basedir policy is armed.
+#[cfg(not(target_arch = "wasm32"))]
+fn policy_check_sql_file_paths(sql_text: &str, params: &[Value]) -> Result<(), String> {
+    if !crate::stdlib::fs_policy::basedir_active(crate::stdlib::fs_policy::policy()) {
+        return Ok(());
+    }
+    policy_check_sql_with_checker(sql_text, params, crate::stdlib::fs_policy::check_path)
+}
+
 /// Prepare, bind, and run every statement in `sql` (a `?`-tail loop, so
 /// multi-statement DDL works without `sqlite3_exec`). `on_row` fires per
 /// result row (used by `query`).
@@ -415,6 +655,28 @@ fn run_sql(
         }
         if stmt.is_null() {
             break; // only whitespace/comment remained
+        }
+        // SEC-F1: enforce security.basedir on ATTACH / VACUUM INTO / directory
+        // PRAGMAs before stepping. Finalize `stmt` on error so no prepared
+        // handle leaks.
+        {
+            let stmt_len = if !next.is_null()
+                && (next as usize) >= (tail as usize)
+                && (next as usize) <= (end as usize)
+            {
+                (next as usize) - (tail as usize)
+            } else {
+                (end as usize).saturating_sub(tail as usize)
+            };
+            // SAFETY: `tail..tail+stmt_len` is bounded within `tail..end`,
+            // which is the valid byte buffer of `sql_c`.
+            let stmt_bytes: &[u8] = unsafe { std::slice::from_raw_parts(tail, stmt_len) };
+            let stmt_text = String::from_utf8_lossy(stmt_bytes);
+            if let Err(e) = policy_check_sql_file_paths(&stmt_text, params) {
+                // SAFETY: `stmt` is non-null and owned by this loop iteration.
+                unsafe { (api.finalize)(stmt) };
+                return Err(e);
+            }
         }
         // Bind (1-based indices).
         for (i, p) in params.iter().enumerate() {
@@ -591,7 +853,7 @@ pub fn database_method(
             let params: Vec<Value> = match args.get(1) {
                 None => Vec::new(),
                 Some(Value::List(l)) => l.lock().unwrap().clone_items(),
-                Some(Value::Tuple(t)) => t.lock().unwrap().clone(),
+                Some(Value::Tuple(t)) => t.lock().unwrap().0.clone(),
                 Some(other) => {
                     return Err(format!(
                         "{} params must be a list, found {}",
@@ -806,5 +1068,114 @@ mod tests {
         assert_eq!(seen, vec![42]);
         // SAFETY: SQLite C-API handle/statement pointer is valid, non-null, and serialized under the DbData mutex.
         unsafe { (api.close_v2)(db) };
+    }
+
+    #[test]
+    fn attach_and_vacuum_policy_checks_enforce_allowlist_and_block_expressions() {
+        let allow_in = |p: &str| -> Result<(), String> {
+            if p.starts_with("allowed/") {
+                Ok(())
+            } else {
+                Err(format!("outside basedir: {}", p))
+            }
+        };
+
+        // Allowed in-scope literals & parameters (with comments/trailing semicolons).
+        assert!(policy_check_sql_with_checker(
+            "/* lead */ ATTACH DATABASE 'allowed/a.db' AS aux;",
+            &[],
+            allow_in
+        )
+        .is_ok());
+        assert!(policy_check_sql_with_checker(
+            "-- comment\nATTACH ? AS aux",
+            &[Value::Str("allowed/b.db".into())],
+            allow_in
+        )
+        .is_ok());
+        assert!(policy_check_sql_with_checker(
+            "ATTACH ?2 AS aux",
+            &[
+                Value::Str("ignored".into()),
+                Value::Str("allowed/c.db".into())
+            ],
+            allow_in
+        )
+        .is_ok());
+        assert!(policy_check_sql_with_checker("ATTACH ':memory:' AS mem", &[], allow_in).is_ok());
+        assert!(policy_check_sql_with_checker("VACUUM", &[], allow_in).is_ok());
+        assert!(policy_check_sql_with_checker("VACUUM main", &[], allow_in).is_ok());
+        assert!(
+            policy_check_sql_with_checker("VACUUM INTO 'allowed/snap.db'", &[], allow_in).is_ok()
+        );
+        assert!(policy_check_sql_with_checker(
+            "VACUUM main INTO ?",
+            &[Value::Str("allowed/snap2.db".into())],
+            allow_in
+        )
+        .is_ok());
+
+        // Denied out-of-scope paths.
+        assert!(policy_check_sql_with_checker(
+            "ATTACH DATABASE '../outside.db' AS aux",
+            &[],
+            allow_in
+        )
+        .is_err());
+        assert!(policy_check_sql_with_checker(
+            "ATTACH ? AS aux",
+            &[Value::Str("../outside.db".into())],
+            allow_in
+        )
+        .is_err());
+        assert!(
+            policy_check_sql_with_checker("VACUUM INTO '../outside.db'", &[], allow_in).is_err()
+        );
+
+        // Bypass attempts MUST fail closed: expressions (`||`, `char()`,
+        // subqueries), bracket identifiers, `file:` URIs, directory PRAGMAs.
+        for hostile in [
+            "ATTACH DATABASE ('allowed/' || '../outside.db') AS aux",
+            "ATTACH DATABASE substr('allowed/x', 1, 0) || char(46,46,47,120) AS aux",
+            "ATTACH DATABASE (SELECT 'allowed/a.db') AS aux",
+            "ATTACH DATABASE [allowed/a.db] AS aux",
+            "ATTACH DATABASE 'file:../outside.db?mode=ro' AS aux",
+            "VACUUM INTO ('allowed/' || '../out.db')",
+            "VACUUM INTO 'file:../out.db'",
+            "PRAGMA temp_store_directory = '/tmp'",
+            "PRAGMA main.data_store_directory = '/tmp'",
+            "PRAGMA \"temp_store_directory\" = '/tmp'",
+            "PRAGMA 'TEMP_STORE_DIRECTORY' = '/tmp'",
+            "PRAGMA main.\"data_store_directory\" = '/tmp'",
+            "PRAGMA `temp_store_directory` = '/tmp'",
+        ] {
+            assert!(
+                policy_check_sql_with_checker(hostile, &[], allow_in).is_err(),
+                "expected hostile SQL to be denied: {}",
+                hostile
+            );
+        }
+
+        // UTF-8 path where byte 5 falls inside a multi-byte character
+        // (`'日'` = 3 bytes, `'本'` = 3 bytes -> offset 5 is mid-char) must
+        // never panic when checking the `file:` URI prefix.
+        assert!(policy_check_sql_with_checker("ATTACH '日本語.db' AS aux", &[], allow_in).is_err());
+        assert!(
+            policy_check_sql_with_checker("ATTACH 'allowed/日本語.db' AS aux", &[], allow_in)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn attach_is_unrestricted_without_basedir() {
+        assert_eq!(
+            policy_check_sql_file_paths("ATTACH DATABASE 'whatever.db' AS x", &[]),
+            Ok(())
+        );
+        assert_eq!(
+            policy_check_sql_file_paths("VACUUM INTO 'snapshot.db'", &[]),
+            Ok(())
+        );
+        assert_eq!(policy_check_sql_file_paths("SELECT 1", &[]), Ok(()));
     }
 }

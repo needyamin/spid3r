@@ -147,3 +147,174 @@ fn shared_children_survive_a_teardown() {
     assert_eq!(code, 0, "shared-child program failed: {}{}", out, err);
     assert_eq!(out.trim(), "1\n2", "aliased list was disturbed");
 }
+
+/// Audit A-6: deep Tuple, Option, Result, and mixed chains must build and tear
+/// down without stack overflow on BOTH `--engine tree` and `--engine vm`.
+#[test]
+fn deep_tuple_option_result_chains_tear_down_on_both_engines() {
+    let cases = [
+        (
+            "tuple",
+            r#"fn main() {
+    let x = 1;
+    let i = 0;
+    while (i < 60000) {
+        x = tuple(x);
+        i = i + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#,
+        ),
+        (
+            "option",
+            r#"fn main() {
+    let x = 1;
+    let i = 0;
+    while (i < 60000) {
+        x = some(x);
+        i = i + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#,
+        ),
+        (
+            "result",
+            r#"fn main() {
+    let x = 1;
+    let i = 0;
+    while (i < 60000) {
+        if (i % 2 == 0) {
+            x = ok(x);
+        } else {
+            x = err(x);
+        }
+        i = i + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#,
+        ),
+        (
+            "mixed_a6",
+            r#"fn main() {
+    let x = 1;
+    let i = 0;
+    while (i < 60000) {
+        let r = i % 4;
+        if (r == 0) {
+            x = tuple(x);
+        } else if (r == 1) {
+            x = some(x);
+        } else if (r == 2) {
+            x = ok(x);
+        } else {
+            x = [x];
+        }
+        i = i + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#,
+        ),
+    ];
+
+    for (tag, src) in cases {
+        let path = std::env::temp_dir().join(format!("spid3r_deepdrop_a6_{}.matrix", tag));
+        std::fs::write(&path, src).expect("write probe");
+        for engine in ["tree", "vm"] {
+            let out = Command::new(bin())
+                .args(["run", "--engine", engine, path.to_str().unwrap()])
+                .output()
+                .expect("spawn spid3r");
+            let code = out.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(
+                code, 0,
+                "[{engine}] 60k-deep `{tag}` chain failed (exit {code}): stdout={stdout} stderr={stderr}"
+            );
+            assert_eq!(stdout.trim(), "ok", "[{engine}] `{tag}` stdout mismatch");
+            assert!(
+                !stderr.contains("overflow"),
+                "[{engine}] `{tag}` overflowed stack: {stderr}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Deep Channel and Mutex chains torn down on a spawned worker thread (smaller
+/// stack than main) must not overflow the host stack on either engine.
+#[test]
+fn deep_channel_and_mutex_chains_tear_down_on_worker_thread() {
+    let cases = [
+        (
+            "worker_channel",
+            r#"fn main() {
+    let t = spawn fn() {
+        let x = 1;
+        let i = 0;
+        while (i < 50000) {
+            let ch = channel();
+            ch.send(x);
+            x = ch;
+            i = i + 1;
+        }
+        x = 0;
+        return "ok";
+    };
+    println(t.join());
+    return 0;
+}
+"#,
+        ),
+        (
+            "worker_mutex",
+            r#"fn main() {
+    let t = spawn fn() {
+        let x = 1;
+        let i = 0;
+        while (i < 50000) {
+            x = mutex(x);
+            i = i + 1;
+        }
+        x = 0;
+        return "ok";
+    };
+    println(t.join());
+    return 0;
+}
+"#,
+        ),
+    ];
+
+    for (tag, src) in cases {
+        let path = std::env::temp_dir().join(format!("spid3r_deepdrop_{}.matrix", tag));
+        std::fs::write(&path, src).expect("write probe");
+        for engine in ["tree", "vm"] {
+            let out = Command::new(bin())
+                .args(["run", "--engine", engine, path.to_str().unwrap()])
+                .output()
+                .expect("spawn spid3r");
+            let code = out.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(
+                code, 0,
+                "[{engine}] 50k-deep `{tag}` chain failed (exit {code}): stdout={stdout} stderr={stderr}"
+            );
+            assert_eq!(stdout.trim(), "ok", "[{engine}] `{tag}` stdout mismatch");
+            assert!(
+                !stderr.contains("overflow"),
+                "[{engine}] `{tag}` overflowed stack: {stderr}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}

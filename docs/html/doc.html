@@ -2203,7 +2203,7 @@ yamc app.matrix -o App.exe --release --icon app.ico \
               </tr>
               <tr>
                 <td><code>bytes</code></td>
-                <td>Contiguous byte buffer (to 16 MiB)</td>
+                <td>Contiguous byte buffer (256 MiB single-allocation ceiling)</td>
                 <td><code>bytes("abc")</code>, <code>bytes([65, 66])</code></td>
               </tr>
               <tr>
@@ -2841,7 +2841,7 @@ fn main() {
               <tr id="bytes">
                 <td><strong>Bytes</strong></td>
                 <td><code>bytes("s")</code> · <code>bytes([65, 66])</code></td>
-                <td>Mutable/sliced binary buffer up to 16 MiB; <code>get</code>, <code>set</code>, <code>slice</code>, <code>to_hex</code>, <code>to_base64</code>.</td>
+                <td>Mutable/sliced binary buffer up to the 256 MiB single-allocation ceiling; <code>get</code>, <code>set</code>, <code>slice</code>, <code>to_hex</code>, <code>to_base64</code>.</td>
               </tr>
               <tr id="stacks-queues">
                 <td><strong>Stack / Queue / Deque</strong></td>

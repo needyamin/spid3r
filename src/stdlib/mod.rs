@@ -527,7 +527,7 @@ pub fn builtin_defs() -> Vec<NativeDef> {
 /// Apply the per-process Phase-3 security policy (`security.basedir`,
 /// `security.disable_natives`, pin refusal) and `--sandbox` stubs in one
 /// shared funnel.
-fn apply_policy_to_defs(
+pub(crate) fn apply_policy_to_defs(
     defs: &mut [NativeDef],
     sandboxed: bool,
     guard_lookup: Option<fn(&str) -> Option<crate::vm::NativeImpl>>,
@@ -870,12 +870,9 @@ fn n_read_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     // Documented contract (docs/STANDARD_LIBRARY.md): file operations return
     // a `result` (`ok(text)` / `err(msg)`) instead of throwing, so callers
     // can branch on `is_ok`/`is_err` without a `try` block.
-    match std::fs::read_to_string(&path) {
+    match read_file_string_capped(&path, "read_file") {
         Ok(s) => collections::construct("ok", vec![Value::Str(s.into())]),
-        Err(e) => collections::construct(
-            "err",
-            vec![Value::Str(format!("read_file '{}': {}", path, e).into())],
-        ),
+        Err(e) => collections::construct("err", vec![Value::Str(e.into())]),
     }
 }
 
@@ -1393,7 +1390,7 @@ fn n_sleep_ms(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             ))
         }
     };
-    crate::sched::sleep_ms(ms);
+    crate::sched::sleep_ms(ms)?;
     Ok(Value::Null)
 }
 
@@ -1414,7 +1411,7 @@ fn n_now(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_env(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let name = want_str(&one("env", &args)?, "env")?;
     match std::env::var(&name) {
-        Ok(v) => Ok(Value::Option(Some(Box::new(Value::Str(v.into()))))),
+        Ok(v) => Ok(Value::some(Value::Str(v.into()))),
         Err(_) => Ok(Value::Option(None)),
     }
 }
@@ -2820,6 +2817,14 @@ fn n_secure_compare(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     }
     let a = want_b64_input(&args[0], "secure_compare")?;
     let b = want_b64_input(&args[1], "secure_compare")?;
+    Ok(Value::Bool(secure_compare_bytes(&a, &b)))
+}
+
+/// Constant-time byte-slice equality: runs over `max(a, b)` bytes with
+/// 0-fill, folding the length difference into the accumulator, so neither
+/// content nor (beyond coarse length) timing leaks. Every authentication-value
+/// comparison (JWT tags, SCRAM server signatures, session MACs) must use this.
+pub(crate) fn secure_compare_bytes(a: &[u8], b: &[u8]) -> bool {
     let mut diff = (a.len() ^ b.len()) as u64;
     let n = a.len().max(b.len());
     for i in 0..n {
@@ -2827,7 +2832,7 @@ fn n_secure_compare(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
         let y = b.get(i).copied().unwrap_or(0);
         diff |= (x ^ y) as u64;
     }
-    Ok(Value::Bool(diff == 0))
+    diff == 0
 }
 
 /// Base64 (RFC 4648). The standard alphabet (+/) with padding, and the
@@ -4949,14 +4954,16 @@ fn write_json_key(k: &MapKey, out: &mut Vec<u8>) {
 ///
 /// This predicate is deliberately conservative: any unrecognised variant
 /// falls through to the original, byte-identical recursion path.
-fn json_is_scalar(v: &Value) -> bool {
-    match v {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => true,
-        Value::Option(inner) => match inner {
-            Some(v) => json_is_scalar(v.as_ref()),
-            None => true,
-        },
-        _ => false,
+fn json_is_scalar(mut v: &Value) -> bool {
+    loop {
+        match v {
+            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => {
+                return true
+            }
+            Value::Option(Some(inner)) => v = &inner.0,
+            Value::Option(None) => return true,
+            _ => return false,
+        }
     }
 }
 
@@ -5082,7 +5089,7 @@ fn write_json(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), String> 
             }
         }
         Value::Option(o) => match o {
-            Some(v) => write_json(v, out, depth + 1)?,
+            Some(v) => write_json(&v.0, out, depth + 1)?,
             None => out.extend_from_slice(b"null"),
         },
         other => {
@@ -5181,13 +5188,52 @@ fn n_dir_remove(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
+/// SEC-V4 (audit fix): read a file while enforcing `memory.allocation_cap_mb`,
+/// `runtime.memory_limit_mb`, and the 256 MiB host-abort ceiling.
+/// Checks file metadata up front (stopping sparse/huge files before any
+/// allocation) AND bounds the actual read via `File::take(cap + 1)` so a
+/// growing file or pipe cannot bypass the cap via TOCTOU.
+pub(crate) fn read_file_bytes_capped(path: &str, who: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("{} '{}': {}", who, path, e))?;
+    if let Ok(meta) = file.metadata() {
+        let len = usize::try_from(meta.len()).map_err(|_| {
+            format!(
+                "{}: '{}' is {} bytes, over the allocation limit",
+                who,
+                path,
+                meta.len()
+            )
+        })?;
+        crate::budget::check_single_allocation(len)
+            .map_err(|e| format!("{}: '{}': {}", who, path, e))?;
+    }
+    let cap = crate::budget::effective_single_allocation_cap();
+    let mut buf = Vec::new();
+    file.take(cap.saturating_add(1) as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("{} '{}': {}", who, path, e))?;
+    crate::budget::check_single_allocation(buf.len())
+        .map_err(|e| format!("{}: '{}': {}", who, path, e))?;
+    Ok(buf)
+}
+
+/// UTF-8 variant of [`read_file_bytes_capped`].
+pub(crate) fn read_file_string_capped(path: &str, who: &str) -> Result<String, String> {
+    let bytes = read_file_bytes_capped(path, who)?;
+    String::from_utf8(bytes).map_err(|e| {
+        format!(
+            "{} '{}': stream did not contain valid UTF-8: {}",
+            who, path, e
+        )
+    })
+}
+
 fn n_read_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("read_bytes", &args)?, "read_bytes")?;
-    match std::fs::read(&path) {
+    match read_file_bytes_capped(&path, "read_bytes") {
         Ok(data) => Ok(Value::ok(Value::Bytes(new_ref(data)))),
-        Err(e) => Ok(Value::err(Value::Str(
-            format!("cannot read '{}': {}", path, e).into(),
-        ))),
+        Err(e) => Ok(Value::err(Value::Str(e.into()))),
     }
 }
 
@@ -5316,12 +5362,10 @@ fn n_read_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         ));
     }
     let path = want_str(&args[0], "read_csv")?;
-    let text = match std::fs::read_to_string(&path) {
+    let text = match read_file_string_capped(&path, "read_csv") {
         Ok(s) => s,
         Err(e) => {
-            return Ok(Value::err(Value::Str(
-                format!("cannot read '{}': {}", path, e).into(),
-            )));
+            return Ok(Value::err(Value::Str(e.into())));
         }
     };
     let mut parse_args = vec![Value::Str(text.into())];
@@ -5341,7 +5385,7 @@ fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&args[0], "write_csv")?;
     let headers = match &args[1] {
         Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
-        Value::Tuple(t) => t.lock().unwrap().clone(),
+        Value::Tuple(t) => t.lock().unwrap().0.clone(),
         other => {
             return Err(format!(
                 "write_csv headers expects a list, found {}",
@@ -5351,7 +5395,7 @@ fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     };
     let rows = match &args[2] {
         Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
-        Value::Tuple(t) => t.lock().unwrap().clone(),
+        Value::Tuple(t) => t.lock().unwrap().0.clone(),
         other => {
             return Err(format!(
                 "write_csv rows expects a list, found {}",
@@ -5387,7 +5431,10 @@ fn n_regex_find(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let pat = want_str(&args[0], "regex_find")?;
     let text = want_str(&args[1], "regex_find")?;
     let found = regex::regex_find(&pat, &text)?;
-    Ok(Value::Option(found.map(|s| Box::new(Value::Str(s.into())))))
+    Ok(match found {
+        Some(s) => Value::some(Value::Str(s.into())),
+        None => Value::Option(None),
+    })
 }
 
 fn n_regex_find_all(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {

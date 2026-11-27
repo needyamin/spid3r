@@ -391,20 +391,30 @@ impl ListData {
         }
     }
 
-    /// Break all internal `prev`/`next` node links and clear node values so
-    /// doubly-linked lists never leak their `LLNode` allocations on drop or GC.
-    pub fn clear_nodes(&mut self) {
+    /// Detach all internal `prev`/`next` node links and push node values into
+    /// `out` so nested lists can be torn down iteratively without stack overflow.
+    pub(crate) fn drain_values(&mut self, out: &mut Vec<Value>) {
         let mut cur = self.head.take();
         self.tail = None;
         self.len = 0;
         while let Some(node) = cur {
-            if let Ok(mut b) = node.lock() {
-                b.prev = None;
-                b.value = Value::Null;
-                cur = b.next.take();
-            } else {
-                break;
+            let mut b = node.lock().unwrap_or_else(|p| p.into_inner());
+            b.prev = None;
+            let v = std::mem::replace(&mut b.value, Value::Null);
+            if !matches!(v, Value::Null) {
+                out.push(v);
             }
+            cur = b.next.take();
+        }
+    }
+
+    /// Break all internal `prev`/`next` node links and clear node values so
+    /// doubly-linked lists never leak their `LLNode` allocations on drop or GC.
+    pub fn clear_nodes(&mut self) {
+        let mut vals = Vec::new();
+        self.drain_values(&mut vals);
+        if !vals.is_empty() {
+            super::drop_iteratively(vals);
         }
     }
 }
@@ -446,9 +456,47 @@ pub struct BstData {
     pub len: usize,
 }
 
+impl Drop for BstData {
+    fn drop(&mut self) {
+        self.detach_all();
+    }
+}
+
 impl BstData {
     pub fn new() -> Self {
         BstData { root: None, len: 0 }
+    }
+
+    /// Detach every node and push stored values into `out` for iterative drop.
+    pub(crate) fn drain_values(&mut self, out: &mut Vec<Value>) {
+        let mut stack: Vec<BstRef> = Vec::new();
+        if let Some(root) = self.root.take() {
+            stack.push(root);
+        }
+        while let Some(node) = stack.pop() {
+            let mut guard = node.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(l) = guard.left.take() {
+                stack.push(l);
+            }
+            if let Some(r) = guard.right.take() {
+                stack.push(r);
+            }
+            let v = std::mem::replace(&mut guard.value, Value::Null);
+            if !matches!(v, Value::Null) {
+                out.push(v);
+            }
+        }
+    }
+
+    /// SEC-V3: iteratively detach every node and drain values through
+    /// `drop_iteratively` so a degenerate 200k-node BST spine never aborts on
+    /// scope exit or `.clear()`.
+    fn detach_all(&mut self) {
+        let mut vals: Vec<Value> = Vec::new();
+        self.drain_values(&mut vals);
+        if !vals.is_empty() {
+            super::drop_iteratively(vals);
+        }
     }
 
     fn cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
@@ -516,109 +564,132 @@ impl BstData {
         Ok(false)
     }
 
-    /// Deletion handles all three cases: leaf, one child, two children
-    /// (successor replacement).
+    /// Iterative deletion handling all three cases: leaf, one child, two
+    /// children (inorder successor replacement) without recursing on a
+    /// degenerate spine.
     pub fn remove(&mut self, v: &Value) -> Result<Value, String> {
-        let found = Self::remove_node(&mut self.root, v)?;
-        if found {
-            self.len -= 1;
+        let mut parent: Option<(BstRef, bool)> = None;
+        let mut cur = self.root.clone();
+        while let Some(node) = cur {
+            let (order, left, right) = {
+                let guard = node.lock().unwrap();
+                let ord = Self::cmp(&guard.value, v)?;
+                (ord, guard.left.clone(), guard.right.clone())
+            };
+            match order {
+                std::cmp::Ordering::Equal => {
+                    let replacement = match (left, right) {
+                        (None, None) => None,
+                        (Some(l), None) => Some(l),
+                        (None, Some(r)) => Some(r),
+                        (Some(l), Some(r)) => {
+                            let (succ, new_right) = Self::remove_min(r);
+                            {
+                                let mut sg = succ.lock().unwrap();
+                                sg.left = Some(l);
+                                sg.right = new_right;
+                            }
+                            Some(succ)
+                        }
+                    };
+                    // Detach links from the removed node before dropping it.
+                    {
+                        let mut ng = node.lock().unwrap();
+                        ng.left = None;
+                        ng.right = None;
+                    }
+                    match parent {
+                        None => self.root = replacement,
+                        Some((p, true)) => p.lock().unwrap().left = replacement,
+                        Some((p, false)) => p.lock().unwrap().right = replacement,
+                    }
+                    self.len -= 1;
+                    return Ok(Value::Null);
+                }
+                std::cmp::Ordering::Greater => {
+                    parent = Some((node, true));
+                    cur = left;
+                }
+                std::cmp::Ordering::Less => {
+                    parent = Some((node, false));
+                    cur = right;
+                }
+            }
         }
         Ok(Value::Null)
     }
 
-    /// Detach the minimum node of a subtree. Returns the detached node and the
-    /// new subtree root (None when the subtree became empty). Never holds a
-    /// node lock across the recursion.
-    fn remove_min(node: BstRef) -> (BstRef, Option<BstRef>) {
-        let left = node.lock().unwrap().left.clone();
-        match left {
-            None => {
-                let right = node.lock().unwrap().right.clone();
-                (node, right)
-            }
-            Some(l) => {
-                let (min, new_left) = Self::remove_min(l);
-                node.lock().unwrap().left = new_left;
-                (min, Some(node))
-            }
-        }
-    }
-
-    fn remove_node(slot: &mut Option<BstRef>, v: &Value) -> Result<bool, String> {
-        let node = match slot {
-            Some(n) => n.clone(),
-            None => return Ok(false),
-        };
-        let order = Self::cmp(&node.lock().unwrap().value, v)?;
-        match order {
-            std::cmp::Ordering::Equal => {
-                let has_left = node.lock().unwrap().left.is_some();
-                let has_right = node.lock().unwrap().right.is_some();
-                match (has_left, has_right) {
-                    (false, false) => *slot = None,
-                    (true, false) => *slot = node.lock().unwrap().left.clone(),
-                    (false, true) => *slot = node.lock().unwrap().right.clone(),
-                    (true, true) => {
-                        // replace with the inorder successor
-                        let right = node.lock().unwrap().right.clone().unwrap();
-                        let (succ, new_right) = Self::remove_min(right);
-                        let succ_left = node.lock().unwrap().left.clone();
-                        succ.lock().unwrap().left = succ_left;
-                        succ.lock().unwrap().right = new_right;
-                        *slot = Some(succ);
-                    }
+    /// Iteratively detach the minimum node of a subtree. Returns the detached
+    /// node and the new subtree root (None when the subtree became empty).
+    fn remove_min(root: BstRef) -> (BstRef, Option<BstRef>) {
+        let mut parent: Option<BstRef> = None;
+        let mut cur = root.clone();
+        loop {
+            let left = cur.lock().unwrap().left.clone();
+            match left {
+                None => {
+                    let right = cur.lock().unwrap().right.take();
+                    return match parent {
+                        None => (cur, right),
+                        Some(p) => {
+                            p.lock().unwrap().left = right;
+                            (cur, Some(root))
+                        }
+                    };
                 }
-                Ok(true)
-            }
-            std::cmp::Ordering::Greater => {
-                let mut left = node.lock().unwrap().left.clone();
-                let found = Self::remove_node(&mut left, v)?;
-                node.lock().unwrap().left = left;
-                Ok(found)
-            }
-            std::cmp::Ordering::Less => {
-                let mut right = node.lock().unwrap().right.clone();
-                let found = Self::remove_node(&mut right, v)?;
-                node.lock().unwrap().right = right;
-                Ok(found)
+                Some(l) => {
+                    parent = Some(cur);
+                    cur = l;
+                }
             }
         }
     }
 
+    /// Iterative traversal (order: 0 = inorder, 1 = preorder, 2 = postorder) so
+    /// a degenerate BST spine never overflows the call stack.
     fn walk(&self, order: u8, out: &mut Vec<Value>) {
-        fn go(node: &BstRef, order: u8, out: &mut Vec<Value>) {
-            let (l, r, v) = {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let mut stack: Vec<(BstRef, bool)> = vec![(root.clone(), false)];
+        while let Some((node, visited)) = stack.pop() {
+            if visited {
+                let v = node.lock().unwrap().value.clone();
+                out.push(v);
+                continue;
+            }
+            let (l, r) = {
                 let b = node.lock().unwrap();
-                (b.left.clone(), b.right.clone(), b.value.clone())
+                (b.left.clone(), b.right.clone())
             };
             if order == 0 {
-                if let Some(l) = &l {
-                    go(l, order, out);
+                // inorder: left, node, right -> push in reverse
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                out.push(v);
-                if let Some(r) = &r {
-                    go(r, order, out);
+                stack.push((node, true));
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
             } else if order == 1 {
-                out.push(v);
-                if let Some(l) = &l {
-                    go(l, order, out);
+                // preorder: node, left, right -> push in reverse
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                if let Some(r) = &r {
-                    go(r, order, out);
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
+                stack.push((node, true));
             } else {
-                if let Some(l) = &l {
-                    go(l, order, out);
+                // postorder: left, right, node -> push in reverse
+                stack.push((node, true));
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                if let Some(r) = &r {
-                    go(r, order, out);
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
-                out.push(v);
             }
-        }
-        if let Some(root) = &self.root {
-            go(root, order, out);
         }
     }
 
@@ -650,7 +721,7 @@ impl BstData {
             }
             "clear" => {
                 want(name, args, 0)?;
-                self.root = None;
+                self.detach_all();
                 self.len = 0;
                 Ok(Value::Null)
             }
@@ -681,9 +752,7 @@ impl BstData {
             "root" => {
                 want(name, args, 0)?;
                 match &self.root {
-                    Some(r) => Ok(Value::Option(Some(Box::new(
-                        r.lock().unwrap().value.clone(),
-                    )))),
+                    Some(r) => Ok(Value::some(r.lock().unwrap().value.clone())),
                     None => Ok(Value::Option(None)),
                 }
             }
@@ -721,12 +790,47 @@ pub struct BinTreeData {
     pub len: usize,
 }
 
+impl Drop for BinTreeData {
+    fn drop(&mut self) {
+        self.detach_all();
+    }
+}
+
 impl BinTreeData {
     pub fn new() -> Self {
         BinTreeData {
             root: None,
             open: Vec::new(),
             len: 0,
+        }
+    }
+
+    pub(crate) fn drain_values(&mut self, out: &mut Vec<Value>) {
+        self.open.clear();
+        let mut stack: Vec<BtRef> = Vec::new();
+        if let Some(root) = self.root.take() {
+            stack.push(root);
+        }
+        while let Some(node) = stack.pop() {
+            let mut guard = node.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(l) = guard.left.take() {
+                stack.push(l);
+            }
+            if let Some(r) = guard.right.take() {
+                stack.push(r);
+            }
+            let v = std::mem::replace(&mut guard.value, Value::Null);
+            if !matches!(v, Value::Null) {
+                out.push(v);
+            }
+        }
+    }
+
+    fn detach_all(&mut self) {
+        let mut vals: Vec<Value> = Vec::new();
+        self.drain_values(&mut vals);
+        if !vals.is_empty() {
+            super::drop_iteratively(vals);
         }
     }
 
@@ -767,39 +871,45 @@ impl BinTreeData {
     }
 
     fn walk(&self, order: u8, out: &mut Vec<Value>) {
-        fn go(node: &BtRef, order: u8, out: &mut Vec<Value>) {
-            let (l, r, v) = {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let mut stack: Vec<(BtRef, bool)> = vec![(root.clone(), false)];
+        while let Some((node, visited)) = stack.pop() {
+            if visited {
+                let v = node.lock().unwrap().value.clone();
+                out.push(v);
+                continue;
+            }
+            let (l, r) = {
                 let b = node.lock().unwrap();
-                (b.left.clone(), b.right.clone(), b.value.clone())
+                (b.left.clone(), b.right.clone())
             };
             if order == 0 {
-                if let Some(l) = &l {
-                    go(l, order, out);
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                out.push(v);
-                if let Some(r) = &r {
-                    go(r, order, out);
+                stack.push((node, true));
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
             } else if order == 1 {
-                out.push(v);
-                if let Some(l) = &l {
-                    go(l, order, out);
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                if let Some(r) = &r {
-                    go(r, order, out);
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
+                stack.push((node, true));
             } else {
-                if let Some(l) = &l {
-                    go(l, order, out);
+                stack.push((node, true));
+                if let Some(r) = r {
+                    stack.push((r, false));
                 }
-                if let Some(r) = &r {
-                    go(r, order, out);
+                if let Some(l) = l {
+                    stack.push((l, false));
                 }
-                out.push(v);
             }
-        }
-        if let Some(root) = &self.root {
-            go(root, order, out);
         }
     }
 
@@ -879,9 +989,7 @@ impl BinTreeData {
             "root" => {
                 want(name, args, 0)?;
                 match &self.root {
-                    Some(r) => Ok(Value::Option(Some(Box::new(
-                        r.lock().unwrap().value.clone(),
-                    )))),
+                    Some(r) => Ok(Value::some(r.lock().unwrap().value.clone())),
                     None => Ok(Value::Option(None)),
                 }
             }

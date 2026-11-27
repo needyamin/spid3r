@@ -715,12 +715,24 @@ fn bundle_desktop(
     }
 
     // 3. Write native platform launcher scripts
+    // SEC-L1 (audit fix): reject line breaks / NUL in stem and --html path and
+    // quote/escape properly so launcher scripts cannot execute injected shell
+    // or batch commands.
+    validate_launcher_arg(stem, "source file stem")?;
+    if let Some(ref h) = html_arg {
+        validate_launcher_arg(h, "--html path")?;
+    }
     if is_gui {
-        let html_flag = if let Some(ref h) = html_arg {
-            format!(" --html \"{}\"", h)
-        } else {
-            String::new()
-        };
+        #[cfg(target_os = "windows")]
+        let html_bat = html_arg
+            .as_ref()
+            .map(|h| format!(" --html \"{}\"", bat_quote(h)))
+            .unwrap_or_default();
+        #[cfg(not(target_os = "windows"))]
+        let html_sh = html_arg
+            .as_ref()
+            .map(|h| format!(" --html {}", sh_quote(h)))
+            .unwrap_or_default();
         #[cfg(target_os = "windows")]
         {
             // No `pause` for a GUI launcher: the console only exists to show
@@ -728,8 +740,10 @@ fn bundle_desktop(
             // keypress after the window closes is noise. A console app keeps
             // it, so a double-clicked run.bat does not vanish with the output.
             let bat = format!(
-                "@echo off\r\n{}spid3r gui \"{}.matrix\"{}\r\n",
-                runtime_prefix, stem, html_flag
+                "@echo off\r\nsetlocal DisableDelayedExpansion\r\n{}spid3r gui \"{}\"{}\r\n",
+                runtime_prefix,
+                bat_quote(&format!("{}.matrix", stem)),
+                html_bat
             );
             fs::write(out_dir.join("run.bat"), bat).map_err(|e| {
                 Diagnostic::new(Phase::Semantic, format!("failed to write run.bat: {}", e))
@@ -738,8 +752,10 @@ fn bundle_desktop(
         #[cfg(not(target_os = "windows"))]
         {
             let sh = format!(
-                "#!/bin/sh\n{}spid3r gui \"{}.matrix\"{}\n",
-                runtime_prefix, stem, html_flag
+                "#!/bin/sh\n{}spid3r gui {}{}\n",
+                runtime_prefix,
+                sh_quote(&format!("{}.matrix", stem)),
+                html_sh
             );
             let sh_path = out_dir.join("run.sh");
             fs::write(&sh_path, sh).map_err(|e| {
@@ -750,8 +766,9 @@ fn bundle_desktop(
         #[cfg(target_os = "windows")]
         {
             let bat = format!(
-                "@echo off\r\n{}spid3r exec \"{}.matrixc\"\r\npause\r\n",
-                runtime_prefix, stem
+                "@echo off\r\nsetlocal DisableDelayedExpansion\r\n{}spid3r exec \"{}\"\r\npause\r\n",
+                runtime_prefix,
+                bat_quote(&format!("{}.matrixc", stem))
             );
             fs::write(out_dir.join("run.bat"), bat).map_err(|e| {
                 Diagnostic::new(Phase::Semantic, format!("failed to write run.bat: {}", e))
@@ -760,8 +777,9 @@ fn bundle_desktop(
         #[cfg(not(target_os = "windows"))]
         {
             let sh = format!(
-                "#!/bin/sh\n{}spid3r exec \"{}.matrixc\"\n",
-                runtime_prefix, stem
+                "#!/bin/sh\n{}spid3r exec {}\n",
+                runtime_prefix,
+                sh_quote(&format!("{}.matrixc", stem))
             );
             let sh_path = out_dir.join("run.sh");
             fs::write(&sh_path, sh).map_err(|e| {
@@ -771,6 +789,73 @@ fn bundle_desktop(
     }
 
     Ok(out_dir)
+}
+
+fn validate_launcher_arg(s: &str, label: &str) -> Result<(), Diagnostic> {
+    if s.chars().any(|c| c == '\r' || c == '\n' || c == '\0') {
+        return Err(Diagnostic::new(
+            Phase::Semantic,
+            format!(
+                "bundle: {} contains control characters (CR/LF/NUL) unsafe for launcher scripts",
+                label
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// POSIX-sh single-quote: inside single quotes every byte is literal except
+/// `'` itself, spelled `'\''`.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// cmd.exe + Windows `CommandLineToArgvW` double-quoted-argument escaping:
+/// - `%%` for `%` so `%VAR%` cannot expand at run time.
+/// - `2*k` backslashes + `""` for `k` backslashes followed by `"` so cmd.exe
+///   keeps every character inside quotes (paired toggle) AND `CommandLineToArgvW`
+///   / Rust's Windows argv parser cannot treat `\"` as an escaped quote that
+///   splits the argument.
+/// - `2*k` backslashes for `k` trailing backslashes so a final `\` cannot
+///   escape the surrounding closing `"`.
+///
+/// Paired with `setlocal DisableDelayedExpansion` in `run.bat` so `!VAR!`
+/// stays literal even if delayed expansion is enabled in the caller's shell.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn bat_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut backslashes = 0usize;
+    for c in s.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                for _ in 0..backslashes * 2 {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push_str("\"\"");
+            }
+            '%' => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push_str("%%");
+            }
+            other => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(other);
+            }
+        }
+    }
+    for _ in 0..backslashes * 2 {
+        out.push('\\');
+    }
+    out
 }
 
 // ------------------------------------------------------------- ANDROID BUNDLER
@@ -1046,4 +1131,116 @@ android {{
     })?;
 
     Ok(out_dir)
+}
+
+#[cfg(test)]
+mod launcher_quote_tests {
+    use super::*;
+
+    #[test]
+    fn sh_and_bat_quoting_neutralizes_injection() {
+        assert_eq!(sh_quote("app.matrix"), "'app.matrix'");
+        assert_eq!(
+            sh_quote(r#"a";rm -rf ~;'$(id)'"#),
+            r#"'a";rm -rf ~;'\''$(id)'\'''"#
+        );
+        assert_eq!(
+            bat_quote("%USERPROFILE%\"&calc"),
+            "%%USERPROFILE%%\"\"&calc"
+        );
+        // Backslashes before quotes and at end of string must be doubled so
+        // CommandLineToArgvW / Rust argv parsing cannot split arguments on `\"`
+        // or swallow the closing quote on a trailing `\`.
+        assert_eq!(bat_quote(r#"a\" --evil"#), r#"a\\"" --evil"#);
+        assert_eq!(bat_quote(r#"a\\""#), r#"a\\\\"""#);
+        assert_eq!(bat_quote(r#"trail\"#), r#"trail\\"#);
+        assert_eq!(bat_quote(r#"a\b\c"#), r#"a\b\c"#);
+        assert_eq!(bat_quote(r#"\"%VAR%\"#), r#"\\""%%VAR%%\\"#);
+        assert_eq!(bat_quote("!PATH!"), "!PATH!");
+        assert!(validate_launcher_arg("normal_app", "stem").is_ok());
+        assert!(validate_launcher_arg("bad\ncalc", "stem").is_err());
+        assert!(validate_launcher_arg("bad\rcalc", "stem").is_err());
+        assert!(validate_launcher_arg("bad\0arg", "stem").is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_run_bat_disables_delayed_expansion_and_quotes_safely() {
+        let dir = std::env::temp_dir().join(format!(
+            "spid3r_bundle_bat_sec_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let src = dir.join("app!PATH!.matrix");
+        fs::write(&src, "fn main() { return 0; }\n").unwrap();
+        let html = dir.join("page!TEMP!.html");
+        fs::write(&html, "<html></html>").unwrap();
+
+        let out_console = dir.join("out_console");
+        bundle(&BundleOptions {
+            source_file: src.clone(),
+            target: BundleTarget::Desktop,
+            html_file: None,
+            output_path: Some(out_console.clone()),
+            single_file: false,
+            self_contained: false,
+        })
+        .unwrap();
+        let console_bat = fs::read_to_string(out_console.join("run.bat")).unwrap();
+        assert!(
+            console_bat.contains("setlocal DisableDelayedExpansion\r\n"),
+            "{console_bat}"
+        );
+
+        let out_gui = dir.join("out_gui");
+        bundle(&BundleOptions {
+            source_file: src,
+            target: BundleTarget::Desktop,
+            html_file: Some(html),
+            output_path: Some(out_gui.clone()),
+            single_file: false,
+            self_contained: false,
+        })
+        .unwrap();
+        let gui_bat = fs::read_to_string(out_gui.join("run.bat")).unwrap();
+        assert!(
+            gui_bat.contains("setlocal DisableDelayedExpansion\r\n"),
+            "{gui_bat}"
+        );
+
+        // Verify cmd.exe with delayed expansion forced ON (/V:ON) preserves
+        // `!PATH!`, `%USERPROFILE%`, and `\"` without expanding or splitting.
+        let check_bat = dir.join("check_args.bat");
+        let a1 = bat_quote(r#"a\" --evil"#);
+        let a2 = bat_quote(r#"a\"&echo PWNED"#);
+        let a3 = bat_quote("!PATH!");
+        let a4 = bat_quote("%USERPROFILE%");
+        let a5 = bat_quote(r#"trail\"#);
+        let script = format!(
+            "@echo off\r\nsetlocal DisableDelayedExpansion\r\nfor %%A in (\"{a1}\" \"{a2}\" \"{a3}\" \"{a4}\" \"{a5}\") do echo [%%~A]\r\n"
+        );
+        fs::write(&check_bat, script).unwrap();
+        let output = std::process::Command::new("cmd")
+            .args(["/V:ON", "/C", check_bat.to_str().unwrap()])
+            .output()
+            .expect("run cmd.exe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains("PWNED\r\n"), "command injected: {stdout}");
+        assert!(
+            stdout.contains("[!PATH!]"),
+            "delayed expansion leaked PATH: {stdout}"
+        );
+        assert!(
+            stdout.contains("[%USERPROFILE%]"),
+            "percent expansion leaked USERPROFILE: {stdout}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

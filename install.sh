@@ -778,17 +778,49 @@ say "Detected target: ${TARGET}"
 
 # --------------------------------------------------------------- download ----
 if [ -n "$VERSION" ]; then
-    TARBALL_URL="${DOWNLOAD_BASE}/download/v${VERSION}/spid3r-${TARGET}.tar.gz"
+    RELEASE_BASE="${DOWNLOAD_BASE}/download/v${VERSION}"
 else
-    TARBALL_URL="${DOWNLOAD_BASE}/latest/download/spid3r-${TARGET}.tar.gz"
+    RELEASE_BASE="${DOWNLOAD_BASE}/latest/download"
 fi
+TARBALL_NAME="spid3r-${TARGET}.tar.gz"
+TARBALL_URL="${RELEASE_BASE}/${TARBALL_NAME}"
 
 TMPDIR_DL="$(mktemp -d 2>/dev/null || mktemp -d -t spid3r)"
 trap 'rm -rf "$TMPDIR_DL"' EXIT INT TERM
 
 say "Downloading ${TARBALL_URL}"
 fetch "$TARBALL_URL" "${TMPDIR_DL}/spid3r.tar.gz" \
-    || die "download failed (no release asset for ${TARGET}? attach spid3r-${TARGET}.tar.gz to a release, or use --source)"
+    || die "download failed (no release asset for ${TARGET}? attach ${TARBALL_NAME} to a release, or use --source)"
+
+# SEC-M1 (audit fix): verify the downloaded tarball against its published
+# SHA-256 sidecar (or combined sha256sums.txt fallback) before extracting or
+# installing anything from it. Fail closed on missing checksum, missing checksum
+# tool, or digest mismatch.
+TARBALL_SHA_URL="${TARBALL_URL}.sha256"
+if fetch "$TARBALL_SHA_URL" "${TMPDIR_DL}/spid3r.tar.gz.sha256" 2>/dev/null && [ -s "${TMPDIR_DL}/spid3r.tar.gz.sha256" ]; then
+    :
+elif fetch "${RELEASE_BASE}/sha256sums.txt" "${TMPDIR_DL}/sha256sums.txt" 2>/dev/null; then
+    SPID3R_SHA_TARGET="$TARBALL_NAME" awk '
+        BEGIN { target = ENVIRON["SPID3R_SHA_TARGET"] }
+        {
+            f = $2
+            sub(/^\*/, "", f)
+            sub(/^\.\//, "", f)
+            if (f == target) { print tolower($1); exit }
+        }
+    ' "${TMPDIR_DL}/sha256sums.txt" > "${TMPDIR_DL}/spid3r.tar.gz.sha256"
+fi
+[ -s "${TMPDIR_DL}/spid3r.tar.gz.sha256" ] \
+    || die "failed to download SHA-256 checksum (${TARBALL_SHA_URL} or ${RELEASE_BASE}/sha256sums.txt); refusing to install an unverified binary. Pin --version to a known release or use --source."
+if verify_sha256_file "${TMPDIR_DL}/spid3r.tar.gz" "${TMPDIR_DL}/spid3r.tar.gz.sha256"; then
+    say "Tarball SHA-256 verification succeeded."
+else
+    tarball_vrc=$?
+    if [ "$tarball_vrc" -eq 2 ]; then
+        die "neither sha256sum nor shasum found; cannot verify download integrity. Install a SHA-256 utility or use --source."
+    fi
+    die "SHA-256 verification of spid3r-${TARGET}.tar.gz failed (checksum mismatch); refusing to install."
+fi
 
 tar -xzf "${TMPDIR_DL}/spid3r.tar.gz" -C "$TMPDIR_DL" \
     || die "failed to extract the tarball"

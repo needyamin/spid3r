@@ -286,7 +286,7 @@ pub fn write_csv_file(path: &str, headers: &[Value], rows: &[Value]) -> Result<V
     for row_val in rows {
         let row_items = match row_val {
             Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
-            Value::Tuple(t) => t.lock().unwrap().clone(),
+            Value::Tuple(t) => t.lock().unwrap().0.clone(),
             other => {
                 return Err(format!(
                     "write_csv row expects a list or tuple, found {}",
@@ -319,7 +319,7 @@ mod tests {
         let csv = "name,age,score,active\nAlice,30,95.5,true\nBob,25,null,false\n\"Charlie, Jr.\",40,NA,true\n";
         let res = parse_csv_text(csv, ',', true).unwrap();
         if let Value::Result(inner) = res {
-            if let Ok(Value::Map(map_ref)) = inner.as_ref() {
+            if let Ok(Value::Map(map_ref)) = &inner.0 {
                 let map = map_ref.lock().unwrap();
                 assert_eq!(map.entries.len(), 2);
             } else {

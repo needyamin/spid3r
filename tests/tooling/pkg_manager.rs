@@ -760,10 +760,12 @@ mod r8_tests {
             "public fn val() -> int { return 7; }\n",
         );
 
+        let state_dir = root.join("state");
+        let state_str = state_dir.to_str().unwrap();
         let pub_out = run_spid3r(
             &lib_dir,
             &["publish", "--to-dir", reg_dir.to_str().unwrap()],
-            &[],
+            &[("SPID3R_STATE_DIR", Some(state_str))],
         );
         assert!(
             pub_out.status.success(),
@@ -775,8 +777,12 @@ mod r8_tests {
         assert!(sig_path.is_file(), "sha256.txt.sig missing");
         assert!(pubkey_path.is_file(), "registry.pub missing");
         assert!(
-            reg_dir.join("registry.key").is_file(),
-            "registry.key missing"
+            !reg_dir.join("registry.key").exists(),
+            "private registry.key must not be written inside published registry directory"
+        );
+        assert!(
+            state_dir.join("registry-keys").is_dir(),
+            "expected out-of-band signing key in SPID3R_STATE_DIR/registry-keys"
         );
         let pk_hex = std::fs::read_to_string(&pubkey_path)
             .unwrap()

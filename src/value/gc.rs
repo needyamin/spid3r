@@ -249,14 +249,14 @@ impl GcTrace for MapData {
     }
 }
 
-impl GcTrace for Vec<Value> {
+impl GcTrace for crate::value::TupleData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
-        for v in self {
+        for v in &self.0 {
             f(v);
         }
     }
     fn gc_clear(&mut self) {
-        self.clear();
+        crate::value::collections::drop_iteratively(std::mem::take(&mut self.0));
     }
 }
 
@@ -568,10 +568,8 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         Value::Class(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::VFunc(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::VClass(a) => f(Arc::as_ptr(a) as *const () as usize),
-        Value::Option(Some(inner)) => for_each_cell_id(inner, f),
-        Value::Result(r) => match r.as_ref() {
-            Ok(inner) | Err(inner) => for_each_cell_id(inner, f),
-        },
+        Value::Option(Some(a)) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Result(a) => f(Arc::as_ptr(a) as *const () as usize),
         _ => {}
     }
 }
@@ -725,11 +723,8 @@ fn child_bytes(v: &Value) -> usize {
     match v {
         Value::Str(s) => s.len() + 24,
         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => 0,
-        Value::Option(Some(b)) => 8 + child_bytes(b),
-        Value::Result(r) => match r.as_ref() {
-            Ok(b) | Err(b) => 8 + child_bytes(b),
-        },
-        // Tracked cells: slot cost only; contents counted at their own entry.
+        // Tracked cells (including Arc-backed Option/Result): slot cost only;
+        // contents are counted at their own registry entry without recursion.
         _ => 8,
     }
 }

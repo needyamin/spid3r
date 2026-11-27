@@ -1703,16 +1703,18 @@ fn semantic_tokens_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         let c = col.saturating_sub(1);
         let line_text = line_at(&doc.text, l);
         let start = char_to_utf16_col(line_text, c);
-        let end = char_to_utf16_col(line_text, c + len);
-        let delta_line = l - prev_line;
+        let end = char_to_utf16_col(line_text, c.saturating_add(len));
+        // Audit L3: degrade gracefully on unsorted or overlapping items rather
+        // than panicking on subtraction underflow in debug builds.
+        let delta_line = l.saturating_sub(prev_line);
         let delta_char = if delta_line == 0 {
-            start - prev_char
+            start.saturating_sub(prev_char)
         } else {
             start
         };
         data.push(Json::Int(delta_line as i64));
         data.push(Json::Int(delta_char as i64));
-        data.push(Json::Int((end - start) as i64));
+        data.push(Json::Int(end.saturating_sub(start) as i64));
         data.push(Json::Int(kind as i64));
         data.push(Json::Int(mods as i64));
         prev_line = l;

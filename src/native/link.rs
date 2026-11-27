@@ -497,6 +497,10 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     preload_llvm_c();
 
     let file = file.ok_or_else(|| err("build needs a source file: spid3r build file.matrix"))?;
+    for w in crate::config::suspicious_key_warnings(&crate::config::snapshot()) {
+        eprintln!("{}", w);
+    }
+    crate::cli::check_vendor_integrity_for(Some(&file))?;
 
     // front end: read, parse, semantic-check (programs must have a main)
     let path = Path::new(&file);
@@ -827,13 +831,47 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     }
     if !entries.is_empty() {
         let total: usize = entries.iter().map(|(_, d)| d.len()).sum();
-        crate::native::payload::append(&out_path, &entries).map_err(|e| {
-            Diagnostic::new(
-                Phase::Build,
-                format!("cannot embed files into '{}': {}", out_path.display(), e),
-            )
-        })?;
-        println!("embedded {} file(s), {} bytes", entries.len(), total);
+        let sign_seed = {
+            let mut found = None;
+            for var in ["SPID3R_PAYLOAD_SIGN_KEY", "SPID3R_SIGN_KEY"] {
+                if let Ok(val) = std::env::var(var) {
+                    if !val.trim().is_empty() {
+                        let seed =
+                            crate::native::payload::parse_seed_hex(&val, var).map_err(err)?;
+                        found = Some(seed);
+                        break;
+                    }
+                }
+            }
+            found
+        };
+        if let Some(seed) = sign_seed {
+            let pk =
+                crate::native::payload::append_signed(&out_path, &entries, &seed).map_err(|e| {
+                    Diagnostic::new(
+                        Phase::Build,
+                        format!(
+                            "cannot embed signed files into '{}': {}",
+                            out_path.display(),
+                            e
+                        ),
+                    )
+                })?;
+            println!(
+                "embedded {} signed file(s), {} bytes (Ed25519 pubkey: {})",
+                entries.len(),
+                total,
+                crate::pkg::sha256::hex_encode(&pk)
+            );
+        } else {
+            crate::native::payload::append(&out_path, &entries).map_err(|e| {
+                Diagnostic::new(
+                    Phase::Build,
+                    format!("cannot embed files into '{}': {}", out_path.display(), e),
+                )
+            })?;
+            println!("embedded {} file(s), {} bytes", entries.len(), total);
+        }
         if let Some(len) = runtime_len {
             println!(
                 "bundled runtime: {} bytes (app runs without an installed spid3r)",

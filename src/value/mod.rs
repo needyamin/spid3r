@@ -1297,6 +1297,115 @@ impl Drop for CompiledInstanceData {
     }
 }
 
+/// Fixed-arity tuple payload with iterative `Drop` so deeply nested tuple
+/// chains never overflow the host stack on teardown (audit A-6).
+#[derive(Default)]
+pub struct TupleData(pub Vec<Value>);
+
+impl std::ops::Deref for TupleData {
+    type Target = Vec<Value>;
+    #[inline]
+    fn deref(&self) -> &Vec<Value> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TupleData {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.0
+    }
+}
+
+impl Drop for TupleData {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            crate::value::collections::drop_iteratively(std::mem::take(&mut self.0));
+        }
+    }
+}
+
+/// Immutable `some(v)` payload backed by `Arc` with iterative `Drop` so
+/// deeply nested `Option` chains clone in O(1) and tear down without recursing
+/// on the host stack (audit A-6).
+pub struct OptionData(pub Value);
+
+impl std::ops::Deref for OptionData {
+    type Target = Value;
+    #[inline]
+    fn deref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl AsRef<Value> for OptionData {
+    #[inline]
+    fn as_ref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl GcTrace for OptionData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        f(&self.0);
+    }
+    /// Immutable cell: cycles break from the mutable container holding this
+    /// option, just like `FunctionData` / `ClassData`.
+    fn gc_clear(&mut self) {}
+}
+
+impl Drop for OptionData {
+    fn drop(&mut self) {
+        if !is_scalar(&self.0) {
+            let v = std::mem::replace(&mut self.0, Value::Null);
+            crate::value::collections::drop_iteratively(vec![v]);
+        }
+    }
+}
+
+/// Immutable `ok(v)` / `err(v)` payload backed by `Arc` with iterative `Drop`
+/// so deeply nested `Result` chains clone in O(1) and tear down without
+/// recursing on the host stack (audit A-6).
+pub struct ResultData(pub std::result::Result<Value, Value>);
+
+impl std::ops::Deref for ResultData {
+    type Target = std::result::Result<Value, Value>;
+    #[inline]
+    fn deref(&self) -> &std::result::Result<Value, Value> {
+        &self.0
+    }
+}
+
+impl AsRef<std::result::Result<Value, Value>> for ResultData {
+    #[inline]
+    fn as_ref(&self) -> &std::result::Result<Value, Value> {
+        &self.0
+    }
+}
+
+impl GcTrace for ResultData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        match &self.0 {
+            Ok(v) | Err(v) => f(v),
+        }
+    }
+    /// Immutable cell: cycles break from the mutable container holding this
+    /// result, just like `FunctionData` / `ClassData`.
+    fn gc_clear(&mut self) {}
+}
+
+impl Drop for ResultData {
+    fn drop(&mut self) {
+        let inner = match &mut self.0 {
+            Ok(v) | Err(v) => v,
+        };
+        if !is_scalar(inner) {
+            let v = std::mem::replace(inner, Value::Null);
+            crate::value::collections::drop_iteratively(vec![v]);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Value {
     Int(i64),
@@ -1317,7 +1426,7 @@ pub enum Value {
     DoublyList(Ref<crate::value::collections::ListData>),
     Map(Ref<crate::value::collections::MapData>),
     Set(Ref<crate::value::collections::SetData>),
-    Tuple(Ref<Vec<Value>>),
+    Tuple(Ref<TupleData>),
     BinTree(Ref<crate::value::collections::BinTreeData>),
     Bst(Ref<crate::value::collections::BstData>),
     Heap(Ref<crate::value::collections::HeapData>),
@@ -1331,8 +1440,8 @@ pub enum Value {
     Ring(Ref<crate::value::collections::RingData>),
     Bag(Ref<crate::value::collections::BagData>),
     RefBox(Ref<crate::value::collections::RefBoxData>),
-    Option(Option<Box<Value>>),
-    Result(Box<std::result::Result<Value, Value>>),
+    Option(Option<Arc<OptionData>>),
+    Result(Arc<ResultData>),
 
     Function(Arc<FunctionData>),
     Native(Arc<NativeFn>),
@@ -1372,13 +1481,38 @@ pub enum Value {
 
 impl Value {
     #[inline]
+    pub fn tuple(items: Vec<Value>) -> Self {
+        Value::Tuple(new_ref(TupleData(items)))
+    }
+
+    #[inline]
+    pub fn some(v: Value) -> Self {
+        if is_scalar(&v) {
+            Value::Option(Some(Arc::new(OptionData(v))))
+        } else {
+            crate::value::collections::seq::track_if_untracked(&v);
+            Value::Option(Some(gc::track_immutable(Arc::new(OptionData(v)))))
+        }
+    }
+
+    #[inline]
     pub fn ok(v: Value) -> Self {
-        Value::Result(Box::new(Ok(v)))
+        if is_scalar(&v) {
+            Value::Result(Arc::new(ResultData(Ok(v))))
+        } else {
+            crate::value::collections::seq::track_if_untracked(&v);
+            Value::Result(gc::track_immutable(Arc::new(ResultData(Ok(v)))))
+        }
     }
 
     #[inline]
     pub fn err(v: Value) -> Self {
-        Value::Result(Box::new(Err(v)))
+        if is_scalar(&v) {
+            Value::Result(Arc::new(ResultData(Err(v))))
+        } else {
+            crate::value::collections::seq::track_if_untracked(&v);
+            Value::Result(gc::track_immutable(Arc::new(ResultData(Err(v)))))
+        }
     }
 }
 
@@ -1544,7 +1678,7 @@ pub fn weak_upgrade(v: &Value) -> Result<Option<Value>, String> {
         }
         Map => Value::Map(downcast_cell::<crate::value::collections::MapData>(&any)?),
         Set => Value::Set(downcast_cell::<crate::value::collections::SetData>(&any)?),
-        Tuple => Value::Tuple(downcast_cell::<Vec<Value>>(&any)?),
+        Tuple => Value::Tuple(downcast_cell::<TupleData>(&any)?),
         BinTree => Value::BinTree(downcast_cell::<crate::value::collections::BinTreeData>(
             &any,
         )?),
@@ -1763,6 +1897,39 @@ fn scalar_equal(a: &Value, b: &Value) -> Option<bool> {
     }
 }
 
+/// SEC-V3 (audit fix): recursion-depth guard for the per-node recursive value
+/// walks (`values_equal_inner`, `display_value_inner`, `deep_clone_inner`).
+/// A script can build arbitrarily deep nested values with a plain loop
+/// (`l = [l]` x 100000); bounding the walk depth at 64 keeps all three walks
+/// safely inside a default 2 MB thread stack even in unoptimized debug builds
+/// where `match Value` frames are large.
+pub const MAX_VALUE_DEPTH: usize = 64;
+
+thread_local! {
+    static VALUE_RECURSION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII one-level-of-recursion token: `None` when the walk is already at
+/// [`MAX_VALUE_DEPTH`] (caller falls back instead of recursing).
+fn enter_value_recursion() -> Option<impl Drop> {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            VALUE_RECURSION_DEPTH.with(|d| {
+                d.set(d.get().saturating_sub(1));
+            });
+        }
+    }
+    VALUE_RECURSION_DEPTH.with(|d| {
+        if d.get() >= MAX_VALUE_DEPTH {
+            None
+        } else {
+            d.set(d.get() + 1);
+            Some(Guard)
+        }
+    })
+}
+
 /// Deep structural equality. Primitives compare by value (int/float compare
 /// numerically); collections compare element-wise; everything with identity
 /// (functions, instances, tasks, channels, mutexes, classes) compares by
@@ -1782,19 +1949,27 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
 /// taken with the receiver's mutex released, then commit under the lock. They
 /// use this to confirm the slot still holds the snapshot's element: re-running
 /// `values_equal` there could re-lock the receiver and hang.
-pub fn same_slot(a: &Value, b: &Value) -> bool {
-    if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
-        return x == y;
-    }
-    match (a, b) {
-        (Value::Float(x), Value::Float(y)) if x.is_nan() && y.is_nan() => true,
-        (Value::Option(None), Value::Option(None)) => true,
-        (Value::Option(Some(x)), Value::Option(Some(y))) => same_slot(x, y),
-        (Value::Result(x), Value::Result(y)) => match (x.as_ref(), y.as_ref()) {
-            (Ok(a), Ok(b)) | (Err(a), Err(b)) => same_slot(a, b),
-            _ => false,
-        },
-        _ => scalar_equal(a, b).unwrap_or(false),
+pub fn same_slot(mut a: &Value, mut b: &Value) -> bool {
+    loop {
+        if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
+            return x == y;
+        }
+        match (a, b) {
+            (Value::Float(x), Value::Float(y)) if x.is_nan() && y.is_nan() => return true,
+            (Value::Option(None), Value::Option(None)) => return true,
+            (Value::Option(Some(x)), Value::Option(Some(y))) => {
+                a = &x.0;
+                b = &y.0;
+            }
+            (Value::Result(x), Value::Result(y)) => match (&x.0, &y.0) {
+                (Ok(ax), Ok(bx)) | (Err(ax), Err(bx)) => {
+                    a = ax;
+                    b = bx;
+                }
+                _ => return false,
+            },
+            _ => return scalar_equal(a, b).unwrap_or(false),
+        }
     }
 }
 
@@ -1817,6 +1992,10 @@ fn int_float_eq(x: i64, y: f64) -> bool {
 }
 
 fn values_equal_inner(a: &Value, b: &Value, seen: &mut collections::FxHashSet<(u64, u64)>) -> bool {
+    let _guard = match enter_value_recursion() {
+        Some(g) => g,
+        None => return false,
+    };
     use Value::*;
     // Identity fast path: a reference value is equal to itself. Without this,
     // `xs == xs` locked the same non-reentrant Mutex twice and deadlocked.
@@ -1838,11 +2017,11 @@ fn values_equal_inner(a: &Value, b: &Value, seen: &mut collections::FxHashSet<(u
         (Float(x), Int(y)) => int_float_eq(*y, *x),
         (Str(x), Str(y)) => x == y,
         (Option(x), Option(y)) => match (x, y) {
-            (Some(x), Some(y)) => values_equal_inner(x, y, seen),
+            (Some(x), Some(y)) => values_equal_inner(&x.0, &y.0, seen),
             (None, None) => true,
             _ => false,
         },
-        (Result(x), Result(y)) => match (x.as_ref(), y.as_ref()) {
+        (Result(x), Result(y)) => match (&x.0, &y.0) {
             (Ok(x), Ok(y)) => values_equal_inner(x, y, seen),
             (Err(x), Err(y)) => values_equal_inner(x, y, seen),
             _ => false,
@@ -1887,8 +2066,8 @@ fn values_equal_inner(a: &Value, b: &Value, seen: &mut collections::FxHashSet<(u
                     .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Tuple(x), Tuple(y)) => {
-            let xi = x.lock().unwrap().clone();
-            let yi = y.lock().unwrap().clone();
+            let xi = x.lock().unwrap().0.clone();
+            let yi = y.lock().unwrap().0.clone();
             xi.len() == yi.len()
                 && xi
                     .iter()
@@ -2182,6 +2361,10 @@ fn format_instance_slots(
 }
 
 fn display_value_inner(v: &Value, seen: &mut collections::FxHashSet<u64>) -> String {
+    let _guard = match enter_value_recursion() {
+        Some(g) => g,
+        None => return "…".to_string(),
+    };
     if let Some(id) = ref_id(v) {
         if !seen.insert(id) {
             return match v {
@@ -2300,7 +2483,7 @@ fn display_value_inner(v: &Value, seen: &mut collections::FxHashSet<u64>) -> Str
             format!("set{{{}}}", body)
         }
         Value::Tuple(t) => {
-            let items = t.lock().unwrap().clone();
+            let items = t.lock().unwrap().0.clone();
             let body = items
                 .iter()
                 .map(|it| display_value_inner(it, seen))
@@ -2432,10 +2615,10 @@ fn display_value_inner(v: &Value, seen: &mut collections::FxHashSet<u64>) -> Str
             format!("ref({})", display_value_inner(&inner, seen))
         }
         Value::Option(o) => match o {
-            Some(v) => format!("some({})", display_value_inner(v, seen)),
+            Some(v) => format!("some({})", display_value_inner(&v.0, seen)),
             None => "none".to_string(),
         },
-        Value::Result(r) => match r.as_ref() {
+        Value::Result(r) => match &r.0 {
             Ok(v) => format!("ok({})", display_value_inner(v, seen)),
             Err(v) => format!("err({})", display_value_inner(v, seen)),
         },
@@ -2556,6 +2739,10 @@ pub fn deep_clone(v: &Value) -> Value {
 /// reachable by two paths is shared in the copy rather than duplicated, which
 /// is what `copy.deepcopy`-style semantics call for.
 fn deep_clone_inner(v: &Value, memo: &mut collections::FxHashMap<u64, Value>) -> Value {
+    let _guard = match enter_value_recursion() {
+        Some(g) => g,
+        None => return v.clone(),
+    };
     use crate::value::collections as c;
     if let Some(id) = ref_id(v) {
         if let Some(done) = memo.get(&id) {
@@ -2683,11 +2870,11 @@ fn deep_clone_inner(v: &Value, memo: &mut collections::FxHashMap<u64, Value>) ->
             Value::Set(nd)
         }
         Value::Tuple(t) => {
-            let items = t.lock().unwrap().clone();
-            let nd = new_ref(Vec::<Value>::new());
+            let items = t.lock().unwrap().0.clone();
+            let nd = new_ref(TupleData::default());
             register!(Value::Tuple(nd.clone()));
             let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
-            *nd.lock().unwrap() = items;
+            nd.lock().unwrap().0 = items;
             Value::Tuple(nd)
         }
         Value::Bst(d) => {
@@ -2919,11 +3106,14 @@ fn deep_clone_inner(v: &Value, memo: &mut collections::FxHashMap<u64, Value>) ->
         | Value::MutexVal(_)
         | Value::AtomicInt(_)
         | Value::Database(_) => v.clone(),
-        Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, memo)))),
-        Value::Result(r) => Value::Result(Box::new(match r.as_ref() {
-            Ok(v) => Ok(deep_clone_inner(v, memo)),
-            Err(v) => Err(deep_clone_inner(v, memo)),
-        })),
+        Value::Option(o) => match o {
+            Some(v) => Value::some(deep_clone_inner(&v.0, memo)),
+            None => Value::Option(None),
+        },
+        Value::Result(r) => match &r.0 {
+            Ok(v) => Value::ok(deep_clone_inner(v, memo)),
+            Err(v) => Value::err(deep_clone_inner(v, memo)),
+        },
     }
 }
 
@@ -2993,5 +3183,187 @@ mod tests {
         }
         assert!(is_multithreaded());
         assert_eq!(*cell.lock().unwrap(), 15 + 8 * 500);
+    }
+
+    /// SEC-V3: deep nested values built at runtime must not abort a default
+    /// 2 MB thread stack in display / equality / deep_clone or teardown.
+    #[test]
+    fn deep_value_walks_are_bounded_on_2mb_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let deep = |n: usize| {
+                    let mut v = Value::Int(1);
+                    for _ in 0..n {
+                        v = collections::make_list(vec![v]);
+                    }
+                    v
+                };
+                let a = deep(20_000);
+                let s = display_value(&a);
+                assert!(!s.is_empty());
+                assert!(s.contains('…'), "expected elision marker in deep tail");
+
+                let b = deep(20_000);
+                let c = deep(20_000);
+                assert!(!values_equal(&b, &c));
+
+                let cloned = deep_clone(&b);
+                let s2 = display_value(&cloned);
+                assert!(!s2.is_empty());
+
+                // Degenerate ascending BST spine: iterative walk, iterative
+                // remove, and iterative Drop must stay safely within 2 MB.
+                let mut bst = collections::BstData::new();
+                for i in 0..10_000i64 {
+                    bst.insert(Value::Int(i)).unwrap();
+                }
+                assert_eq!(bst.inorder().len(), 10_000);
+                bst.remove(&Value::Int(9_999)).unwrap();
+                bst.remove(&Value::Int(0)).unwrap();
+                assert_eq!(bst.len, 9_998);
+                drop(bst);
+
+                // Long-key Trie: iterative all_words, iterative clear, and
+                // iterative Drop must stay safely within 2 MB.
+                let mut trie = collections::TrieData::new();
+                let long_word = "a".repeat(20_000);
+                trie.insert(&long_word).unwrap();
+                let words = trie.all_words();
+                assert_eq!(words.len(), 1);
+                assert_eq!(words[0].len(), 20_000);
+                trie.method("clear", &[]).unwrap();
+                assert_eq!(trie.count, 0);
+                trie.insert(&long_word).unwrap();
+                drop(trie);
+
+                // Nested LinkedList and alternating List -> BinTree -> List
+                // chains must not mutually recurse on teardown.
+                let mut ll_nested = Value::Int(1);
+                for _ in 0..5_000 {
+                    let mut ll = collections::ListData::linked();
+                    ll.push_back(ll_nested);
+                    ll_nested = Value::LinkedList(new_ref(ll));
+                }
+                drop(ll_nested);
+
+                let mut bt_nested = Value::Int(1);
+                for _ in 0..5_000 {
+                    let mut bt = collections::BinTreeData::new();
+                    bt.insert(bt_nested).unwrap();
+                    bt_nested = collections::make_list(vec![Value::BinTree(new_ref(bt))]);
+                }
+                drop(bt_nested);
+
+                // Audit A-6: 100k-deep Tuple, Option, Result (Ok/Err), and
+                // mixed alternating chains must build, clone, walk, and tear
+                // down safely within a 2 MB thread stack.
+                let mut tup = Value::Int(1);
+                for _ in 0..100_000 {
+                    tup = Value::tuple(vec![tup]);
+                }
+                assert!(display_value(&tup).contains('…'));
+                let tup_clone = deep_clone(&tup);
+                assert!(!display_value(&tup_clone).is_empty());
+                drop(tup_clone);
+                drop(tup);
+
+                let mut opt = Value::Int(1);
+                for _ in 0..100_000 {
+                    opt = Value::some(opt);
+                }
+                assert!(display_value(&opt).contains('…'));
+                let opt_shallow = opt.clone();
+                let opt_deep = deep_clone(&opt);
+                assert!(!values_equal(&opt, &opt_deep));
+                drop(opt_shallow);
+                drop(opt_deep);
+                drop(opt);
+
+                let mut res = Value::Int(1);
+                for i in 0..100_000 {
+                    res = if i % 2 == 0 {
+                        Value::ok(res)
+                    } else {
+                        Value::err(res)
+                    };
+                }
+                assert!(display_value(&res).contains('…'));
+                let res_deep = deep_clone(&res);
+                assert!(!values_equal(&res, &res_deep));
+                drop(res_deep);
+                drop(res);
+
+                let mut mixed = Value::Int(1);
+                for i in 0..100_000 {
+                    mixed = match i % 4 {
+                        0 => Value::tuple(vec![mixed]),
+                        1 => Value::some(mixed),
+                        2 => Value::ok(mixed),
+                        _ => collections::make_list(vec![mixed]),
+                    };
+                }
+                assert!(display_value(&mixed).contains('…'));
+                drop(mixed);
+
+                // Deep Channel and MutexVal chains must also tear down
+                // iteratively within a 2 MB thread stack.
+                let mut ch_chain = Value::Int(1);
+                for _ in 0..50_000 {
+                    let ch = crate::sched::ChannelData::new();
+                    ch.send(ch_chain);
+                    ch_chain = Value::Channel(Arc::new(ch));
+                }
+                drop(ch_chain);
+
+                let mut mu_chain = Value::Int(1);
+                for _ in 0..50_000 {
+                    mu_chain = Value::MutexVal(Arc::new(crate::sched::MutexData::new(mu_chain)));
+                }
+                drop(mu_chain);
+            })
+            .expect("spawn 2 MB test thread")
+            .join()
+            .expect("deep value walks must not overflow 2 MB stack");
+    }
+
+    /// Audit A-6 GC soundness: Arc-backed Option/Result cells shared across
+    /// multiple containers must never over-count internal edges (never sweep a
+    /// live root) and must still allow closed cycles through Option/Result to
+    /// be reclaimed.
+    #[test]
+    fn option_and_result_gc_cycles_and_shared_roots_are_sound() {
+        // 1. Live root reached through a shared Option cell must survive collect().
+        let a = collections::make_list(vec![Value::Int(42)]);
+        let o = Value::some(a.clone());
+        let b = collections::make_list(vec![o.clone()]);
+        let c = collections::make_list(vec![o.clone()]);
+        if let Value::List(ref la) = a {
+            la.lock().unwrap().push_item(b.clone());
+            la.lock().unwrap().push_item(c.clone());
+        }
+        drop(o);
+        drop(b);
+        drop(c);
+        // `a` is still live on our stack; GC must NOT clear `a`.
+        let _ = gc::collect();
+        if let Value::List(ref la) = a {
+            assert_eq!(la.lock().unwrap().len(), 3, "live root was swept!");
+        }
+        drop(a);
+        // Now the whole cycle is unreachable; GC must reclaim it.
+        let swept = gc::collect();
+        assert!(swept >= 1, "expected cycle through Option to be swept");
+
+        // 2. Closed cycle through Result is also reclaimed.
+        {
+            let x = collections::make_list(vec![]);
+            let r = Value::ok(x.clone());
+            if let Value::List(ref lx) = x {
+                lx.lock().unwrap().push_item(r);
+            }
+        }
+        let swept_res = gc::collect();
+        assert!(swept_res >= 1, "expected cycle through Result to be swept");
     }
 }

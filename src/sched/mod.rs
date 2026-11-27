@@ -288,6 +288,10 @@ impl ChannelData {
                 if current_task_cancelled() {
                     return Err("task cancelled".to_string());
                 }
+                // SEC-V2: enforce armed wall-clock deadlines while parked.
+                if let Some(msg) = crate::budget::active_wall_message() {
+                    return Err(msg);
+                }
                 let _blocked = enter_blocked();
                 let (guard, _timeout) = self
                     .cv
@@ -295,6 +299,14 @@ impl ChannelData {
                     .unwrap();
                 q = guard;
             }
+        }
+        // SEC-V2: close the exit race where a sender wakes the channel right as
+        // (or after) the wall-clock deadline expires — fail without consuming
+        // the queued item, passing any wakeup along.
+        if let Some(msg) = crate::budget::active_wall_message() {
+            drop(q);
+            self.cv.notify_one();
+            return Err(msg);
         }
         Ok(q.pop_front().unwrap())
     }
@@ -309,6 +321,24 @@ impl ChannelData {
 
     pub fn is_empty(&self) -> bool {
         self.queue.lock().unwrap().is_empty()
+    }
+
+    /// Drain all queued values without recursing (used by iterative teardown).
+    pub(crate) fn take_all(&self) -> Vec<Value> {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *q).into_iter().collect()
+    }
+}
+
+impl Drop for ChannelData {
+    fn drop(&mut self) {
+        let items: Vec<Value> = {
+            let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *q).into_iter().collect()
+        };
+        if !items.is_empty() {
+            crate::value::collections::drop_iteratively(items);
+        }
     }
 }
 
@@ -374,10 +404,35 @@ impl MutexData {
         if state.locked {
             ensure_deadlock_watchdog();
             let _untimed = enter_untimed_park();
+            // SEC-V2: time-slice while a wall-clock deadline is armed so a
+            // parked `mu.lock()` cannot outwait the deadline.
+            let mut sliced = false;
             while state.locked {
-                let _blocked = enter_blocked();
-                state = self.cv.wait(state).unwrap();
+                if !sliced && !crate::budget::active_wall_armed() {
+                    let _blocked = enter_blocked();
+                    state = self.cv.wait(state).unwrap();
+                } else {
+                    sliced = true;
+                    if let Some(msg) = crate::budget::active_wall_message() {
+                        return Err(msg);
+                    }
+                    let _blocked = enter_blocked();
+                    let (guard, _timeout) = self
+                        .cv
+                        .wait_timeout(state, std::time::Duration::from_millis(50))
+                        .unwrap();
+                    state = guard;
+                }
             }
+        }
+        // SEC-V2: close the exit race where the holder dies at the wall-clock
+        // deadline and releases the mutex, waking this waiter right after
+        // expiry. Check before setting `state.locked = true` so the lock is
+        // never leaked, and pass the wakeup along to any other waiter.
+        if let Some(msg) = crate::budget::active_wall_message() {
+            drop(state);
+            self.cv.notify_one();
+            return Err(msg);
         }
         state.locked = true;
         state.owner = Some(me);
@@ -418,6 +473,21 @@ impl MutexData {
     /// Overwrite the inner value while the caller already holds the lock.
     pub fn set_locked(&self, v: Value) {
         *self.value.lock().unwrap() = v;
+    }
+
+    /// Extract the inner value without recursing (used by iterative teardown).
+    pub(crate) fn take_value(&self) -> Value {
+        let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::replace(&mut *g, Value::Null)
+    }
+}
+
+impl Drop for MutexData {
+    fn drop(&mut self) {
+        let v = self.take_value();
+        if !crate::value::is_scalar(&v) {
+            crate::value::collections::drop_iteratively(vec![v]);
+        }
     }
 }
 
@@ -523,10 +593,32 @@ impl TaskHandle {
             // The joined task is the only thing that can end this wait, so it
             // counts as an untimed park for the deadlock watchdog.
             let _untimed = enter_untimed_park();
+            // SEC-V2: time-slice when a wall-clock deadline is armed so
+            // `t.join()` on a wedged task cannot outwait the deadline.
+            let mut sliced = false;
             while r.is_none() {
-                let _blocked = enter_blocked();
-                r = self.state.cv.wait(r).unwrap();
+                if !sliced && !crate::budget::active_wall_armed() {
+                    let _blocked = enter_blocked();
+                    r = self.state.cv.wait(r).unwrap();
+                } else {
+                    sliced = true;
+                    if let Some(msg) = crate::budget::active_wall_message() {
+                        return Err(msg);
+                    }
+                    let _blocked = enter_blocked();
+                    let (guard, _timeout) = self
+                        .state
+                        .cv
+                        .wait_timeout(r, std::time::Duration::from_millis(50))
+                        .unwrap();
+                    r = guard;
+                }
             }
+        }
+        // SEC-V2: close the exit race where the joined task finishes right as
+        // (or after) the wall-clock deadline expires.
+        if let Some(msg) = crate::budget::active_wall_message() {
+            return Err(msg);
         }
         r.as_ref().unwrap().result.clone()
     }
@@ -995,12 +1087,28 @@ impl Scheduler {
         }
         self.grow_for_queue();
         let mut q = self.inner.queue.lock().unwrap();
+        let mut sliced = false;
         while q.len() >= self.inner.queue_cap {
-            q = self
-                .inner
-                .space_cv
-                .wait(q)
-                .unwrap_or_else(|e| e.into_inner());
+            if !sliced && !crate::budget::active_wall_armed() {
+                q = self
+                    .inner
+                    .space_cv
+                    .wait(q)
+                    .unwrap_or_else(|e| e.into_inner());
+            } else {
+                sliced = true;
+                if crate::budget::active_wall_exceeded() {
+                    // Wall-clock already expired; stop waiting so the caller
+                    // returns to the engine poll and aborts cleanly.
+                    break;
+                }
+                let (guard, _timeout) = self
+                    .inner
+                    .space_cv
+                    .wait_timeout(q, std::time::Duration::from_millis(50))
+                    .unwrap_or_else(|e| e.into_inner());
+                q = guard;
+            }
         }
         q.push_back(job.take().expect("job"));
         drop(q);
@@ -1411,16 +1519,43 @@ fn env_or_cfg_usize(env_key: &str, cfg_key: &str, default: usize) -> usize {
 }
 
 /// Sleep for `ms` milliseconds. A Spid3r-level call, not a shell command.
-pub fn sleep_ms(ms: i64) {
+///
+/// SEC-V2: when a wall-clock deadline is armed, the sleep is time-sliced
+/// (50 ms) and returns the formatted wall-clock error on expiry; without an
+/// armed deadline it performs a single sleep as before. Uses `checked_add` so
+/// extreme `ms` values (e.g. `i64::MAX`) cannot panic on `Instant` overflow.
+pub fn sleep_ms(ms: i64) -> Result<(), String> {
     if ms > 0 {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // A sleeping thread cannot mutate values, so it must not hold a
             // concurrent `gc_collect()` back (see `gc_quiescent`).
             let _blocked = enter_blocked();
-            thread::sleep(std::time::Duration::from_millis(ms as u64));
+            if !crate::budget::active_wall_armed() {
+                thread::sleep(std::time::Duration::from_millis(ms as u64));
+            } else {
+                let deadline = std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(ms as u64));
+                loop {
+                    if let Some(msg) = crate::budget::active_wall_message() {
+                        return Err(msg);
+                    }
+                    let slice = match deadline {
+                        Some(dl) => {
+                            let now = std::time::Instant::now();
+                            if now >= dl {
+                                break;
+                            }
+                            (dl - now).min(std::time::Duration::from_millis(50))
+                        }
+                        None => std::time::Duration::from_millis(50),
+                    };
+                    thread::sleep(slice);
+                }
+            }
         }
     }
+    Ok(())
 }
 
 /// Monotonic millisecond clock — milliseconds since an arbitrary fixed point
@@ -1448,5 +1583,69 @@ pub fn now_ms() -> i64 {
         // the value non-decreasing, starting at 0 like the native origin.
         static START_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
         START_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod wall_race_tests {
+    use super::*;
+
+    #[test]
+    fn waits_fail_after_wall_expiry_without_leaking_lock_or_consuming_channel() {
+        // Serialize with `budget::tests` because `WallClock::new` /
+        // `ActiveLimitGuard` share the process-global active-wall slot.
+        let _serial = crate::budget::tests::LIMIT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Snapshot the prior global limit slot BEFORE `WallClock::new(1)`
+        // mutates it so no expired deadline leaks to sibling unit tests.
+        let _restore = crate::budget::ActiveLimitGuard::clear_for_test();
+        let wc = crate::budget::WallClock::new(1);
+        let _guard = crate::budget::ActiveLimitGuard::enter(None, Some(&wc), None);
+        thread::sleep(std::time::Duration::from_millis(15));
+        assert!(wc.exceeded());
+
+        // 1. MutexData::lock must return wall-clock Err without acquiring/leaking the lock.
+        let mu = MutexData::new(Value::Int(7));
+        let err = mu.lock().unwrap_err();
+        assert!(err.contains("wall-clock limit exceeded"), "{err}");
+        // Disarm the wall clock explicitly; locking now must succeed
+        // immediately (proving the lock was not leaked).
+        {
+            let _unarmed = crate::budget::ActiveLimitGuard::clear_for_test();
+            assert_eq!(
+                match mu.lock().unwrap() {
+                    Value::Int(n) => n,
+                    _ => -1,
+                },
+                7
+            );
+            mu.unlock();
+        }
+
+        // 2. ChannelData::recv_checked must return wall-clock Err without popping the item.
+        let ch = ChannelData::new();
+        ch.send(Value::Int(99));
+        let err = ch.recv_checked().unwrap_err();
+        assert!(err.contains("wall-clock limit exceeded"), "{err}");
+        assert_eq!(
+            ch.len(),
+            1,
+            "expired recv_checked must not drop queued item"
+        );
+
+        // 3. TaskHandle::join must return wall-clock Err even if task already completed.
+        let state = Arc::new(TaskState {
+            result: Mutex::new(Some(TaskOutcome {
+                result: Ok(Value::Int(123)),
+                thrown: None,
+            })),
+            cv: Condvar::new(),
+            cancelled: AtomicBool::new(false),
+        });
+        let handle = TaskHandle { id: 1, state };
+        let err = handle.join().unwrap_err();
+        assert!(err.contains("wall-clock limit exceeded"), "{err}");
+        drop(_guard);
     }
 }

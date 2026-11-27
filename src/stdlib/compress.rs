@@ -11,7 +11,7 @@
 //! Natives: `deflate`/`inflate` (raw), `gzip_compress`/`gunzip`,
 //! `zlib_compress`/`unzlib`, plus the checksums `crc32`/`adler32`.
 
-pub use super::deflate::{deflate_raw, inflate_raw};
+pub use super::deflate::{deflate_raw, inflate_raw, inflate_raw_with_limit};
 use crate::value::{new_ref, NativeCtx, Value};
 
 // ------------------------------------------------------------------ checksums
@@ -108,7 +108,7 @@ pub fn gunzip_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
         return Err("gunzip: truncated header".to_string());
     }
     let body = &data[pos..];
-    let out = inflate_raw(body)?;
+    let out = inflate_raw_with_limit(body, effective_inflate_limit())?;
     // Trailer: CRC32 + ISIZE, little endian, last 8 bytes.
     if data.len() >= 8 {
         let tail = &data[data.len() - 8..];
@@ -157,7 +157,7 @@ pub fn unzlib_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
     if flg & 0x20 != 0 {
         return Err("unzlib: preset dictionaries are not supported".to_string());
     }
-    let out = inflate_raw(&data[2..])?;
+    let out = inflate_raw_with_limit(&data[2..], effective_inflate_limit())?;
     if data.len() >= 4 {
         let tail = &data[data.len() - 4..];
         let want = u32::from_be_bytes([tail[0], tail[1], tail[2], tail[3]]);
@@ -276,7 +276,24 @@ pub fn zip_create(entries: &[ZipEntry]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// SEC-D2 (audit fix): cumulative output ceiling across all entries in a
+/// single `zip_read` call. Individual entries are already capped at 256 MB in
+/// `deflate::MAX_OUTPUT`; this prevents a multi-entry zip bomb from demanding
+/// unbounded memory across entries.
+const ZIP_TOTAL_OUTPUT: usize = 1024 * 1024 * 1024;
+
+/// Audit A-7: tie decompression output caps to `memory.allocation_cap_mb` and
+/// `runtime.memory_limit_mb`, bounded above by `deflate::MAX_OUTPUT` (256 MiB).
+fn effective_inflate_limit() -> usize {
+    crate::budget::effective_single_allocation_cap().min(crate::stdlib::deflate::MAX_OUTPUT)
+}
+
 pub fn zip_read(data: &[u8]) -> Result<Vec<ZipEntry>, String> {
+    let total = ZIP_TOTAL_OUTPUT.min(effective_inflate_limit().saturating_mul(4));
+    zip_read_with_limit(data, total)
+}
+
+fn zip_read_with_limit(data: &[u8], total_limit: usize) -> Result<Vec<ZipEntry>, String> {
     if data.len() < 22 {
         return Err("zip: input is too short to be an archive".to_string());
     }
@@ -297,11 +314,15 @@ pub fn zip_read(data: &[u8]) -> Result<Vec<ZipEntry>, String> {
     let count = rd_u16(data, eocd + 10)? as usize;
     let cd_size = rd_u32(data, eocd + 12)? as usize;
     let cd_off = rd_u32(data, eocd + 16)? as usize;
-    if cd_off + cd_size > data.len() {
+    if cd_off
+        .checked_add(cd_size)
+        .is_none_or(|end| end > data.len())
+    {
         return Err("zip: central directory runs past the end of the file".to_string());
     }
     let mut pos = cd_off;
-    let mut out = Vec::with_capacity(count);
+    let mut out = Vec::with_capacity(count.min(cd_size / 46));
+    let mut total_inflated: usize = 0;
     for _ in 0..count {
         if rd_u32(data, pos)? != 0x0201_4b50 {
             return Err("zip: bad central-directory signature".to_string());
@@ -314,27 +335,60 @@ pub fn zip_read(data: &[u8]) -> Result<Vec<ZipEntry>, String> {
         let elen = rd_u16(data, pos + 30)? as usize;
         let clen = rd_u16(data, pos + 32)? as usize;
         let loff = rd_u32(data, pos + 42)? as usize;
-        let name_start = pos + 46;
-        if name_start + nlen > data.len() {
+        let name_start = pos
+            .checked_add(46)
+            .ok_or_else(|| "zip: entry offset overflow".to_string())?;
+        if name_start
+            .checked_add(nlen)
+            .is_none_or(|end| end > data.len())
+        {
             return Err("zip: truncated entry name".to_string());
         }
         let name = String::from_utf8_lossy(&data[name_start..name_start + nlen]).to_string();
 
+        // Pre-check declared uncompressed size against cumulative archive cap
+        // before allocating or inflating.
+        if total_inflated.saturating_add(usize_) > total_limit {
+            return Err(format!(
+                "zip: total decompressed size exceeds the {} byte limit",
+                total_limit
+            ));
+        }
+
         // The local header repeats the name and may add an extra field; the
         // payload starts after both.
-        let l_nlen = rd_u16(data, loff + 26)? as usize;
-        let l_elen = rd_u16(data, loff + 28)? as usize;
-        let start = loff + 30 + l_nlen + l_elen;
-        if start + csize > data.len() {
+        let l_nlen = rd_u16(data, loff.saturating_add(26))? as usize;
+        let l_elen = rd_u16(data, loff.saturating_add(28))? as usize;
+        let start = loff
+            .checked_add(30)
+            .and_then(|v| v.checked_add(l_nlen))
+            .and_then(|v| v.checked_add(l_elen))
+            .ok_or_else(|| format!("zip: entry '{}' header offset overflow", name))?;
+        if start.checked_add(csize).is_none_or(|end| end > data.len()) {
             return Err(format!(
                 "zip: entry '{}' runs past the end of the file",
                 name
             ));
         }
         let body = &data[start..start + csize];
+        let entry_limit = effective_inflate_limit().min(total_limit.saturating_sub(total_inflated));
         let content = match method {
-            0 => body.to_vec(),
-            8 => inflate_raw(body)?,
+            0 => {
+                if csize != usize_ {
+                    return Err(format!(
+                        "zip: entry '{}' size mismatch (stored {}, got {})",
+                        name, usize_, csize
+                    ));
+                }
+                if csize > entry_limit {
+                    return Err(format!(
+                        "zip: total decompressed size exceeds the {} byte limit",
+                        total_limit
+                    ));
+                }
+                body.to_vec()
+            }
+            8 => inflate_raw_with_limit(body, entry_limit)?,
             other => {
                 return Err(format!(
                     "zip: entry '{}' uses unsupported method {}",
@@ -350,6 +404,13 @@ pub fn zip_read(data: &[u8]) -> Result<Vec<ZipEntry>, String> {
                 content.len()
             ));
         }
+        total_inflated = total_inflated.saturating_add(content.len());
+        if total_inflated > total_limit {
+            return Err(format!(
+                "zip: total decompressed size exceeds the {} byte limit",
+                total_limit
+            ));
+        }
         if crc32_bytes(&content) != crc {
             return Err(format!("zip: entry '{}' failed its CRC check", name));
         }
@@ -357,7 +418,11 @@ pub fn zip_read(data: &[u8]) -> Result<Vec<ZipEntry>, String> {
             name,
             data: content,
         });
-        pos = name_start + nlen + elen + clen;
+        pos = name_start
+            .checked_add(nlen)
+            .and_then(|v| v.checked_add(elen))
+            .and_then(|v| v.checked_add(clen))
+            .ok_or_else(|| "zip: central directory offset overflow".to_string())?;
     }
     Ok(out)
 }
@@ -416,7 +481,10 @@ fn n_inflate(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         return Err(format!("inflate expects 1 argument, got {}", args.len()));
     }
     let data = input_bytes(&args[0], "inflate")?;
-    Ok(ok_result(inflate_raw(&data)))
+    Ok(ok_result(inflate_raw_with_limit(
+        &data,
+        effective_inflate_limit(),
+    )))
 }
 
 fn n_gzip_compress(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -684,5 +752,68 @@ mod tests {
         let last = packed.len() - 5;
         packed[last] ^= 0xFF;
         assert!(gunzip_bytes(&packed).is_err());
+    }
+
+    /// SEC-D2: multi-entry archives whose cumulative decompressed size exceeds
+    /// the total output cap must be rejected cleanly.
+    #[test]
+    fn zip_read_rejects_cumulative_size_over_cap() {
+        let entries: Vec<ZipEntry> = (0..5)
+            .map(|i| ZipEntry {
+                name: format!("f{}.bin", i),
+                data: vec![b'A'; 300],
+            })
+            .collect();
+        let archive = zip_create(&entries).unwrap();
+        // 5 * 300 = 1500 bytes: allowed at limit 1500, rejected at limit 1000.
+        assert_eq!(zip_read_with_limit(&archive, 1500).unwrap().len(), 5);
+        let err = match zip_read_with_limit(&archive, 1000) {
+            Err(e) => e,
+            Ok(_) => panic!("archive over cumulative cap must fail"),
+        };
+        assert!(
+            err.contains("total decompressed size exceeds"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn inflate_with_smaller_limit_rejects_early() {
+        let data = vec![b'Z'; 8192];
+        let packed = deflate_raw(&data);
+        assert_eq!(inflate_raw_with_limit(&packed, 8192).unwrap(), data);
+        let err = inflate_raw_with_limit(&packed, 4096).expect_err("limit 4096 must reject 8192");
+        assert!(err.contains("4096 byte limit"), "unexpected: {}", err);
+
+        let gz = gzip_compress_bytes(&data);
+        assert_eq!(
+            inflate_raw_with_limit(&gz[10..gz.len() - 8], 8192).unwrap(),
+            data
+        );
+        assert!(inflate_raw_with_limit(&gz[10..gz.len() - 8], 1024).is_err());
+    }
+
+    #[test]
+    fn zip_read_rejects_stored_entry_whose_csize_lies_against_usize() {
+        // Incompressible payload forces `zip_create` to emit `method = 0` (stored).
+        let incompressible: Vec<u8> = (0..64u8).collect();
+        let mut archive = zip_create(&[ZipEntry {
+            name: "a.bin".to_string(),
+            data: incompressible,
+        }])
+        .unwrap();
+        // Zero out `usize_` (offset 24 inside the central directory record) so
+        // the pre-check sees `usize_ == 0` while `csize == 64`.
+        let cd_pos = archive
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x01, 0x02])
+            .unwrap();
+        archive[cd_pos + 24..cd_pos + 28].copy_from_slice(&0u32.to_le_bytes());
+        let err = match zip_read_with_limit(&archive, 32) {
+            Err(e) => e,
+            Ok(_) => panic!("stored csize/usize lie must fail"),
+        };
+        assert!(err.contains("size mismatch"), "unexpected: {err}");
     }
 }

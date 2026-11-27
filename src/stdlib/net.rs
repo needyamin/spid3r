@@ -1094,9 +1094,13 @@ pub(crate) fn n_tls_listen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, 
             ))
         }
     };
-    let der = match std::fs::read(&cert_path) {
+    if crate::stdlib::sandbox_armed() || crate::stdlib::fs_policy::policy().deny_filesystem {
+        return Err("sandboxed: filesystem access denied".to_string());
+    }
+    crate::stdlib::fs_policy::check_path(&cert_path)?;
+    let der = match crate::stdlib::read_file_bytes_capped(&cert_path, WHO) {
         Ok(b) => b,
-        Err(e) => return err(format!("{} '{}': {}", WHO, cert_path, e)),
+        Err(e) => return err(e),
     };
     let trimmed = match der.iter().position(|b| !b.is_ascii_whitespace()) {
         Some(i) => &der[i..],
@@ -2006,13 +2010,16 @@ fn ws_accept_key(key: &str) -> String {
     crate::stdlib::base64_encode_bytes(&sha1(material.as_bytes()), crate::stdlib::B64_STD, true)
 }
 
-/// A fresh 16-byte client key, base64-encoded.
-fn ws_client_key() -> String {
+/// A fresh 16-byte client key drawn from the OS CSPRNG, base64-encoded
+/// (RFC 6455 §4.1).
+fn ws_client_key() -> Result<String, String> {
     let mut raw = [0u8; 16];
-    for b in raw.iter_mut() {
-        *b = (crate::stdlib::next_random() & 0xff) as u8;
-    }
-    crate::stdlib::base64_encode_bytes(&raw, crate::stdlib::B64_STD, true)
+    crate::stdlib::entropy::fill_random(&mut raw)?;
+    Ok(crate::stdlib::base64_encode_bytes(
+        &raw,
+        crate::stdlib::B64_STD,
+        true,
+    ))
 }
 
 /// Read exactly `n` bytes from a connection, honoring the probe's pending
@@ -2087,6 +2094,13 @@ fn ws_conn(id: i64, who: &str) -> Result<Arc<Conn>, String> {
 
 /// Parse `ws://host[:port]/path` or `wss://host[:port]/path`.
 fn parse_ws_url(url: &str) -> Result<(bool, String, String, String), String> {
+    // SEC-F6: reject ASCII control characters (CR/LF/NUL/etc.) up front so
+    // handshake headers cannot be injected via the URL.
+    if url.chars().any(|c| c.is_ascii_control()) {
+        return Err(
+            "ws_connect: URL contains control characters (possible header injection)".to_string(),
+        );
+    }
     let (secure, rest) = if let Some(r) = url.strip_prefix("ws://") {
         (false, r)
     } else if let Some(r) = url.strip_prefix("wss://") {
@@ -2185,8 +2199,11 @@ fn build_tls_connector(
     };
     let mut builder = native_tls::TlsConnector::builder();
     if let Some(ref path) = opts.ca_cert {
+        if crate::stdlib::sandbox_armed() || crate::stdlib::fs_policy::policy().deny_filesystem {
+            return Err("sandboxed: filesystem access denied".to_string());
+        }
         crate::stdlib::fs_policy::check_path(path)?;
-        let bytes = std::fs::read(path).map_err(|e| format!("{} '{}': {}", who, path, e))?;
+        let bytes = crate::stdlib::read_file_bytes_capped(path, who)?;
         let pem_certs = native_tls::Certificate::stack_from_pem(&bytes)
             .map_err(|e| format!("{} '{}': invalid PEM certificate: {}", who, path, e))?;
         if !pem_certs.is_empty() {
@@ -2235,7 +2252,7 @@ fn n_ws_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let url = want_str(&args[0], WHO)?;
     let tls_opts = parse_tls_client_opts(args.get(1), WHO)?;
     let (secure, host, host_port, path) = parse_ws_url(&url)?;
-    let key = ws_client_key();
+    let key = ws_client_key()?;
     let conn = if secure {
         #[cfg(feature = "tls")]
         {
@@ -2391,7 +2408,7 @@ fn read_ws_frame(conn: &Conn) -> Result<(bool, u8, Vec<u8>), String> {
 /// Build one WebSocket frame. `masked` MUST be true only for client→server
 /// frames (RFC 6455 §5.1: the server never masks; a compliant client closes
 /// the connection when it sees a masked server frame).
-fn build_ws_frame(opcode: u8, payload: &[u8], masked: bool) -> Vec<u8> {
+fn build_ws_frame(opcode: u8, payload: &[u8], masked: bool) -> Result<Vec<u8>, String> {
     let mut out = vec![0x80 | opcode];
     let len = payload.len();
     if len < 126 {
@@ -2405,19 +2422,15 @@ fn build_ws_frame(opcode: u8, payload: &[u8], masked: bool) -> Vec<u8> {
     }
     if !masked {
         out.extend_from_slice(payload);
-        return out;
+        return Ok(out);
     }
-    let mask = [
-        (crate::stdlib::next_random() & 0xff) as u8,
-        (crate::stdlib::next_random() & 0xff) as u8,
-        (crate::stdlib::next_random() & 0xff) as u8,
-        (crate::stdlib::next_random() & 0xff) as u8,
-    ];
+    let mut mask = [0u8; 4];
+    crate::stdlib::entropy::fill_random(&mut mask)?;
     out.extend_from_slice(&mask);
     for (i, b) in payload.iter().enumerate() {
         out.push(b ^ mask[i % 4]);
     }
-    out
+    Ok(out)
 }
 
 /// `ws_send(handle, text)` -> `ok(bytes_written)`. Sends one text frame.
@@ -2427,7 +2440,7 @@ fn n_ws_send(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let id = want_int(&args[0], WHO)?;
     let text = want_str(&args[1], WHO)?;
     let conn = ws_conn(id, WHO)?;
-    let frame = build_ws_frame(1, text.as_bytes(), ws_masks_frames(&conn));
+    let frame = build_ws_frame(1, text.as_bytes(), ws_masks_frames(&conn))?;
     let mut s = write_half(&conn);
     match s.write_all(&frame).and_then(|_| s.flush()) {
         Ok(()) => ok(Value::Int(frame.len() as i64)),
@@ -2455,7 +2468,7 @@ fn n_ws_send_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
         }
     };
     let conn = ws_conn(id, WHO)?;
-    let frame = build_ws_frame(2, &data, ws_masks_frames(&conn));
+    let frame = build_ws_frame(2, &data, ws_masks_frames(&conn))?;
     let mut s = write_half(&conn);
     match s.write_all(&frame).and_then(|_| s.flush()) {
         Ok(()) => ok(Value::Int(frame.len() as i64)),
@@ -2491,7 +2504,7 @@ fn n_ws_recv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             }
             9 => {
                 // ping: answer with a pong and keep reading
-                let pong = build_ws_frame(10, &payload, ws_masks_frames(&conn));
+                let pong = build_ws_frame(10, &payload, ws_masks_frames(&conn))?;
                 let mut s = write_half(&conn);
                 let _ = s.write_all(&pong).and_then(|_| s.flush());
                 continue;
@@ -2499,7 +2512,7 @@ fn n_ws_recv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             10 => continue,
             8 => {
                 // close: acknowledge and report end-of-stream
-                let ack = build_ws_frame(8, &[], ws_masks_frames(&conn));
+                let ack = build_ws_frame(8, &[], ws_masks_frames(&conn))?;
                 let mut s = write_half(&conn);
                 let _ = s.write_all(&ack).and_then(|_| s.flush());
                 return ok(Value::Null);
@@ -2527,8 +2540,9 @@ fn n_ws_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         // Write the close frame and shut down through the write half: this
         // must not block behind a task parked in ws_recv on the same
         // connection (shutdown on the cloned fd hits the same socket).
+        let frame = build_ws_frame(8, &[], ws_masks_frames(&conn))?;
         let mut s = write_half(&conn);
-        let _ = s.write_all(&build_ws_frame(8, &[], ws_masks_frames(&conn)));
+        let _ = s.write_all(&frame);
         let _ = s.flush();
         let _ = s.shutdown(Shutdown::Both);
     }
@@ -4121,5 +4135,13 @@ mod tests {
             assert_eq!(s.len(), 29, "unexpected HTTP date length: {}", s);
             assert!(s.ends_with(" GMT"), "unexpected HTTP date suffix: {}", s);
         });
+    }
+
+    #[test]
+    fn parse_ws_url_rejects_control_characters() {
+        let err = parse_ws_url("ws://127.0.0.1:8080/chat\r\nX-Injected: 1")
+            .expect_err("CRLF in ws URL must be rejected");
+        assert!(err.contains("control characters"), "unexpected: {}", err);
+        assert!(parse_ws_url("wss://example.com:443/ws").is_ok());
     }
 }

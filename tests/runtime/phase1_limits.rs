@@ -585,3 +585,83 @@ fn tree_and_vm_produce_identical_stdout() {
         assert_eq!(outs[0], outs[1], "stdout must match for {path}");
     }
 }
+
+/// Audit H-3 exit race: when `mu.lock()`, `t.join()`, or `ch.recv()` is the
+/// last statement of `main()` and its wait exits right as the wall-clock
+/// deadline expires (e.g. a lock holder dies at the deadline and releases `mu`),
+/// both `--engine tree` and `--engine vm` must fail with exit code 1 and the
+/// wall-clock diagnostic instead of exiting 0.
+#[test]
+fn wall_clock_exit_race_on_mutex_join_recv_fails_on_both_engines() {
+    let dir = scratch_dir("wall_exit_race");
+
+    // 1. Mutex holder dies at deadline and releases `mu`; `mu.lock()` is the
+    //    final statement of `main()`.
+    let mutex_race = write_in(
+        &dir,
+        "mutex_last.matrix",
+        r#"fn main() {
+    let mu = mutex(0);
+    let ready = channel();
+    spawn fn() {
+        mu.lock();
+        ready.send(1);
+        sleep_ms(10000);
+    };
+    ready.recv();
+    mu.lock();
+}
+"#,
+    );
+
+    // 2. Joined task blocks past deadline; `t.join()` is the final statement.
+    let join_race = write_in(
+        &dir,
+        "join_last.matrix",
+        r#"fn main() {
+    let ch = channel();
+    let t = spawn fn() {
+        ch.recv();
+    };
+    t.join();
+}
+"#,
+    );
+
+    // 3. Channel recv blocks past deadline; `ch.recv()` is the final statement.
+    let recv_race = write_in(
+        &dir,
+        "recv_last.matrix",
+        r#"fn main() {
+    let ch = channel();
+    let t = spawn fn() {
+        sleep_ms(10000);
+        ch.send(1);
+    };
+    ch.recv();
+}
+"#,
+    );
+
+    for (label, path) in [
+        ("mutex_last", mutex_race.as_str()),
+        ("join_last", join_race.as_str()),
+        ("recv_last", recv_race.as_str()),
+    ] {
+        for engine in ["tree", "vm"] {
+            let (code, _out, err) = run_with_engine(
+                engine,
+                &[("SPID3R_RUNTIME_WALL_CLOCK_LIMIT_MS", "250")],
+                &["run", path],
+            );
+            assert_eq!(
+                code, 1,
+                "[{engine}:{label}] wall-clock exit race must exit 1, got {code}; stderr={err}"
+            );
+            assert!(
+                err.contains("wall-clock limit exceeded (250 ms)"),
+                "[{engine}:{label}] missing wall-clock diagnostic: {err}"
+            );
+        }
+    }
+}

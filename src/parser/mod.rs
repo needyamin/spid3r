@@ -12,6 +12,16 @@ use std::sync::Arc;
 /// spawned thread, and the size the test suite runs on. At 96 the parser sat on
 /// the edge (adding one precedence level overflowed it), so 64 leaves room.
 const MAX_PARSE_DEPTH: usize = 64;
+/// SEC-D1 (audit fix): maximum AST height of an expression chain. Left-associative
+/// operator/postfix loops and interpolated-string folds are iterative, so
+/// `MAX_PARSE_DEPTH` does not bound the depth of the AST tree they construct.
+/// Every downstream pass (semantic checker, lowerer, bytecode compiler, tree
+/// interpreter, Drop glue) recurses one stack frame per AST level, so an
+/// unbounded chain aborts the host with an uncatchable stack overflow.
+/// Tracking the exact AST height across operator loops, postfix loops, unary
+/// chains, interpolated strings, and parenthesized/compound subexpressions
+/// guarantees no combination of nesting and chaining can exceed this bound.
+const MAX_EXPR_CHAIN: usize = 512;
 const MAX_PARSE_DIAGS: usize = 25;
 
 pub struct Parser {
@@ -25,6 +35,8 @@ pub struct Parser {
     /// `import "gen" as __gen` (see `crate::lower`'s generator rewrite).
     saw_yield: bool,
     depth: usize,
+    /// Exact AST height of the most recently parsed expression (SEC-D1).
+    expr_depth: usize,
     /// Depth of `if`-expression branch blocks. Inside one, a trailing
     /// expression may omit its `;`, because it is the branch's value:
     /// `let x = if (c) { 1 } else { 2 };`
@@ -56,6 +68,7 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
         saw_yield: false,
         pos: 0,
         depth: 0,
+        expr_depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
         recovering: false,
@@ -82,6 +95,7 @@ pub fn parse_recovering(toks: Vec<Token>) -> (Program, Vec<crate::diagnostics::D
         saw_yield: false,
         pos: 0,
         depth: 0,
+        expr_depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
         recovering: true,
@@ -118,6 +132,7 @@ pub(crate) fn hole_is_expression(raw: &str, depth: u32) -> bool {
         saw_yield: false,
         pos: 0,
         depth: crate::lexer::MAX_INTERP_DEPTH as usize,
+        expr_depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
         recovering: false,
@@ -157,6 +172,7 @@ pub fn parse_expression(src: &str, file: std::sync::Arc<str>) -> SpidResult<Expr
         saw_yield: false,
         pos: 0,
         depth: 0,
+        expr_depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
         recovering: false,
@@ -1824,6 +1840,26 @@ impl Parser {
 
     // ---- expressions ---------------------------------------------------
 
+    /// SEC-D1: exact AST expression-height error helper (cold + never-inlined
+    /// so checking `if depth > MAX_EXPR_CHAIN` adds zero `Result<(), Diagnostic>`
+    /// stack-frame overhead to each of the 13 precedence functions).
+    #[cold]
+    #[inline(never)]
+    fn chain_depth_err(&self) -> crate::diagnostics::Diagnostic {
+        err_at(
+            Phase::Parser,
+            self.span(),
+            format!("expression chain deeper than {} levels", MAX_EXPR_CHAIN),
+        )
+    }
+
+    fn check_expr_depth(&self, depth: usize) -> SpidResult<()> {
+        if depth > MAX_EXPR_CHAIN {
+            return Err(self.chain_depth_err());
+        }
+        Ok(())
+    }
+
     pub fn parse_expr(&mut self) -> SpidResult<Expr> {
         if self.depth >= MAX_PARSE_DEPTH {
             return Err(err_at(
@@ -1840,6 +1876,7 @@ impl Parser {
 
     fn parse_assign(&mut self) -> SpidResult<Expr> {
         let left = self.parse_coalesce_inline()?;
+        let ldepth = self.expr_depth;
         let op = match self.kind() {
             TokenKind::Assign => Some(AssignOp::Assign),
             TokenKind::PlusEq => Some(AssignOp::AddAssign),
@@ -1874,6 +1911,11 @@ impl Parser {
             let value_res = self.parse_assign();
             self.depth -= 1;
             let value = value_res?;
+            let depth = ldepth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
+            self.expr_depth = depth;
             let span = join(sp, value.span().clone());
             return Ok(Expr::Assign {
                 target: Box::new(left),
@@ -1893,9 +1935,14 @@ impl Parser {
     /// depth cap the parser was already close to a 2 MB thread's limit.
     fn parse_coalesce_inline(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_or()?;
+        let mut depth = self.expr_depth;
         while matches!(self.kind(), TokenKind::QuestionQuestion) {
             self.pos += 1;
             let right = self.parse_or()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Coalesce {
                 l: Box::new(left),
@@ -1903,14 +1950,20 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_or(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_and()?;
+        let mut depth = self.expr_depth;
         while self.at_kw(Keyword::Or) || self.at(&TokenKind::PipePipe) {
             self.pos += 1;
             let right = self.parse_and()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Logical {
                 op: LogOp::Or,
@@ -1919,14 +1972,20 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_and(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_bit_or()?;
+        let mut depth = self.expr_depth;
         while self.at_kw(Keyword::And) || self.at(&TokenKind::AmpAmp) {
             self.pos += 1;
             let right = self.parse_bit_or()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Logical {
                 op: LogOp::And,
@@ -1935,6 +1994,7 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
@@ -1944,36 +2004,55 @@ impl Parser {
 
     fn parse_bit_or(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_bit_xor()?;
+        let mut depth = self.expr_depth;
         while matches!(self.kind(), TokenKind::Pipe) {
             self.pos += 1;
             let right = self.parse_bit_xor()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             left = bit_call("bit_or", left, right);
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_bit_xor(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_bit_and()?;
+        let mut depth = self.expr_depth;
         while matches!(self.kind(), TokenKind::Caret) {
             self.pos += 1;
             let right = self.parse_bit_and()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             left = bit_call("bit_xor", left, right);
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_bit_and(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_cmp()?;
+        let mut depth = self.expr_depth;
         while matches!(self.kind(), TokenKind::Amp) {
             self.pos += 1;
             let right = self.parse_cmp()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             left = bit_call("bit_and", left, right);
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_shift(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_add()?;
+        let mut depth = self.expr_depth;
         loop {
             let name = match self.kind() {
                 TokenKind::Shl => "shl",
@@ -1982,13 +2061,19 @@ impl Parser {
             };
             self.pos += 1;
             let right = self.parse_add()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             left = bit_call(name, left, right);
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_cmp(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_shift()?;
+        let mut depth = self.expr_depth;
         loop {
             let op = match self.kind() {
                 TokenKind::EqEq => BinOp::Eq,
@@ -2001,6 +2086,10 @@ impl Parser {
             };
             self.pos += 1;
             let right = self.parse_shift()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Binary {
                 op,
@@ -2009,11 +2098,13 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_add(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_mul()?;
+        let mut depth = self.expr_depth;
         loop {
             let op = match self.kind() {
                 TokenKind::Plus => BinOp::Add,
@@ -2022,6 +2113,10 @@ impl Parser {
             };
             self.pos += 1;
             let right = self.parse_mul()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Binary {
                 op,
@@ -2030,11 +2125,13 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
     fn parse_mul(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_as()?;
+        let mut depth = self.expr_depth;
         loop {
             let op = match self.kind() {
                 TokenKind::Star => BinOp::Mul,
@@ -2044,6 +2141,10 @@ impl Parser {
             };
             self.pos += 1;
             let right = self.parse_as()?;
+            depth = depth.max(self.expr_depth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Binary {
                 op,
@@ -2052,6 +2153,7 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
@@ -2065,6 +2167,7 @@ impl Parser {
     /// are allowed.
     fn parse_as(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_unary()?;
+        let mut depth = self.expr_depth;
         while self.at_kw(Keyword::As) {
             self.pos += 1;
             let ty = match self.kind() {
@@ -2081,6 +2184,10 @@ impl Parser {
                 }
             };
             self.pos += 1;
+            depth += 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             let span = join(left.span().clone(), self.prev_span());
             left = Expr::Call {
                 callee: Box::new(Expr::Ident(ty, span.clone())),
@@ -2089,6 +2196,7 @@ impl Parser {
                 span,
             };
         }
+        self.expr_depth = depth;
         Ok(left)
     }
 
@@ -2111,12 +2219,22 @@ impl Parser {
         if self.at_kw(Keyword::Await) {
             self.pos += 1;
             let e = self.parse_unary()?;
+            let depth = self.expr_depth + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
+            self.expr_depth = depth;
             let span = join(sp, e.span().clone());
             return Ok(Expr::Await(Box::new(e), span));
         }
         if self.at_kw(Keyword::Spawn) {
             self.pos += 1;
             let callable = self.parse_unary()?;
+            let depth = self.expr_depth + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
+            self.expr_depth = depth;
             let span = join(sp, callable.span().clone());
             return Ok(Expr::Spawn {
                 callable: Box::new(callable),
@@ -2126,6 +2244,11 @@ impl Parser {
         if self.at_kw(Keyword::Not) {
             self.pos += 1;
             let e = self.parse_unary()?;
+            let depth = self.expr_depth + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
+            self.expr_depth = depth;
             let span = join(sp, e.span().clone());
             return Ok(Expr::Unary {
                 op: UnOp::Not,
@@ -2138,10 +2261,16 @@ impl Parser {
             if self.at(&TokenKind::IntMinMagnitude) {
                 let min_span = self.span();
                 self.pos += 1;
+                self.expr_depth = 1;
                 let span = join(sp, min_span);
                 return Ok(Expr::Int(i64::MIN, span));
             }
             let e = self.parse_unary()?;
+            let depth = self.expr_depth + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
+            self.expr_depth = depth;
             let span = join(sp, e.span().clone());
             return Ok(Expr::Unary {
                 op: UnOp::Neg,
@@ -2183,12 +2312,17 @@ impl Parser {
 
     fn parse_postfix(&mut self) -> SpidResult<Expr> {
         let mut e = self.parse_primary()?;
+        let mut depth = self.expr_depth;
         loop {
             match self.kind() {
                 TokenKind::Lt if matches!(e, Expr::Ident(..)) => {
                     if let Some(type_args) = self.try_parse_call_type_args() {
                         let args = self.parse_args()?;
                         let span = join(e.span().clone(), self.prev_span());
+                        depth = depth.max(self.expr_depth) + 1;
+                        if depth > MAX_EXPR_CHAIN {
+                            return Err(self.chain_depth_err());
+                        }
                         e = Expr::Call {
                             callee: Box::new(e),
                             type_args,
@@ -2196,12 +2330,17 @@ impl Parser {
                             span,
                         };
                     } else {
+                        self.expr_depth = depth;
                         return Ok(e);
                     }
                 }
                 TokenKind::LParen => {
                     let args = self.parse_args()?;
                     let span = join(e.span().clone(), self.prev_span());
+                    depth = depth.max(self.expr_depth) + 1;
+                    if depth > MAX_EXPR_CHAIN {
+                        return Err(self.chain_depth_err());
+                    }
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
@@ -2212,10 +2351,15 @@ impl Parser {
                 TokenKind::LBracket => {
                     self.pos += 1;
                     let idx = self.parse_expr()?;
+                    let idx_depth = self.expr_depth;
                     let end = self
                         .expect(&TokenKind::RBracket, "']'")
                         .map(|()| self.prev_span())?;
                     let span = join(e.span().clone(), end);
+                    depth = depth.max(idx_depth) + 1;
+                    if depth > MAX_EXPR_CHAIN {
+                        return Err(self.chain_depth_err());
+                    }
                     e = Expr::Index {
                         object: Box::new(e),
                         index: Box::new(idx),
@@ -2228,6 +2372,10 @@ impl Parser {
                     if self.at(&TokenKind::LParen) {
                         let args = self.parse_args()?;
                         let span = join(e.span().clone(), self.prev_span());
+                        depth = depth.max(self.expr_depth) + 1;
+                        if depth > MAX_EXPR_CHAIN {
+                            return Err(self.chain_depth_err());
+                        }
                         e = Expr::Method {
                             object: Box::new(e),
                             name,
@@ -2236,6 +2384,10 @@ impl Parser {
                         };
                     } else {
                         let span = join(e.span().clone(), nspan);
+                        depth += 1;
+                        if depth > MAX_EXPR_CHAIN {
+                            return Err(self.chain_depth_err());
+                        }
                         e = Expr::Field {
                             object: Box::new(e),
                             name,
@@ -2257,6 +2409,10 @@ impl Parser {
                         ));
                     }
                     let span = join(e.span().clone(), nspan);
+                    depth += 1;
+                    if depth > MAX_EXPR_CHAIN {
+                        return Err(self.chain_depth_err());
+                    }
                     e = Expr::OptField {
                         object: Box::new(e),
                         name,
@@ -2276,9 +2432,16 @@ impl Parser {
                     }
                     self.pos += 1;
                     let span = join(e.span().clone(), self.prev_span());
+                    depth += 1;
+                    if depth > MAX_EXPR_CHAIN {
+                        return Err(self.chain_depth_err());
+                    }
                     e = Expr::Propagate(Box::new(e), span);
                 }
-                _ => return Ok(e),
+                _ => {
+                    self.expr_depth = depth;
+                    return Ok(e);
+                }
             }
         }
     }
@@ -2332,6 +2495,7 @@ impl Parser {
     fn parse_args(&mut self) -> SpidResult<Vec<Expr>> {
         self.expect(&TokenKind::LParen, "'('")?;
         let mut args = Vec::new();
+        let mut max_depth = 0usize;
         if !self.at(&TokenKind::RParen) {
             loop {
                 // A named argument is `ident : expr` — lookahead distinguishes
@@ -2341,6 +2505,7 @@ impl Parser {
                         let sp = self.span();
                         self.pos += 2; // ident + ':'
                         let value = self.parse_expr()?;
+                        max_depth = max_depth.max(self.expr_depth + 1);
                         args.push(Expr::NamedArg {
                             name,
                             value: Box::new(value),
@@ -2358,6 +2523,7 @@ impl Parser {
                     }
                 }
                 args.push(self.parse_expr()?);
+                max_depth = max_depth.max(self.expr_depth);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -2368,12 +2534,14 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen, "')'")?;
+        self.expr_depth = max_depth;
         Ok(args)
     }
 
     fn parse_primary(&mut self) -> SpidResult<Expr> {
         let sp = self.span();
         let kind = self.kind().clone();
+        self.expr_depth = 1;
         match kind {
             TokenKind::Int(v) => {
                 self.pos += 1;
@@ -2444,6 +2612,11 @@ impl Parser {
                     Vec::new()
                 };
                 let args = self.parse_args()?;
+                let depth = self.expr_depth + 1;
+                if depth > MAX_EXPR_CHAIN {
+                    return Err(self.chain_depth_err());
+                }
+                self.expr_depth = depth;
                 let span = join(sp, self.prev_span());
                 Ok(Expr::New {
                     class,
@@ -2568,11 +2741,14 @@ impl Parser {
     fn parse_map_literal(&mut self, sp: Span) -> SpidResult<Expr> {
         self.pos += 1;
         let mut args = Vec::new();
+        let mut max_depth = 0usize;
         if !self.at(&TokenKind::RBrace) {
             loop {
                 let key = self.parse_expr()?;
+                max_depth = max_depth.max(self.expr_depth);
                 self.expect(&TokenKind::Colon, "':' after map key")?;
                 let val = self.parse_expr()?;
+                max_depth = max_depth.max(self.expr_depth);
                 args.push(key);
                 args.push(val);
                 if !self.eat(&TokenKind::Comma) {
@@ -2586,6 +2762,9 @@ impl Parser {
         let end = self
             .expect(&TokenKind::RBrace, "'}'")
             .map(|()| self.prev_span())?;
+        let depth = max_depth + 1;
+        self.check_expr_depth(depth)?;
+        self.expr_depth = depth;
         let span = join(sp, end);
         Ok(Expr::Call {
             callee: Box::new(Expr::Ident("map".to_string(), span.clone())),
@@ -2599,9 +2778,11 @@ impl Parser {
     fn parse_list_literal(&mut self, sp: Span) -> SpidResult<Expr> {
         self.pos += 1;
         let mut items = Vec::new();
+        let mut max_depth = 0usize;
         if !self.at(&TokenKind::RBracket) {
             loop {
                 items.push(self.parse_expr()?);
+                max_depth = max_depth.max(self.expr_depth);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -2613,20 +2794,28 @@ impl Parser {
         let end = self
             .expect(&TokenKind::RBracket, "']'")
             .map(|()| self.prev_span())?;
+        let depth = max_depth + 1;
+        self.check_expr_depth(depth)?;
+        self.expr_depth = depth;
         let span = join(sp, end);
         Ok(Expr::List(items, span))
     }
 
     #[inline(never)]
     fn parse_tuple_rest(&mut self, first: Expr, sp: Span) -> SpidResult<Expr> {
+        let mut max_depth = self.expr_depth;
         let mut items = vec![first];
         while !self.at(&TokenKind::RParen) {
             items.push(self.parse_expr()?);
+            max_depth = max_depth.max(self.expr_depth);
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
         }
         self.expect(&TokenKind::RParen, "')'")?;
+        let depth = max_depth + 1;
+        self.check_expr_depth(depth)?;
+        self.expr_depth = depth;
         let span = join(sp, self.prev_span());
         Ok(Expr::Call {
             callee: Box::new(Expr::Ident("tuple".to_string(), span.clone())),
@@ -2789,15 +2978,17 @@ impl Parser {
         sp: Span,
     ) -> SpidResult<Expr> {
         use crate::lexer::token::InterpPiece;
-        let mut parts: Vec<Expr> = Vec::new();
+        let mut parts: Vec<(Expr, usize)> = Vec::new();
         for piece in pieces {
             match piece {
                 InterpPiece::Lit(text) => {
                     if !text.is_empty() {
-                        parts.push(Expr::Str(text.clone(), sp.clone()));
+                        parts.push((Expr::Str(text.clone(), sp.clone()), 1));
                     }
                 }
                 InterpPiece::Path(segments) => {
+                    let seg_depth = segments.len().saturating_add(1);
+                    self.check_expr_depth(seg_depth)?;
                     let mut path = Expr::Ident(segments[0].clone(), sp.clone());
                     for seg in &segments[1..] {
                         path = Expr::Field {
@@ -2806,12 +2997,15 @@ impl Parser {
                             span: sp.clone(),
                         };
                     }
-                    parts.push(Expr::Call {
-                        callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
-                        type_args: Vec::new(),
-                        args: vec![path],
-                        span: sp.clone(),
-                    });
+                    parts.push((
+                        Expr::Call {
+                            callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                            type_args: Vec::new(),
+                            args: vec![path],
+                            span: sp.clone(),
+                        },
+                        seg_depth,
+                    ));
                 }
                 InterpPiece::Hole(raw) => {
                     // Try to compile the hole as an expression. If it does not
@@ -2830,6 +3024,7 @@ impl Parser {
                                 // so a chain of nested holes never tripped
                                 // MAX_PARSE_DEPTH and overflowed the stack.
                                 depth: self.depth,
+                                expr_depth: 0,
                                 saw_bigint_lit: false,
                                 saw_yield: false,
                                 value_block_depth: self.value_block_depth,
@@ -2838,12 +3033,14 @@ impl Parser {
                                 diags: Vec::new(),
                             };
                             match sub.parse_expr() {
-                                Ok(e) if sub.at(&TokenKind::Eof) => Some((e, sub.saw_bigint_lit)),
+                                Ok(e) if sub.at(&TokenKind::Eof) => {
+                                    Some((e, sub.saw_bigint_lit, sub.expr_depth))
+                                }
                                 _ => None,
                             }
                         });
-                    let Some((expr, used_bigint)) = compiled else {
-                        parts.push(Expr::Str(format!("{{{}}}", raw), sp.clone()));
+                    let Some((expr, used_bigint, hole_depth)) = compiled else {
+                        parts.push((Expr::Str(format!("{{{}}}", raw), sp.clone()), 1));
                         continue;
                     };
                     // A big-integer literal inside the hole needs the program
@@ -2851,22 +3048,33 @@ impl Parser {
                     if used_bigint {
                         self.saw_bigint_lit = true;
                     }
-                    parts.push(Expr::Call {
-                        callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
-                        type_args: Vec::new(),
-                        args: vec![expr],
-                        span: sp.clone(),
-                    });
+                    let d = hole_depth + 1;
+                    self.check_expr_depth(d)?;
+                    parts.push((
+                        Expr::Call {
+                            callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                            type_args: Vec::new(),
+                            args: vec![expr],
+                            span: sp.clone(),
+                        },
+                        d,
+                    ));
                 }
             }
         }
         if parts.is_empty() {
+            self.expr_depth = 1;
             return Ok(Expr::Str(String::new(), sp));
         }
-        // Fold with `+`, which concatenates strings.
+        // Fold with `+`, which concatenates strings. Each step deepens the
+        // left-associative AST spine by 1, so guard against unbounded chains.
         let mut iter = parts.into_iter();
-        let mut out = iter.next().expect("non-empty");
-        for p in iter {
+        let (mut out, mut depth) = iter.next().expect("non-empty");
+        for (p, pdepth) in iter {
+            depth = depth.max(pdepth) + 1;
+            if depth > MAX_EXPR_CHAIN {
+                return Err(self.chain_depth_err());
+            }
             out = Expr::Binary {
                 op: crate::ast::BinOp::Add,
                 l: Box::new(out),
@@ -2874,6 +3082,7 @@ impl Parser {
                 span: sp.clone(),
             };
         }
+        self.expr_depth = depth;
         Ok(out)
     }
 }
@@ -2904,5 +3113,163 @@ pub fn parse_file_recovering(
     match crate::lexer::Lexer::new(src, file).tokenize() {
         Ok(toks) => parse_recovering(toks),
         Err(d) => (Program { stmts: Vec::new() }, vec![d]),
+    }
+}
+
+#[cfg(test)]
+mod audit_fix_tests {
+    use super::*;
+
+    /// SEC-D1: a flat operator chain deeper than `MAX_EXPR_CHAIN` must be a
+    /// clean parser error rather than overflowing downstream recursive passes.
+    #[test]
+    fn chain_deeper_than_cap_is_clean_parser_error() {
+        let n = MAX_EXPR_CHAIN + 50;
+        let mut src = String::with_capacity(n * 2);
+        for i in 0..n {
+            if i > 0 {
+                src.push('+');
+            }
+            src.push('1');
+        }
+        let file: std::sync::Arc<str> = std::sync::Arc::from("chain.matrix");
+        let err = parse_expression(&src, file).expect_err("chain over cap must fail cleanly");
+        assert!(
+            err.message.contains("expression chain deeper"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    /// SEC-D1 regression guard: a moderate chain parses fine.
+    #[test]
+    fn moderate_chain_parses() {
+        let file: std::sync::Arc<str> = std::sync::Arc::from("chain_ok.matrix");
+        let mut src = String::new();
+        for i in 0..500 {
+            if i > 0 {
+                src.push('+');
+            }
+            src.push('1');
+        }
+        parse_expression(&src, file).expect("500-term chain must parse");
+    }
+
+    /// SEC-D1: wide sibling collections (e.g. a large list literal) have
+    /// bounded depth and must still parse cleanly.
+    #[test]
+    fn wide_list_literal_parses() {
+        let mut src = String::from("[");
+        for i in 0..(MAX_EXPR_CHAIN + 200) {
+            if i > 0 {
+                src.push(',');
+            }
+            src.push_str("1+2");
+        }
+        src.push(']');
+        let file: std::sync::Arc<str> = std::sync::Arc::from("wide.matrix");
+        parse_expression(&src, file).expect("wide list with shallow elements must parse");
+    }
+
+    /// SEC-D1: postfix chains (`.a.a.a...`) are bounded by `MAX_EXPR_CHAIN`.
+    #[test]
+    fn postfix_chain_deeper_than_cap_is_clean_parser_error() {
+        let n = MAX_EXPR_CHAIN + 50;
+        let mut src = String::from("t");
+        for _ in 0..n {
+            src.push_str(".a");
+        }
+        let file: std::sync::Arc<str> = std::sync::Arc::from("postfix.matrix");
+        let err = parse_expression(&src, file).expect_err("postfix chain over cap must fail");
+        assert!(
+            err.message.contains("expression chain deeper"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    /// SEC-D1: combining parens + chains cannot multiply past `MAX_EXPR_CHAIN`.
+    #[test]
+    fn nested_parens_plus_chains_cannot_bypass_cap() {
+        // 4 nested parens each adding (MAX_EXPR_CHAIN / 2) additions => depth ~2 * MAX_EXPR_CHAIN
+        let chunk = (MAX_EXPR_CHAIN / 2) + 5;
+        let mut expr = String::from("1");
+        for _ in 0..4 {
+            let mut next = format!("({})", expr);
+            for _ in 0..chunk {
+                next.push_str("+1");
+            }
+            expr = next;
+        }
+        let file: std::sync::Arc<str> = std::sync::Arc::from("nested_chain.matrix");
+        let err = parse_expression(&expr, file).expect_err("nested chains over cap must fail");
+        assert!(
+            err.message.contains("expression chain deeper"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    /// SEC-D1: interpolated strings with thousands of holes build a `+` chain
+    /// and must also be bounded by `MAX_EXPR_CHAIN`.
+    #[test]
+    fn interpolated_string_chain_is_bounded() {
+        let mut src = String::from("\"");
+        for _ in 0..(MAX_EXPR_CHAIN + 50) {
+            src.push_str("{x}");
+        }
+        src.push('"');
+        let file: std::sync::Arc<str> = std::sync::Arc::from("interp_chain.matrix");
+        let err = parse_expression(&src, file).expect_err("interp chain over cap must fail");
+        assert!(
+            err.message.contains("expression chain deeper"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    /// SEC-D1: chains right at the cap (`MAX_EXPR_CHAIN`) — both binary `+`
+    /// and postfix `.a` — must parse, type-check, lower, and compile in linear
+    /// time without overflowing a 2 MB debug stack.
+    #[test]
+    fn max_allowed_chain_checks_on_2mb_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut expr = String::with_capacity(MAX_EXPR_CHAIN * 2);
+                for i in 0..MAX_EXPR_CHAIN {
+                    if i > 0 {
+                        expr.push('+');
+                    }
+                    expr.push('1');
+                }
+                let src = format!("fn main() {{ let x = {}; return x; }}", expr);
+                let file: std::sync::Arc<str> = std::sync::Arc::from("chain_max.matrix");
+                let prog = parse_file(&src, file).expect("MAX_EXPR_CHAIN + program must parse");
+                crate::semantic::check(&prog, true)
+                    .expect("MAX_EXPR_CHAIN + program must type-check");
+                let lowered = crate::lower::lower(&prog);
+                crate::vm::compile_program(&lowered, "chain_max.matrix", &[])
+                    .expect("MAX_EXPR_CHAIN + program must compile");
+
+                // Postfix `.a` chain right at the cap exercises recursive
+                // non-binary AST walks across every compiler pass.
+                let mut pexpr = String::from("t");
+                for _ in 0..(MAX_EXPR_CHAIN - 1) {
+                    pexpr.push_str(".a");
+                }
+                let psrc = format!("fn main() {{ let t = null; let x = {}; return x; }}", pexpr);
+                let pfile: std::sync::Arc<str> = std::sync::Arc::from("postfix_max.matrix");
+                let pprog =
+                    parse_file(&psrc, pfile).expect("MAX_EXPR_CHAIN postfix program must parse");
+                crate::semantic::check(&pprog, true)
+                    .expect("MAX_EXPR_CHAIN postfix program must type-check");
+                let plowered = crate::lower::lower(&pprog);
+                crate::vm::compile_program(&plowered, "postfix_max.matrix", &[])
+                    .expect("MAX_EXPR_CHAIN postfix program must compile");
+            })
+            .expect("spawn 2 MB test thread")
+            .join()
+            .expect("MAX_EXPR_CHAIN check/lower/compile must not overflow 2 MB stack");
     }
 }

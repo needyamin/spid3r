@@ -554,3 +554,68 @@ fn main() {{
         assert!(stdout.contains("SANDBOX_OK"), "[{engine}] stdout: {stdout}");
     }
 }
+
+/// Audit A-9: `security.deny_filesystem = true` (even without `deny_network`)
+/// denies `tls_listen` cert paths and `http_fetch` `ca_cert` paths identically
+/// for existing and non-existing files so no existence/PEM oracle remains.
+#[test]
+fn deny_filesystem_closes_tls_listen_and_http_fetch_ca_cert_oracles() {
+    let fix = TempTlsFixture::new();
+    let ini_path = fix.dir.join("deny_fs.ini");
+    std::fs::write(&ini_path, "[security]\ndeny_filesystem = true\n").expect("write ini");
+
+    let existing_p12 = escape_matrix_str(&fix.p12_path);
+    let existing_pem = escape_matrix_str(&fix.cert_pem_path);
+    let missing_p12 = escape_matrix_str(&fix.dir.join("missing.p12"));
+    let missing_pem = escape_matrix_str(&fix.dir.join("missing.pem"));
+
+    let script = fix.dir.join("a9_oracle.matrix");
+    std::fs::write(
+        &script,
+        format!(
+            r#"
+fn main() {{
+    let cases = 0;
+    try {{ let _ = tls_listen("{existing_p12}", "", "127.0.0.1:0"); }} catch e {{
+        assert(string(e).contains("sandboxed: filesystem access denied"));
+        cases = cases + 1;
+    }}
+    try {{ let _ = tls_listen("{missing_p12}", "", "127.0.0.1:0"); }} catch e {{
+        assert(string(e).contains("sandboxed: filesystem access denied"));
+        cases = cases + 1;
+    }}
+    let r_existing = http_fetch("GET", "https://127.0.0.1:1/", null, null, map("ca_cert", "{existing_pem}"));
+    assert(is_err(r_existing));
+    assert(string(r_existing).contains("sandboxed: filesystem access denied"));
+    cases = cases + 1;
+
+    let r_missing = http_fetch("GET", "https://127.0.0.1:1/", null, null, map("ca_cert", "{missing_pem}"));
+    assert(is_err(r_missing));
+    assert(string(r_missing).contains("sandboxed: filesystem access denied"));
+    assert_eq(string(r_existing), string(r_missing));
+    cases = cases + 1;
+    assert(cases == 4);
+    println("A9_OK");
+    return 0;
+}}
+"#
+        ),
+    )
+    .expect("write script");
+
+    let bin = env!("CARGO_BIN_EXE_spid3r");
+    for engine in ["tree", "vm"] {
+        let out = std::process::Command::new(bin)
+            .env("SPID3R_INI", &ini_path)
+            .args(["run", "--engine", engine, script.to_str().unwrap()])
+            .output()
+            .expect("run spid3r A-9 test");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "[{engine}] A-9 test failed: {stderr}\nstdout: {stdout}"
+        );
+        assert!(stdout.contains("A9_OK"), "[{engine}] stdout: {stdout}");
+    }
+}

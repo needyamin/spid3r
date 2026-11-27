@@ -769,6 +769,63 @@ pub fn pin_target(cfg: &Config) -> Option<&Path> {
     }
 }
 
+/// Normalize a dotted config key for near-miss typo matching (case-insensitive,
+/// ignoring underscores so `Security.BASEDIR` and `security.base_dir` match
+/// `security.basedir`).
+fn normalize_key_for_typo_match(k: &str) -> String {
+    k.chars()
+        .filter(|&c| c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Return human-readable stderr warnings for unknown `spid3r.ini` keys that
+/// either live in `[security]` or look like a case-variant/underscore typo of a
+/// known key (audit A-11).
+pub fn suspicious_key_warnings(cfg: &Config) -> Vec<String> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut candidates: Vec<String> = Vec::new();
+    for k in cfg.values.keys() {
+        if known_key(k).is_none() && seen.insert(k.clone()) {
+            candidates.push(k.clone());
+        }
+    }
+    for note in &cfg.notes {
+        if let Some(rest) = note.strip_prefix("unknown key '") {
+            if let Some((k, _)) = rest.split_once('\'') {
+                if known_key(k).is_none() && seen.insert(k.to_string()) {
+                    candidates.push(k.to_string());
+                }
+            }
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for k in candidates {
+        let norm = normalize_key_for_typo_match(&k);
+        let near = schema::KEYS.iter().find(|spec| {
+            let dotted = format!("{}.{}", spec.section, spec.name);
+            dotted.eq_ignore_ascii_case(&k) || normalize_key_for_typo_match(&dotted) == norm
+        });
+        if let Some(spec) = near {
+            warnings.push(format!(
+                "warning[config]: unknown key '{}' in spid3r.ini (did you mean '{}.{}'?) — ignored; defaults apply",
+                k, spec.section, spec.name
+            ));
+        } else if k
+            .split('.')
+            .next()
+            .is_some_and(|sec| sec.eq_ignore_ascii_case("security"))
+        {
+            warnings.push(format!(
+                "warning[config]: unknown key '{}' in [security] section of spid3r.ini — ignored; defaults apply",
+                k
+            ));
+        }
+    }
+    warnings
+}
+
 /// Write a commented default `spid3r.ini` next to the first candidate path.
 pub fn write_default_ini(path: Option<&Path>) -> Result<PathBuf, String> {
     let path = path
@@ -912,6 +969,37 @@ mod tests {
             !candidates.iter().any(|p| p == &cwd_ini),
             "candidate_paths() must never auto-load <cwd>/spid3r.ini: {:?}",
             candidates
+        );
+    }
+
+    #[test]
+    fn suspicious_key_warnings_detects_security_and_case_typos() {
+        let (doc, _) = parse_ini(
+            "[Security]\nBASEDIR = /tmp\n[security]\nbase_dir = /tmp\nunknown_guard = true\n[custom]\nfoo = bar\n",
+        );
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "default");
+        let warnings = suspicious_key_warnings(&cfg);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("Security.BASEDIR") && w.contains("security.basedir")),
+            "expected near-miss for Security.BASEDIR: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("security.base_dir") && w.contains("security.basedir")),
+            "expected near-miss for security.base_dir: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("security.unknown_guard") && w.contains("[security]")),
+            "expected [security] warning for security.unknown_guard: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("custom.foo")),
+            "unrelated custom section should stay silent: {warnings:?}"
         );
     }
 }

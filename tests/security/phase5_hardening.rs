@@ -234,3 +234,27 @@ fn config_engine_key_selects_the_run_engine() {
     let out = run_in(&dir, &vm, &["run", "--prof", prog.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0));
 }
+
+/// Audit A-11: case-variant and underscore typos of known keys or unknown keys
+/// inside `[security]` emit visible stderr warnings on `spid3r run`.
+#[test]
+fn suspicious_ini_security_keys_warn_on_stderr() {
+    let dir = scratch("ini-typo-warn");
+    let prog = dir.join("ok.matrix");
+    std::fs::write(&prog, "fn main() {\n    return 0;\n}\n").expect("write prog");
+    let ini = write_ini(
+        &dir,
+        "[Security]\nBASEDIR = /tmp\n[security]\nbase_dir = /tmp\n",
+    );
+    let out = run_in(&dir, &ini, &["run", prog.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("warning[config]") && err.contains("Security.BASEDIR"),
+        "expected Security.BASEDIR warning on stderr: {err}"
+    );
+    assert!(
+        err.contains("security.base_dir") && err.contains("security.basedir"),
+        "expected security.base_dir hint on stderr: {err}"
+    );
+}

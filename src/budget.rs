@@ -2,8 +2,10 @@
 //! untrusted script may do before the engine stops it.
 //!
 //! Both script engines enforce it — the tree interpreter charges one step per
-//! statement (and per loop iteration), the VM charges in batches at its
-//! instruction poll — and the native AOT backend does not (a counter in
+//! statement (and per loop iteration), the VM charges in batches of `2048`
+//! units per `2048`-dispatch poll (a fused superinstruction counts as one
+//! dispatch even though it executes several original bytecode ops, preserving
+//! a linear bound) — and the native AOT backend does not (a counter in
 //! generated machine code is not free; embedders that run untrusted code use
 //! the tree or VM engine). Exhaustion is a **fatal** runtime error: it
 //! bypasses `try`/`catch` in both engines, so a script cannot swallow the
@@ -19,7 +21,7 @@
 //! `config reload` pushes new values into the active handles
 //! ([`refresh_runtime_limits`]), so a reload applies without a restart.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A shared, saturating step counter. `None` on an engine means "no limit"
@@ -30,8 +32,9 @@ pub struct Budget {
 }
 
 impl Budget {
-    /// A budget of `steps` units (statements in the tree engine; a VM poll
-    /// batch is `2048` instructions).
+    /// A budget of `steps` units (statements in the tree engine; in the VM,
+    /// each poll batch charges `2048` units per `2048` opcode dispatches,
+    /// where a fused superinstruction counts as one dispatch).
     pub fn new(steps: u64) -> Self {
         let steps = steps.min(i64::MAX as u64) as i64;
         Budget {
@@ -99,7 +102,13 @@ impl WallClock {
             deadline_ms: AtomicI64::new(deadline_for(limit_ms)),
             limit_ms: AtomicI64::new(limit_ms.min(i64::MAX as u64) as i64),
         });
-        *active_wall().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&inner));
+        {
+            let mut slot = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+            if slot.1 == 0 {
+                slot.0 = Some(Arc::clone(&inner));
+                ACTIVE_WALL_ARMED.store(limit_ms > 0, Ordering::Release);
+            }
+        }
         WallClock { inner }
     }
 
@@ -122,12 +131,19 @@ impl WallClock {
     /// Swap the deadline in place (Live reload): every clone of this handle
     /// — tasks and module interpreters included — sees the new deadline.
     pub fn set_limit(&self, limit_ms: u64) {
-        self.inner
-            .limit_ms
-            .store(limit_ms.min(i64::MAX as u64) as i64, Ordering::Relaxed);
+        let clamped = limit_ms.min(i64::MAX as u64) as i64;
+        self.inner.limit_ms.store(clamped, Ordering::Relaxed);
         self.inner
             .deadline_ms
             .store(deadline_for(limit_ms), Ordering::Relaxed);
+        let slot = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+        if slot
+            .0
+            .as_ref()
+            .is_some_and(|cur| Arc::ptr_eq(cur, &self.inner))
+        {
+            ACTIVE_WALL_ARMED.store(clamped > 0, Ordering::Release);
+        }
     }
 }
 
@@ -150,9 +166,15 @@ pub struct MemLimit {
 impl MemLimit {
     /// A cap of `cap_mb` MiB. `0` means unlimited.
     pub fn new(cap_mb: u64) -> Self {
-        let cap = Arc::new(AtomicI64::new(cap_mb.min(i64::MAX as u64) as i64));
-        *active_mem().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&cap));
-        ACTIVE_MEM_CAP_MB.store(cap_mb.min(i64::MAX as u64) as i64, Ordering::Relaxed);
+        let clamped = cap_mb.min(i64::MAX as u64) as i64;
+        let cap = Arc::new(AtomicI64::new(clamped));
+        {
+            let mut slot = active_mem().lock().unwrap_or_else(|e| e.into_inner());
+            if slot.1 == 0 {
+                slot.0 = Some(Arc::clone(&cap));
+                ACTIVE_MEM_CAP_MB.store(clamped, Ordering::Relaxed);
+            }
+        }
         MemLimit { cap_mb: cap }
     }
 
@@ -175,7 +197,14 @@ impl MemLimit {
     pub fn set_cap(&self, cap_mb: u64) {
         let clamped = cap_mb.min(i64::MAX as u64) as i64;
         self.cap_mb.store(clamped, Ordering::Relaxed);
-        ACTIVE_MEM_CAP_MB.store(clamped, Ordering::Relaxed);
+        let slot = active_mem().lock().unwrap_or_else(|e| e.into_inner());
+        if slot
+            .0
+            .as_ref()
+            .is_some_and(|cur| Arc::ptr_eq(cur, &self.cap_mb))
+        {
+            ACTIVE_MEM_CAP_MB.store(clamped, Ordering::Relaxed);
+        }
     }
 }
 
@@ -183,13 +212,18 @@ impl MemLimit {
 /// [`WallClock::new`] / [`MemLimit::new`] and refreshed by
 /// [`refresh_runtime_limits`] (from `config reload`). `None` when no run is
 /// active — `config reload` then has nothing to update.
-fn active_wall() -> &'static Mutex<Option<Arc<WallClockInner>>> {
-    static ACTIVE: Mutex<Option<Arc<WallClockInner>>> = Mutex::new(None);
+///
+/// The second tuple element tracks the active `ActiveLimitGuard` nesting depth
+/// so a guard entering with a handle pre-populated by `WallClock::new` /
+/// `MemLimit::new` cleanly disarms the global slot on drop without clobbering
+/// outer guards in nested runs (e.g. module imports).
+fn active_wall() -> &'static Mutex<(Option<Arc<WallClockInner>>, usize)> {
+    static ACTIVE: Mutex<(Option<Arc<WallClockInner>>, usize)> = Mutex::new((None, 0));
     &ACTIVE
 }
 
-fn active_mem() -> &'static Mutex<Option<Arc<AtomicI64>>> {
-    static ACTIVE: Mutex<Option<Arc<AtomicI64>>> = Mutex::new(None);
+fn active_mem() -> &'static Mutex<(Option<Arc<AtomicI64>>, usize)> {
+    static ACTIVE: Mutex<(Option<Arc<AtomicI64>>, usize)> = Mutex::new((None, 0));
     &ACTIVE
 }
 
@@ -199,6 +233,7 @@ fn active_budget_slot() -> &'static Mutex<Option<Budget>> {
 }
 
 static ACTIVE_MEM_CAP_MB: AtomicI64 = AtomicI64::new(0);
+static ACTIVE_WALL_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// Default safety ceiling on a single string/bytes/container allocation (256 MiB)
 /// when neither `memory.allocation_cap_mb` nor `runtime.memory_limit_mb` is set,
@@ -209,48 +244,120 @@ pub const DEFAULT_SINGLE_ALLOC_CAP: usize = 256 * 1024 * 1024;
 /// limits for blocking natives / single-allocation checks, restoring the
 /// previous state on exit so nested or sequential runs never leak or clobber
 /// limits across runs.
+///
+/// Any `None` limit is left untouched rather than overwriting the global slot
+/// with `None`, so an unlimited run (or concurrent test) never disarms an
+/// already-active limit.
 pub struct ActiveLimitGuard {
-    prev_budget: Option<Budget>,
-    prev_wall: Option<Arc<WallClockInner>>,
-    prev_mem: Option<Arc<AtomicI64>>,
-    prev_mem_mb: i64,
+    prev_budget: Option<Option<Budget>>,
+    /// `Some((prev_handle, restore_depth))`: `restore_depth` is `Some(d)` for
+    /// `clear_for_test` (exact snapshot restore) or `None` for `enter`
+    /// (decrement depth by 1).
+    prev_wall: Option<(Option<Arc<WallClockInner>>, Option<usize>)>,
+    prev_mem: Option<(Option<Arc<AtomicI64>>, i64, Option<usize>)>,
 }
 
 impl ActiveLimitGuard {
     pub fn enter(budget: Option<Budget>, wall: Option<&WallClock>, mem: Option<&MemLimit>) -> Self {
-        let prev_budget = std::mem::replace(
-            &mut *active_budget_slot()
+        let prev_budget = budget.map(|b| {
+            active_budget_slot()
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-            budget,
-        );
-        let prev_wall = std::mem::replace(
-            &mut *active_wall().lock().unwrap_or_else(|e| e.into_inner()),
-            wall.map(|w| Arc::clone(&w.inner)),
-        );
-        let prev_mem = std::mem::replace(
-            &mut *active_mem().lock().unwrap_or_else(|e| e.into_inner()),
-            mem.map(|m| Arc::clone(&m.cap_mb)),
-        );
-        let new_mb = mem.map(|m| m.cap_mb().max(0)).unwrap_or(0);
-        let prev_mem_mb = ACTIVE_MEM_CAP_MB.swap(new_mb, Ordering::Relaxed);
+                .unwrap_or_else(|e| e.into_inner())
+                .replace(b)
+        });
+        let prev_wall = wall.map(|w| {
+            let mut slot = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+            let prev = if slot.1 == 0 && slot.0.as_ref().is_some_and(|p| Arc::ptr_eq(p, &w.inner)) {
+                // Pre-populated by `WallClock::new` outside any guard; disarm
+                // back to `None` when this outermost guard exits.
+                None
+            } else {
+                slot.0.take()
+            };
+            slot.0 = Some(Arc::clone(&w.inner));
+            slot.1 += 1;
+            ACTIVE_WALL_ARMED.store(w.limit_ms() > 0, Ordering::Release);
+            (prev, None)
+        });
+        let prev_mem = mem.map(|m| {
+            let mut slot = active_mem().lock().unwrap_or_else(|e| e.into_inner());
+            let (prev, prev_mb) =
+                if slot.1 == 0 && slot.0.as_ref().is_some_and(|p| Arc::ptr_eq(p, &m.cap_mb)) {
+                    (None, 0)
+                } else {
+                    (slot.0.take(), ACTIVE_MEM_CAP_MB.load(Ordering::Relaxed))
+                };
+            slot.0 = Some(Arc::clone(&m.cap_mb));
+            slot.1 += 1;
+            ACTIVE_MEM_CAP_MB.store(m.cap_mb().max(0), Ordering::Relaxed);
+            (prev, prev_mb, None)
+        });
         ActiveLimitGuard {
             prev_budget,
             prev_wall,
             prev_mem,
-            prev_mem_mb,
+        }
+    }
+
+    /// Save and explicitly clear all process-global limit slots for unit tests
+    /// that exercise `WallClock::new` / `MemLimit::new` directly; restores the
+    /// prior state on drop.
+    #[cfg(test)]
+    pub(crate) fn clear_for_test() -> Self {
+        let prev_budget = active_budget_slot()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let prev_wall = {
+            let mut slot = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+            ACTIVE_WALL_ARMED.store(false, Ordering::Release);
+            let prev = slot.0.take();
+            let depth = std::mem::replace(&mut slot.1, 0);
+            (prev, Some(depth))
+        };
+        let prev_mem = {
+            let mut slot = active_mem().lock().unwrap_or_else(|e| e.into_inner());
+            let prev = slot.0.take();
+            let depth = std::mem::replace(&mut slot.1, 0);
+            let prev_mb = ACTIVE_MEM_CAP_MB.swap(0, Ordering::Relaxed);
+            (prev, prev_mb, Some(depth))
+        };
+        ActiveLimitGuard {
+            prev_budget: Some(prev_budget),
+            prev_wall: Some(prev_wall),
+            prev_mem: Some(prev_mem),
         }
     }
 }
 
 impl Drop for ActiveLimitGuard {
     fn drop(&mut self) {
-        *active_budget_slot()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = self.prev_budget.take();
-        *active_wall().lock().unwrap_or_else(|e| e.into_inner()) = self.prev_wall.take();
-        *active_mem().lock().unwrap_or_else(|e| e.into_inner()) = self.prev_mem.take();
-        ACTIVE_MEM_CAP_MB.store(self.prev_mem_mb, Ordering::Relaxed);
+        if let Some(prev) = self.prev_budget.take() {
+            *active_budget_slot()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = prev;
+        }
+        if let Some((prev, restore_depth)) = self.prev_wall.take() {
+            let mut slot = active_wall().lock().unwrap_or_else(|e| e.into_inner());
+            slot.1 = match restore_depth {
+                Some(d) => d,
+                None => slot.1.saturating_sub(1),
+            };
+            let armed = prev
+                .as_ref()
+                .is_some_and(|w| w.limit_ms.load(Ordering::Relaxed) > 0);
+            ACTIVE_WALL_ARMED.store(armed, Ordering::Release);
+            slot.0 = prev;
+        }
+        if let Some((prev, prev_mb, restore_depth)) = self.prev_mem.take() {
+            let mut slot = active_mem().lock().unwrap_or_else(|e| e.into_inner());
+            slot.1 = match restore_depth {
+                Some(d) => d,
+                None => slot.1.saturating_sub(1),
+            };
+            slot.0 = prev;
+            ACTIVE_MEM_CAP_MB.store(prev_mb, Ordering::Relaxed);
+        }
     }
 }
 
@@ -283,10 +390,21 @@ pub fn active_wall_exceeded() -> bool {
     active_wall_message().is_some()
 }
 
+/// Returns `true` if a wall-clock deadline is ARMED for this run (installed
+/// by `ActiveLimitGuard`), whether or not it has expired yet. Blocking
+/// primitives (`sleep_ms`, `mutex.lock`, `join`, `enqueue`) use this to decide
+/// whether their wait must be time-sliced.
+pub fn active_wall_armed() -> bool {
+    ACTIVE_WALL_ARMED.load(Ordering::Acquire)
+}
+
 /// Returns the formatted wall-clock timeout message if the active deadline has expired.
 pub fn active_wall_message() -> Option<String> {
+    if !ACTIVE_WALL_ARMED.load(Ordering::Acquire) {
+        return None;
+    }
     let guard = active_wall().lock().unwrap_or_else(|e| e.into_inner());
-    guard.as_ref().and_then(|inner| {
+    guard.0.as_ref().and_then(|inner| {
         if crate::sched::now_ms() >= inner.deadline_ms.load(Ordering::Relaxed) {
             Some(format!(
                 "wall-clock limit exceeded ({} ms)",
@@ -352,6 +470,23 @@ pub fn allocation_cap_bytes() -> Option<usize> {
     } else {
         Some((mb as usize).saturating_mul(1024 * 1024))
     }
+}
+
+/// Effective byte ceiling for a single allocation under the current
+/// `memory.allocation_cap_mb`, `runtime.memory_limit_mb`, and host-abort guard.
+pub fn effective_single_allocation_cap() -> usize {
+    let mut cap = allocation_cap_bytes().unwrap_or(DEFAULT_SINGLE_ALLOC_CAP);
+    let mut mem_mb = ACTIVE_MEM_CAP_MB.load(Ordering::Relaxed);
+    if mem_mb <= 0 {
+        mem_mb = crate::config::get("runtime.memory_limit_mb")
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+    }
+    if mem_mb > 0 {
+        let mem_cap = (mem_mb as usize).saturating_mul(1024 * 1024);
+        cap = cap.min(mem_cap);
+    }
+    cap
 }
 
 /// Enforce `memory.allocation_cap_mb`, `runtime.memory_limit_mb`, and the
@@ -452,11 +587,13 @@ pub fn check_vec_grow<T>(cur_len: usize, extra: usize) -> Result<(), String> {
 /// what the engines read.
 pub fn refresh_runtime_limits(cfg: &crate::config::Config) {
     let (wall_ms, mem_mb) = limit_values(cfg);
-    if let Some(inner) = active_wall()
+    let active_w = active_wall()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .0
         .as_ref()
-    {
+        .map(Arc::clone);
+    if let Some(inner) = active_w {
         let limit = inner.limit_ms.load(Ordering::Relaxed);
         let new = if wall_ms > 0 {
             wall_ms.min(i64::MAX as u64) as i64
@@ -466,15 +603,14 @@ pub fn refresh_runtime_limits(cfg: &crate::config::Config) {
         // Only rewrite when the value actually changed: `set_limit` moves the
         // deadline, and a reload must not silently extend an armed deadline.
         if limit != new {
-            let wall = WallClock {
-                inner: Arc::clone(inner),
-            };
+            let wall = WallClock { inner };
             wall.set_limit(new as u64);
         }
     }
     if let Some(cap) = active_mem()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .0
         .as_ref()
     {
         let clamped = mem_mb.min(i64::MAX as u64) as i64;
@@ -484,7 +620,7 @@ pub fn refresh_runtime_limits(cfg: &crate::config::Config) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{refresh_runtime_limits, run_limits, Budget, MemLimit, WallClock};
     use std::collections::BTreeMap;
 
@@ -539,12 +675,13 @@ mod tests {
     }
 
     /// `WallClock::new` registers the handle process-globally (for the reload
-    /// path), so the cases below must not run concurrently with each other.
-    static LIMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// path), so tests that arm the global wall-clock slot must hold this lock.
+    pub(crate) static LIMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn wall_clock_expires_and_is_swappable() {
         let _serial = LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = super::ActiveLimitGuard::clear_for_test();
         let wc = WallClock::new(50);
         assert!(!wc.exceeded());
         assert_eq!(wc.limit_ms(), 50);
@@ -563,6 +700,7 @@ mod tests {
     #[test]
     fn mem_limit_checks_and_swaps() {
         let _serial = LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = super::ActiveLimitGuard::clear_for_test();
         let m = MemLimit::new(0);
         assert_eq!(m.cap_mb(), 0);
         assert!(m.check().is_none(), "0 = unlimited");
@@ -576,6 +714,7 @@ mod tests {
     #[test]
     fn run_limits_resolves_from_config() {
         let _serial = LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = super::ActiveLimitGuard::clear_for_test();
         // Defaults: both unlimited.
         let (wall, mem) = run_limits(&limits_cfg("0", "0"));
         assert!(wall.is_none() && mem.is_none());
@@ -589,6 +728,7 @@ mod tests {
         // `config reload` pushes new values into the Arc-shared handles the
         // engines hold: the Live classification of the two runtime keys.
         let _serial = LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = super::ActiveLimitGuard::clear_for_test();
         let wc = WallClock::new(500);
         let mem = MemLimit::new(64);
         refresh_runtime_limits(&limits_cfg("750", "96"));
@@ -598,6 +738,56 @@ mod tests {
         refresh_runtime_limits(&limits_cfg("0", "0"));
         assert_eq!(wc.limit_ms(), 0);
         assert!(!wc.exceeded());
+        assert!(!super::active_wall_armed());
         assert_eq!(mem.cap_mb(), 0);
+    }
+
+    #[test]
+    fn active_limit_guard_disarms_wall_and_mem_without_breaking_nesting() {
+        let _serial = LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = super::ActiveLimitGuard::clear_for_test();
+
+        // WallClock::new(0) is unlimited and must not arm time-slicing.
+        let unlimited = WallClock::new(0);
+        assert!(!super::active_wall_armed());
+        drop(unlimited);
+
+        // Sequential run: WallClock::new + MemLimit::new followed by
+        // ActiveLimitGuard::enter must disarm both slots on drop so a
+        // subsequent unlimited run never inherits an expired deadline or stale
+        // memory cap.
+        let wc = WallClock::new(1);
+        let mem = MemLimit::new(32);
+        assert!(super::active_wall_armed());
+        {
+            let _outer = super::ActiveLimitGuard::enter(None, Some(&wc), Some(&mem));
+            assert!(super::active_wall_armed());
+            // Nested guard with cloned handles (e.g., module import) must keep
+            // the outer run's limits armed after the nested guard drops.
+            {
+                let _inner = super::ActiveLimitGuard::enter(None, Some(&wc), Some(&mem));
+                assert!(super::active_wall_armed());
+            }
+            assert!(
+                super::active_wall_armed(),
+                "inner guard drop must not disarm outer guard"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            assert!(super::active_wall_message().is_some());
+        }
+        // Outermost guard exited: both wall clock and mem cap must be disarmed.
+        assert!(
+            !super::active_wall_armed(),
+            "expired WallClock leaked past ActiveLimitGuard drop"
+        );
+        assert!(super::active_wall_message().is_none());
+        assert_eq!(
+            super::ACTIVE_MEM_CAP_MB.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "MemLimit leaked past ActiveLimitGuard drop"
+        );
+        // Subsequent unlimited run must succeed cleanly.
+        let _unlimited_run = super::ActiveLimitGuard::enter(None, None, None);
+        assert!(crate::sched::sleep_ms(1).is_ok());
     }
 }

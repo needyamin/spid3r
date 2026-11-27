@@ -1767,7 +1767,7 @@ impl MapData {
                 Ok(Value::List(new_ref(VecData::from_items(
                     self.entries
                         .iter()
-                        .map(|(k, v)| Value::Tuple(new_ref(vec![key_to_value(k), v.clone()])))
+                        .map(|(k, v)| Value::tuple(vec![key_to_value(k), v.clone()]))
                         .collect(),
                 ))))
             }
@@ -2197,15 +2197,10 @@ pub fn track_reachable_untracked(root: &Value) {
                     stack.extend(children);
                 }
             }
-            Value::Option(Some(inner)) if !is_non_recursive_scalar(&inner) => {
-                stack.push(*inner);
-            }
-            Value::Result(r) => match *r {
-                Ok(inner) | Err(inner) if !is_non_recursive_scalar(&inner) => {
-                    stack.push(inner);
-                }
-                _ => {}
-            },
+            // OptionData / ResultData are immutable and exclusively built via
+            // Value::some / Value::ok / Value::err, which already track any
+            // non-scalar inner container on construction; no untracked
+            // container can hide inside them.
             _ => {}
         }
     }
@@ -2215,20 +2210,16 @@ pub fn track_reachable_untracked(root: &Value) {
 #[inline]
 pub fn track_if_untracked(val: &Value) {
     match val {
-        Value::List(d) | Value::VecDyn(d) => {
-            if !crate::value::lock_ref(d).gc_tracked {
-                track_reachable_untracked(val);
-            }
+        Value::List(d) | Value::VecDyn(d) if !crate::value::lock_ref(d).gc_tracked => {
+            track_reachable_untracked(val);
         }
-        Value::Map(m) => {
-            if !crate::value::lock_ref(m).gc_tracked {
-                track_reachable_untracked(val);
-            }
+        Value::Map(m) if !crate::value::lock_ref(m).gc_tracked => {
+            track_reachable_untracked(val);
         }
-        Value::Option(Some(inner)) => track_if_untracked(inner),
-        Value::Result(r) => match r.as_ref() {
-            Ok(inner) | Err(inner) => track_if_untracked(inner),
-        },
+        // OptionData / ResultData are immutable and track their non-scalar
+        // inner value at construction (`Value::some` / `Value::ok` /
+        // `Value::err`). Skipping them here keeps nested Option/Result
+        // construction strictly O(1) instead of O(N^2).
         _ => {}
     }
 }

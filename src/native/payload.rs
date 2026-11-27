@@ -12,6 +12,13 @@
 //! [ PE image ][ body ][ magic: 16 bytes ][ body_len: u64 LE ]
 //! ```
 //!
+//! Or, when built with an Ed25519 signing key (`SPID3R_PAYLOAD_SIGN_KEY` /
+//! `SPID3R_SIGN_KEY`), an authenticated v2 trailer (audit A-10):
+//!
+//! ```text
+//! [ PE image ][ body ][ pk: 32 bytes ][ sig: 64 bytes ][ MAGIC_V2: 16 bytes ][ body_len: u64 LE ]
+//! ```
+//!
 //! `body` is a flat list of entries:
 //!
 //! ```text
@@ -27,12 +34,19 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-/// Marks the start of the trailer. Also identifies a file as carrying a
+/// Marks the start of the v1 trailer. Also identifies a file as carrying a
 /// payload, so a plain executable is never mistaken for a packaged one.
 const MAGIC: &[u8; 16] = b"SPID3R-PAYLOAD01";
 
-/// Trailer size: magic followed by the little-endian body length.
+/// Marks the start of an Ed25519-authenticated v2 payload trailer (audit A-10).
+const MAGIC_V2: &[u8; 16] = b"SPID3R-PAYLOAD02";
+
+/// Trailer size (v1): magic followed by the little-endian body length.
 const TRAILER_LEN: u64 = 24;
+
+/// Trailer size (v2): 32-byte Ed25519 pubkey + 64-byte signature + 16-byte
+/// `MAGIC_V2` + 8-byte `body_len` LE.
+const TRAILER_V2_LEN: u64 = 120;
 
 /// One embedded file: its path (forward slashes, relative to the source
 /// directory) and its raw contents.
@@ -175,8 +189,84 @@ fn is_reserved_runtime_name(name: &str) -> bool {
     name.starts_with(RUNTIME_PREFIX) && name != RUNTIME_ENTRY
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PayloadRange {
+    start: u64,
+    body_len: u64,
+    auth: Option<([u8; 32], [u8; 64])>,
+}
+
+/// Domain-separated SHA-256 digest signed by v2 Ed25519 payload trailers.
+fn payload_signing_digest(obfuscated_body: &[u8]) -> [u8; 32] {
+    let mut h = crate::pkg::sha256::Sha256Hasher::new();
+    h.update(b"SPID3R-PAYLOAD02\0");
+    h.update(&(obfuscated_body.len() as u64).to_le_bytes());
+    h.update(obfuscated_body);
+    h.finalize()
+}
+
+/// Parse a 32-byte seed (64 hex chars) or 64-byte secret (128 hex chars, using
+/// the leading 32-byte seed) into `[u8; 32]`.
+pub fn parse_seed_hex(hex_str: &str, label: &str) -> Result<[u8; 32], String> {
+    let bytes = crate::pkg::sha256::hex_decode(hex_str.trim())
+        .ok_or_else(|| format!("{}: signing key must be valid hex", label))?;
+    if bytes.len() != 32 && bytes.len() != 64 {
+        return Err(format!(
+            "{}: signing key must be 32-byte seed (64 hex chars) or 64-byte secret (128 hex chars), got {} bytes",
+            label,
+            bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes[..32]);
+    Ok(seed)
+}
+
+/// Maximum embedded payload body size accepted before allocating (512 MiB).
+const MAX_PAYLOAD_BYTES: usize = 512 * 1024 * 1024;
+
+/// Parse comma-separated 64-hex Ed25519 public keys.
+/// Fails closed if `raw` is non-empty (trimmed) yet yields zero valid keys.
+fn parse_trust_pks_str(raw: &str) -> Result<Vec<[u8; 32]>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bytes = crate::pkg::sha256::hex_decode(trimmed).ok_or_else(|| {
+            format!(
+                "SPID3R_PAYLOAD_TRUST_PK: invalid hex public key '{}'",
+                trimmed
+            )
+        })?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+            format!(
+                "SPID3R_PAYLOAD_TRUST_PK: public key '{}' must decode to 32 bytes",
+                trimmed
+            )
+        })?;
+        out.push(arr);
+    }
+    if out.is_empty() {
+        return Err("SPID3R_PAYLOAD_TRUST_PK is set but contains no valid public keys".to_string());
+    }
+    Ok(out)
+}
+
+/// Parse comma-separated 64-hex Ed25519 public keys from `SPID3R_PAYLOAD_TRUST_PK`.
+pub fn parse_trust_pks_from_env() -> Result<Vec<[u8; 32]>, String> {
+    match std::env::var("SPID3R_PAYLOAD_TRUST_PK") {
+        Ok(raw) => parse_trust_pks_str(&raw),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
 /// Where the payload body starts, if `exe` carries one.
-fn body_range(exe: &Path) -> Result<Option<(u64, u64)>, String> {
+fn body_range(exe: &Path) -> Result<Option<PayloadRange>, String> {
     let mut file =
         File::open(exe).map_err(|e| format!("cannot open '{}': {}", exe.display(), e))?;
     let len = file
@@ -191,31 +281,72 @@ fn body_range(exe: &Path) -> Result<Option<(u64, u64)>, String> {
     let mut trailer = [0u8; 24];
     file.read_exact(&mut trailer)
         .map_err(|e| format!("cannot read the trailer of '{}': {}", exe.display(), e))?;
-    if &trailer[..16] != MAGIC {
-        return Ok(None);
-    }
     let body_len = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
-    // Checked: a crafted trailer can claim u64::MAX bytes, and
-    // `body_len + TRAILER_LEN` would wrap in release builds and pass the
-    // guard below, turning a bad file into a wild seek.
-    let total = body_len
-        .checked_add(TRAILER_LEN)
-        .filter(|total| *total <= len)
-        .ok_or_else(|| {
+    if &trailer[..16] == MAGIC {
+        // Checked: a crafted trailer can claim u64::MAX bytes, and
+        // `body_len + TRAILER_LEN` would wrap in release builds and pass the
+        // guard below, turning a bad file into a wild seek.
+        let total = body_len
+            .checked_add(TRAILER_LEN)
+            .filter(|total| *total <= len)
+            .ok_or_else(|| {
+                format!(
+                    "'{}' claims a {} byte payload but is only {} bytes long",
+                    exe.display(),
+                    body_len,
+                    len
+                )
+            })?;
+        return Ok(Some(PayloadRange {
+            start: len - total,
+            body_len,
+            auth: None,
+        }));
+    }
+    if &trailer[..16] == MAGIC_V2 {
+        if len < TRAILER_V2_LEN {
+            return Err(format!(
+                "'{}' has a truncated v2 payload trailer",
+                exe.display()
+            ));
+        }
+        let total = body_len
+            .checked_add(TRAILER_V2_LEN)
+            .filter(|total| *total <= len)
+            .ok_or_else(|| {
+                format!(
+                    "'{}' claims a {} byte payload but is only {} bytes long",
+                    exe.display(),
+                    body_len,
+                    len
+                )
+            })?;
+        file.seek(SeekFrom::End(-(TRAILER_V2_LEN as i64)))
+            .map_err(|e| format!("cannot seek in '{}': {}", exe.display(), e))?;
+        let mut pk = [0u8; 32];
+        let mut sig = [0u8; 64];
+        file.read_exact(&mut pk)
+            .map_err(|e| format!("cannot read payload pubkey of '{}': {}", exe.display(), e))?;
+        file.read_exact(&mut sig).map_err(|e| {
             format!(
-                "'{}' claims a {} byte payload but is only {} bytes long",
+                "cannot read payload signature of '{}': {}",
                 exe.display(),
-                body_len,
-                len
+                e
             )
         })?;
-    Ok(Some((len - total, body_len)))
+        return Ok(Some(PayloadRange {
+            start: len - total,
+            body_len,
+            auth: Some((pk, sig)),
+        }));
+    }
+    Ok(None)
 }
 
-/// Append `entries` to the executable at `exe`.
+/// Append `entries` to the executable at `exe` (v1 integrity-less trailer).
 ///
-/// An existing payload is replaced rather than stacked, so rebuilding the same
-/// output path does not grow the file on every run.
+/// An existing payload (v1 or v2) is replaced rather than stacked, so rebuilding
+/// the same output path does not grow the file on every run.
 pub fn append(exe: &Path, entries: &[Entry]) -> Result<(), String> {
     if entries.is_empty() {
         return Ok(());
@@ -230,8 +361,8 @@ pub fn append(exe: &Path, entries: &[Entry]) -> Result<(), String> {
         .map_err(|e| format!("cannot open '{}' for embedding: {}", exe.display(), e))?;
 
     // Drop a payload left by an earlier build before writing the new one.
-    if let Some((start, _)) = body_range(exe)? {
-        file.set_len(start)
+    if let Some(range) = body_range(exe)? {
+        file.set_len(range.start)
             .map_err(|e| format!("cannot truncate '{}': {}", exe.display(), e))?;
     }
 
@@ -248,13 +379,59 @@ pub fn append(exe: &Path, entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 
+/// Append `entries` to `exe` with an Ed25519-signed v2 trailer (audit A-10).
+/// Returns the 32-byte Ed25519 public key used to sign the payload.
+pub fn append_signed(exe: &Path, entries: &[Entry], seed: &[u8; 32]) -> Result<[u8; 32], String> {
+    if entries.is_empty() {
+        return Err("cannot sign an empty payload".to_string());
+    }
+    let (pk, sk) = crate::pkg::ed25519::keypair_from_seed(seed);
+    let mut body = encode_body(entries)?;
+    obfuscate(&mut body);
+    let digest = payload_signing_digest(&body);
+    let sig = crate::pkg::ed25519::sign(&sk, &digest)?;
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(exe)
+        .map_err(|e| format!("cannot open '{}' for embedding: {}", exe.display(), e))?;
+
+    if let Some(range) = body_range(exe)? {
+        file.set_len(range.start)
+            .map_err(|e| format!("cannot truncate '{}': {}", exe.display(), e))?;
+    }
+
+    file.seek(SeekFrom::End(0))
+        .map_err(|e| format!("cannot seek in '{}': {}", exe.display(), e))?;
+    file.write_all(&body)
+        .map_err(|e| format!("cannot write the payload to '{}': {}", exe.display(), e))?;
+    file.write_all(&pk)
+        .map_err(|e| format!("cannot write payload pubkey to '{}': {}", exe.display(), e))?;
+    file.write_all(&sig).map_err(|e| {
+        format!(
+            "cannot write payload signature to '{}': {}",
+            exe.display(),
+            e
+        )
+    })?;
+    file.write_all(MAGIC_V2)
+        .map_err(|e| format!("cannot write the payload to '{}': {}", exe.display(), e))?;
+    file.write_all(&(body.len() as u64).to_le_bytes())
+        .map_err(|e| format!("cannot write the payload to '{}': {}", exe.display(), e))?;
+    file.flush()
+        .map_err(|e| format!("cannot flush '{}': {}", exe.display(), e))?;
+    Ok(pk)
+}
+
 /// Read every entry embedded in `exe`. `Ok(None)` means the file has no
 /// payload at all, which is the normal case for a plain executable.
 pub fn read(exe: &Path) -> Result<Option<Vec<Entry>>, String> {
     read_filtered(exe, |_| true)
 }
 
-/// Read the payload, keeping only the entries `keep` accepts.
+/// Read the payload, keeping only the entries `keep` accepts, honoring
+/// `SPID3R_PAYLOAD_TRUST_PK` when set and always verifying v2 signatures.
 ///
 /// The body is parsed in full (so a malformed payload is still reported) but
 /// only the kept entries are copied.
@@ -262,16 +439,67 @@ pub fn read_filtered(
     exe: &Path,
     keep: impl Fn(&str) -> bool,
 ) -> Result<Option<Vec<Entry>>, String> {
-    let Some((start, len)) = body_range(exe)? else {
+    let trust_pks = parse_trust_pks_from_env()?;
+    read_filtered_with_trust_pks(exe, keep, &trust_pks)
+}
+
+/// Read the payload with an explicit list of trusted Ed25519 public keys.
+/// When `trust_pks` is non-empty, unsigned v1 payloads and v2 payloads signed
+/// by any unlisted key are rejected fail-closed.
+pub fn read_filtered_with_trust_pks(
+    exe: &Path,
+    keep: impl Fn(&str) -> bool,
+    trust_pks: &[[u8; 32]],
+) -> Result<Option<Vec<Entry>>, String> {
+    let Some(range) = body_range(exe)? else {
         return Ok(None);
     };
+    let len_usize = usize::try_from(range.body_len)
+        .ok()
+        .filter(|&n| n <= MAX_PAYLOAD_BYTES)
+        .ok_or_else(|| {
+            format!(
+                "payload of '{}' ({} bytes) exceeds the {} byte limit",
+                exe.display(),
+                range.body_len,
+                MAX_PAYLOAD_BYTES
+            )
+        })?;
     let mut file =
         File::open(exe).map_err(|e| format!("cannot open '{}': {}", exe.display(), e))?;
-    file.seek(SeekFrom::Start(start))
+    file.seek(SeekFrom::Start(range.start))
         .map_err(|e| format!("cannot seek in '{}': {}", exe.display(), e))?;
-    let mut body = vec![0u8; len as usize];
+    let mut body = vec![0u8; len_usize];
     file.read_exact(&mut body)
         .map_err(|e| format!("cannot read the payload of '{}': {}", exe.display(), e))?;
+
+    match range.auth {
+        Some((pk, sig)) => {
+            if !trust_pks.is_empty() && !trust_pks.iter().any(|t| t == &pk) {
+                return Err(format!(
+                    "payload of '{}' is signed by untrusted Ed25519 key {}",
+                    exe.display(),
+                    crate::pkg::sha256::hex_encode(&pk)
+                ));
+            }
+            let digest = payload_signing_digest(&body);
+            if !crate::pkg::ed25519::verify(&pk, &digest, &sig) {
+                return Err(format!(
+                    "payload of '{}' failed Ed25519 signature verification",
+                    exe.display()
+                ));
+            }
+        }
+        None => {
+            if !trust_pks.is_empty() {
+                return Err(format!(
+                    "unsigned v1 payload in '{}' refused: SPID3R_PAYLOAD_TRUST_PK requires a signed v2 payload",
+                    exe.display()
+                ));
+            }
+        }
+    }
+
     obfuscate(&mut body);
     decode_body_filtered(&body, keep).map(Some)
 }
@@ -444,5 +672,65 @@ mod tests {
         let bytes = std::fs::read(&exe).unwrap();
         assert_eq!(&bytes[..4], &[0x4d, 0x5a, 0x90, 0x00]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signed_v2_roundtrip_tamper_and_trust_pk_enforcement() {
+        let dir = std::env::temp_dir().join(format!("spid3r_payload_v2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("app.exe");
+        std::fs::write(&exe, vec![0x4d, 0x5a, 0x90, 0x00]).unwrap();
+
+        let seed = [0x42u8; 32];
+        let other_pk = [0x99u8; 32];
+
+        // 1. Start with unsigned v1; trust_pks non-empty must refuse it.
+        append(&exe, &sample()).unwrap();
+        assert!(read_filtered_with_trust_pks(&exe, |_| true, &[]).is_ok());
+        let err_v1 = read_filtered_with_trust_pks(&exe, |_| true, &[other_pk])
+            .expect_err("unsigned v1 must be refused when trust_pks is non-empty");
+        assert!(err_v1.contains("unsigned v1"), "{err_v1}");
+
+        // 2. Replace with signed v2; round-trips with empty trust_pks and matching trust_pk.
+        let pk = append_signed(&exe, &sample(), &seed).unwrap();
+        assert_eq!(
+            read_filtered_with_trust_pks(&exe, |_| true, &[])
+                .unwrap()
+                .unwrap(),
+            sample()
+        );
+        assert_eq!(
+            read_filtered_with_trust_pks(&exe, |_| true, &[pk])
+                .unwrap()
+                .unwrap(),
+            sample()
+        );
+
+        // 3. Untrusted signer key must fail closed.
+        let err_untrusted = read_filtered_with_trust_pks(&exe, |_| true, &[other_pk])
+            .expect_err("untrusted signer key must fail");
+        assert!(err_untrusted.contains("untrusted"), "{err_untrusted}");
+
+        // 4. Flipping one byte inside the payload body must fail Ed25519 verification.
+        let mut raw = std::fs::read(&exe).unwrap();
+        raw[5] ^= 0x01;
+        std::fs::write(&exe, &raw).unwrap();
+        let err_tamper = read_filtered_with_trust_pks(&exe, |_| true, &[])
+            .expect_err("tampered v2 payload must fail signature verification");
+        assert!(
+            err_tamper.contains("Ed25519 signature verification"),
+            "{err_tamper}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trust_pk_parser_fails_closed_on_comma_only_input() {
+        assert!(parse_trust_pks_str("").unwrap().is_empty());
+        assert!(parse_trust_pks_str("   ").unwrap().is_empty());
+        let err = parse_trust_pks_str(",,,").expect_err("comma-only trust_pk must fail closed");
+        assert!(err.contains("no valid public keys"), "{err}");
     }
 }

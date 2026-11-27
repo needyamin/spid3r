@@ -5,31 +5,18 @@
 //! → PBKDF2-HMAC-SHA256. Verified against CPython's `hashlib.scrypt`, which is
 //! backed by OpenSSL. Deliberately not here: bcrypt and argon2 (see §3.5).
 
-use crate::pkg::sha256_bytes;
 use crate::value::{NativeCtx, Value};
 
 /// Refuse parameters whose working set would exceed this, so a bad call
 /// cannot take the process down (128 * N * r bytes per lane, times p).
 const MAX_MEMORY: u64 = 1024 * 1024 * 1024;
 
+/// SEC-C3: cap on derived-key length before `Vec::with_capacity` so an
+/// attacker-controlled dklen cannot trigger an uncatchable allocation abort.
+const MAX_DKLEN: usize = 1024 * 1024;
+
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut k = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        k[..32].copy_from_slice(&sha256_bytes(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Vec::with_capacity(BLOCK + msg.len());
-    let mut outer = Vec::with_capacity(BLOCK + 32);
-    for &b in k.iter() {
-        inner.push(b ^ 0x36);
-        outer.push(b ^ 0x5c);
-    }
-    inner.extend_from_slice(msg);
-    let ih = sha256_bytes(&inner);
-    outer.extend_from_slice(&ih);
-    sha256_bytes(&outer)
+    crate::stdlib::hmac_sha256_bytes(key, msg)
 }
 
 /// PBKDF2-HMAC-SHA256 with an arbitrary output length (the existing native
@@ -185,6 +172,12 @@ pub fn scrypt_hex(
     if dklen == 0 {
         return Err("scrypt: dklen must be at least 1".to_string());
     }
+    if dklen > MAX_DKLEN {
+        return Err(format!(
+            "scrypt: dklen {} exceeds the {} byte limit",
+            dklen, MAX_DKLEN
+        ));
+    }
     let per_lane = 128u64
         .checked_mul(n)
         .and_then(|x| x.checked_mul(r))
@@ -254,7 +247,9 @@ fn n_scrypt(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let r = int_arg(3, "r")?;
     let p = int_arg(4, "p")?;
     let dklen = if args.len() == 6 {
-        int_arg(5, "dklen")? as usize
+        let raw = int_arg(5, "dklen")?;
+        usize::try_from(raw)
+            .map_err(|_| format!("scrypt: dklen {} exceeds the {} byte limit", raw, MAX_DKLEN))?
     } else {
         32
     };
@@ -298,5 +293,13 @@ mod tests {
         assert!(scrypt_hex(b"p", b"s", 1, 1, 1, 32).is_err()); // n < 2
         assert!(scrypt_hex(b"p", b"s", 1024, 0, 1, 32).is_err()); // r = 0
         assert!(scrypt_hex(b"p", b"s", 1 << 40, 8, 1, 32).is_err()); // too much memory
+    }
+
+    /// SEC-C3: hostile dklen must return a clean error rather than aborting in
+    /// `Vec::with_capacity`.
+    #[test]
+    fn hostile_dklen_is_a_clean_error() {
+        let err = scrypt_hex(b"a", b"b", 16, 1, 1, 4_000_000_000).unwrap_err();
+        assert!(err.contains("dklen"), "unexpected error: {}", err);
     }
 }

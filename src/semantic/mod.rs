@@ -3391,6 +3391,111 @@ impl Checker {
         common_type(a, b)
     }
 
+    fn binary_result_type(op: BinOp, a: &Ty, b: &Ty) -> Ty {
+        match op {
+            BinOp::Add => {
+                if *a == Ty::Str && *b == Ty::Str {
+                    return Ty::Str;
+                }
+                if let (Ty::Coll(n1, _), Ty::Coll(n2, _)) = (a, b) {
+                    if n1 == "list" && n2 == "list" {
+                        return Ty::Coll("list".to_string(), None);
+                    }
+                }
+                if *a == Ty::Int && *b == Ty::Int {
+                    return Ty::Int;
+                }
+                if matches!(a, Ty::Float) || matches!(b, Ty::Float) {
+                    return Ty::Float;
+                }
+                Ty::Any
+            }
+            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                if *a == Ty::Int && *b == Ty::Int {
+                    Ty::Int
+                } else if *a == Ty::Float || *b == Ty::Float {
+                    Ty::Float
+                } else {
+                    Ty::Any
+                }
+            }
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Ty::Bool,
+        }
+    }
+
+    /// SEC-D1: check a binary expression in a single bottom-up O(n) pass using
+    /// an explicit left-spine stack so checking `a + b + c + ...` neither
+    /// re-traverses `type_of(l)` (which was O(n^2)) nor consumes O(n) call-stack
+    /// frames.
+    fn check_binary_expr(&mut self, op: BinOp, l: &Expr, r: &Expr, span: &Span) -> SpidResult<Ty> {
+        let mut spine: Vec<(BinOp, &Expr, &Span)> = vec![(op, r, span)];
+        let mut cur = l;
+        while let Expr::Binary {
+            op: lop,
+            l: ll,
+            r: lr,
+            span: lspan,
+        } = cur
+        {
+            spine.push((*lop, lr, lspan));
+            cur = ll;
+        }
+        self.check_expr(cur)?;
+        let mut lt = self.type_of(cur);
+        while let Some((bop, rhs, bspan)) = spine.pop() {
+            let rt = match rhs {
+                Expr::Binary {
+                    op: rop,
+                    l: rl,
+                    r: rr,
+                    span: rspan,
+                } => self.check_binary_expr(*rop, rl, rr, rspan)?,
+                other => {
+                    self.check_expr(other)?;
+                    self.type_of(other)
+                }
+            };
+            self.check_binop_types(bop, &lt, &rt, bspan)?;
+            lt = Self::binary_result_type(bop, &lt, &rt);
+        }
+        Ok(lt)
+    }
+
+    fn type_of_binary(&self, op: BinOp, l: &Expr, r: &Expr) -> Ty {
+        if matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        ) {
+            return Ty::Bool;
+        }
+        let mut spine: Vec<(BinOp, &Expr)> = vec![(op, r)];
+        let mut cur = l;
+        while let Expr::Binary {
+            op: lop,
+            l: ll,
+            r: lr,
+            ..
+        } = cur
+        {
+            spine.push((*lop, lr));
+            cur = ll;
+        }
+        let mut lt = self.type_of(cur);
+        while let Some((bop, rhs)) = spine.pop() {
+            let rt = match rhs {
+                Expr::Binary {
+                    op: rop,
+                    l: rl,
+                    r: rr,
+                    ..
+                } => self.type_of_binary(*rop, rl, rr),
+                other => self.type_of(other),
+            };
+            lt = Self::binary_result_type(bop, &lt, &rt);
+        }
+        lt
+    }
+
     fn type_of(&self, e: &Expr) -> Ty {
         match e {
             // A named argument is only legal inside a call's argument list,
@@ -3492,39 +3597,7 @@ impl Checker {
                 }
                 UnOp::Not => Ty::Bool,
             },
-            Expr::Binary { op, l, r, .. } => match op {
-                BinOp::Add => {
-                    let a = self.type_of(l);
-                    let b = self.type_of(r);
-                    if a == Ty::Str && b == Ty::Str {
-                        return Ty::Str;
-                    }
-                    if let (Ty::Coll(n1, _), Ty::Coll(n2, _)) = (&a, &b) {
-                        if n1 == "list" && n2 == "list" {
-                            return Ty::Coll("list".to_string(), None);
-                        }
-                    }
-                    if a == Ty::Int && b == Ty::Int {
-                        return Ty::Int;
-                    }
-                    if matches!(a, Ty::Float) || matches!(b, Ty::Float) {
-                        return Ty::Float;
-                    }
-                    Ty::Any
-                }
-                BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    let a = self.type_of(l);
-                    let b = self.type_of(r);
-                    if a == Ty::Int && b == Ty::Int {
-                        Ty::Int
-                    } else if a == Ty::Float || b == Ty::Float {
-                        Ty::Float
-                    } else {
-                        Ty::Any
-                    }
-                }
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Ty::Bool,
-            },
+            Expr::Binary { op, l, r, .. } => self.type_of_binary(*op, l, r),
             Expr::Logical { .. } => Ty::Bool,
             Expr::Super { .. } | Expr::SuperCall { .. } => Ty::Any,
             Expr::Call {
@@ -3605,14 +3678,30 @@ impl Checker {
                 }
             }
             Expr::Field { object, name, .. } => {
-                if let Ty::Class(c) = self.type_of(object) {
-                    if let Some(ci) = self.classes.get(&c) {
-                        if let Some((_, Some(ft))) = ci.fields.get(name) {
-                            return self.resolve_type(ft);
+                let mut fields: Vec<&str> = vec![name.as_str()];
+                let mut cur = object.as_ref();
+                while let Expr::Field {
+                    object: inner,
+                    name: fname,
+                    ..
+                } = cur
+                {
+                    fields.push(fname.as_str());
+                    cur = inner.as_ref();
+                }
+                let mut ty = self.type_of(cur);
+                while let Some(fname) = fields.pop() {
+                    if let Ty::Class(c) = ty {
+                        if let Some(ci) = self.classes.get(&c) {
+                            if let Some((_, Some(ft))) = ci.fields.get(fname) {
+                                ty = self.resolve_type(ft);
+                                continue;
+                            }
                         }
                     }
+                    return Ty::Any;
                 }
-                Ty::Any
+                ty
             }
             Expr::New { class, .. } => {
                 if self.classes.contains_key(class) {
@@ -4095,11 +4184,8 @@ impl Checker {
                 Ok(())
             }
             Expr::Binary { op, l, r, span } => {
-                self.check_expr(l)?;
-                self.check_expr(r)?;
-                let lt = self.type_of(l);
-                let rt = self.type_of(r);
-                self.check_binop_types(*op, &lt, &rt, span)
+                self.check_binary_expr(*op, l, r, span)?;
+                Ok(())
             }
             Expr::Logical { l, r, .. } => {
                 self.check_expr(l)?;
@@ -4569,25 +4655,56 @@ impl Checker {
                 Ok(())
             }
             Expr::Field { object, name, span } => {
-                self.check_expr(object)?;
-                let recv_class = self.receiver_class(object);
-                if let Some(cls) = recv_class {
-                    match self.field_decl(&cls, name) {
-                        Some((vis, decl_cls)) => {
-                            if vis == Vis::Private
-                                && self.current_class.as_deref() != Some(&decl_cls)
-                            {
+                // SEC-D1: walk `.a.b.c...` chains iteratively in O(n) time and
+                // O(1) call-stack depth instead of recursing + calling
+                // `receiver_class` (O(n^2)) at every segment.
+                let mut fields: Vec<(&str, &Span)> = vec![(name.as_str(), span)];
+                let mut cur = object.as_ref();
+                while let Expr::Field {
+                    object: inner,
+                    name: fname,
+                    span: fspan,
+                } = cur
+                {
+                    fields.push((fname.as_str(), fspan));
+                    cur = inner.as_ref();
+                }
+                self.check_expr(cur)?;
+                let mut recv_class = self.receiver_class(cur);
+                while let Some((fname, fspan)) = fields.pop() {
+                    if let Some(cls) = recv_class {
+                        match self.field_decl(&cls, fname) {
+                            Some((vis, decl_cls)) => {
+                                if vis == Vis::Private
+                                    && self.current_class.as_deref() != Some(&decl_cls)
+                                {
+                                    return Err(self.err(
+                                        fspan,
+                                        format!(
+                                            "field '{}' of class '{}' is private",
+                                            fname, decl_cls
+                                        ),
+                                    ));
+                                }
+                            }
+                            None => {
                                 return Err(self.err(
-                                    span,
-                                    format!("field '{}' of class '{}' is private", name, decl_cls),
-                                ));
+                                    fspan,
+                                    format!("class '{}' has no field '{}'", cls, fname),
+                                ))
                             }
                         }
-                        None => {
-                            return Err(
-                                self.err(span, format!("class '{}' has no field '{}'", cls, name))
-                            )
-                        }
+                        recv_class = self
+                            .classes
+                            .get(&cls)
+                            .and_then(|ci| ci.fields.get(fname))
+                            .and_then(|(_, ft)| ft.as_ref())
+                            .and_then(|ft| match self.resolve_type(ft) {
+                                Ty::Class(next) if self.classes.contains_key(&next) => Some(next),
+                                _ => None,
+                            });
+                    } else {
+                        recv_class = None;
                     }
                 }
                 Ok(())

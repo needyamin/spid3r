@@ -366,8 +366,11 @@ jobs:
           name: release-bundle-verified
           path: |
             dist/*.tar.gz
+            dist/spid3r-*.tar.gz.sha256
             dist/Spid3r-Setup-*.exe
+            dist/Spid3r-Setup-*.exe.sha256
             dist/Spid3r-*.msix
+            dist/Spid3r-*.msix.sha256
             dist/sha256sums.txt
           retention-days: 7
 
@@ -379,8 +382,11 @@ jobs:
         with:
           files: |
             dist/spid3r-*.tar.gz
+            dist/spid3r-*.tar.gz.sha256
             dist/Spid3r-Setup-*.exe
+            dist/Spid3r-Setup-*.exe.sha256
             dist/Spid3r-*.msix
+            dist/Spid3r-*.msix.sha256
             dist/sha256sums.txt
           overwrite_files: true
           fail_on_unmatched_files: true

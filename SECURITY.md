@@ -77,6 +77,12 @@ Response targets: acknowledge within **7 days**; ship a fix or mitigation for cr
 | No built-in CSRF middleware in `stdlib/web.matrix` | Open |
 | Web sessions are client-readable (HMAC-signed, not encrypted) | By design |
 | Hand-written `--embed` launchers keep the lenient payload fallback | Use `run_payload_strict()` |
+| Embedded `--embed` payload trailer supports optional Ed25519 signing (`SPID3R_PAYLOAD_SIGN_KEY` + `SPID3R_PAYLOAD_TRUST_PK` via v2 trailer `SPID3R-PAYLOAD02`); unsigned v1 trailers remain accepted when `SPID3R_PAYLOAD_TRUST_PK` is unset | Documented (2026-11 audit M1 / A-10) |
+| Under `--sandbox` / `security.deny_filesystem`, `import` skips CWD fallback and non-`.matrix`/`.mt` bare files, and diagnostics suppress quoting source lines from disk; `security.basedir` confines disk imports while keeping embedded stdlib available | Documented (2026-11 audit F2 / A-2) |
+| Display, structural equality, and deep-clone walks are depth-capped at 64 (elision marker / `false` / shared tail past depth 64; iterative `Drop` covers all containers including tuples, options, and results) | Documented (2026-11 audit V3 / A-6) |
+| `gunzip`/`inflate`/`unzlib` cap output at `min(allocation_cap_mb / memory_limit_mb, 256 MiB)` per call; `zip_read` caps total inflated size at `min(1 GiB, 4 × per-call cap)` | Documented (2026-11 audit D2 / A-7) |
+| `tls_listen` cert paths and `http_fetch` `ca_cert` paths are gated by both `security.deny_filesystem` / `--sandbox` and `security.basedir` | Documented (2026-11 audit F5 / A-9) |
+| Project-local `spid3r.ini` in the current working directory is ignored by design unless pinned via `SPID3R_INI`; unknown `[security]` keys and case-variant typos warn on stderr | Documented (2026-11 audit A-11 / A-12) |
 
 ## Deeper Reading
 

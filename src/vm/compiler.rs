@@ -1208,23 +1208,39 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
             }
         }
         Expr::Binary { op, l, r, span } => {
-            compile_expr(compilers, ci, l)?;
-            compile_expr(compilers, ci, r)?;
-            compilers[ci].chunk.set_span(span.clone());
-            let oc = match op {
-                BinOp::Add => OpCode::Add,
-                BinOp::Sub => OpCode::Sub,
-                BinOp::Mul => OpCode::Mul,
-                BinOp::Div => OpCode::Div,
-                BinOp::Mod => OpCode::Mod,
-                BinOp::Eq => OpCode::Equal,
-                BinOp::Ne => OpCode::NotEqual,
-                BinOp::Lt => OpCode::Less,
-                BinOp::Le => OpCode::LessEq,
-                BinOp::Gt => OpCode::Greater,
-                BinOp::Ge => OpCode::GreaterEq,
-            };
-            compilers[ci].chunk.emit(oc);
+            // SEC-D1: walk left-associative binary spines iteratively so deep
+            // chains emit identical bytecode without overflowing a 2 MB stack.
+            let mut spine = vec![(*op, r.as_ref(), span)];
+            let mut cur = l.as_ref();
+            while let Expr::Binary {
+                op: lop,
+                l: ll,
+                r: lr,
+                span: lspan,
+            } = cur
+            {
+                spine.push((*lop, lr.as_ref(), lspan));
+                cur = ll.as_ref();
+            }
+            compile_expr(compilers, ci, cur)?;
+            while let Some((bop, rhs, bspan)) = spine.pop() {
+                compile_expr(compilers, ci, rhs)?;
+                compilers[ci].chunk.set_span(bspan.clone());
+                let oc = match bop {
+                    BinOp::Add => OpCode::Add,
+                    BinOp::Sub => OpCode::Sub,
+                    BinOp::Mul => OpCode::Mul,
+                    BinOp::Div => OpCode::Div,
+                    BinOp::Mod => OpCode::Mod,
+                    BinOp::Eq => OpCode::Equal,
+                    BinOp::Ne => OpCode::NotEqual,
+                    BinOp::Lt => OpCode::Less,
+                    BinOp::Le => OpCode::LessEq,
+                    BinOp::Gt => OpCode::Greater,
+                    BinOp::Ge => OpCode::GreaterEq,
+                };
+                compilers[ci].chunk.emit(oc);
+            }
         }
         Expr::Logical { op, l, r, .. } => {
             compile_expr(compilers, ci, l)?;
@@ -1362,10 +1378,23 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
             compilers[ci].chunk.emit(OpCode::IndexGet);
         }
         Expr::Field { object, name, span } => {
-            compile_expr(compilers, ci, object)?;
-            compilers[ci].chunk.set_span(span.clone());
-            let idx = compilers[ci].chunk.emit_str_const(name);
-            compilers[ci].chunk.emit_u16(OpCode::FieldGet, idx);
+            let mut fields = vec![(name.as_str(), span)];
+            let mut cur = object.as_ref();
+            while let Expr::Field {
+                object: inner,
+                name: fname,
+                span: fspan,
+            } = cur
+            {
+                fields.push((fname.as_str(), fspan));
+                cur = inner.as_ref();
+            }
+            compile_expr(compilers, ci, cur)?;
+            while let Some((fname, fspan)) = fields.pop() {
+                compilers[ci].chunk.set_span(fspan.clone());
+                let idx = compilers[ci].chunk.emit_str_const(fname);
+                compilers[ci].chunk.emit_u16(OpCode::FieldGet, idx);
+            }
         }
         Expr::New {
             class, args, span, ..

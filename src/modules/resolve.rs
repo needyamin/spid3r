@@ -200,6 +200,10 @@ pub fn resolve_module(
         return Err(Diagnostic::new(Phase::Semantic, reason));
     }
 
+    let pol = crate::stdlib::fs_policy::policy();
+    let restricted_fs = crate::stdlib::sandbox_armed() || pol.deny_filesystem;
+    let basedir_on = crate::stdlib::fs_policy::basedir_active(pol);
+
     let mut roots: Vec<(PathBuf, ModuleOrigin)> = Vec::with_capacity(extra_dirs.len() + 8);
     let base = PathBuf::from(importer);
     if let Some(dir) = base.parent() {
@@ -218,22 +222,37 @@ pub fn resolve_module(
     // Current working directory fallback so subdirectory modules (e.g.
     // `gui/controllers/*`) can import root-relative modules (`core/*`) without
     // requiring `SPID3R_PATH=.` even when no `spider.toml` is present.
-    if let Ok(cwd) = std::env::current_dir() {
-        if !roots.iter().any(|(existing, _)| existing == &cwd) {
-            roots.push((cwd, ModuleOrigin::Disk));
+    // Audit A-2: under `--sandbox` or `security.deny_filesystem`, do not widen
+    // import resolution with the arbitrary process CWD.
+    if !restricted_fs {
+        if let Ok(cwd) = std::env::current_dir() {
+            if !roots.iter().any(|(existing, _)| existing == &cwd) {
+                roots.push((cwd, ModuleOrigin::Disk));
+            }
         }
     }
 
+    let allow_bare = !restricted_fs || spec.ends_with(".matrix") || spec.ends_with(".mt");
     for (dir, origin) in roots {
         // As written first, then with `.matrix`, then `.mt`: `import "util"`,
         // `import "util.matrix"`, and `import "util.mt"` all work, and an
         // extensionless file named `util` wins over suffixed files beside it.
-        for candidate in [
-            dir.join(spec),
-            dir.join(format!("{}.matrix", spec)),
-            dir.join(format!("{}.mt", spec)),
-        ] {
+        // Under `--sandbox` / `deny_filesystem`, bare non-`.matrix`/`.mt` files
+        // are skipped so `import "secret.txt"` cannot probe arbitrary disk files.
+        let mut candidates = Vec::with_capacity(3);
+        if allow_bare {
+            candidates.push(dir.join(spec));
+        }
+        candidates.push(dir.join(format!("{}.matrix", spec)));
+        candidates.push(dir.join(format!("{}.mt", spec)));
+
+        for candidate in candidates {
             if candidate.is_file() {
+                if basedir_on
+                    && crate::stdlib::fs_policy::check_path(&candidate.to_string_lossy()).is_err()
+                {
+                    continue;
+                }
                 return Ok(ResolvedModule {
                     // Canonicalize so the module cache, cycle detection and the
                     // VM's embedded table key on the real file rather than the

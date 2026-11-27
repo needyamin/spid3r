@@ -309,3 +309,61 @@ fn only_a_console_bundle_pauses_the_launcher() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Audit L-3 end-to-end: a bundled desktop `run.bat` whose source stem
+/// contains `!PATH!` and `%USERPROFILE%` must execute cleanly under
+/// `cmd /V:ON /C` without expanding variables or breaking argument quoting.
+#[cfg(windows)]
+#[test]
+fn windows_desktop_run_bat_executes_special_stem_under_delayed_expansion() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = scratch("bundle-special-bat");
+    let app = dir.join("app!PATH!_%USERPROFILE%.matrix");
+    fs::write(&app, "fn main() { println(\"BUNDLE_OK_L3\"); return 0; }\n").unwrap();
+
+    let out_dir = dir.join("dist");
+    let (code, _, stderr) = spid3r(&[
+        "bundle",
+        app.to_str().unwrap(),
+        "--target",
+        "desktop",
+        "-o",
+        out_dir.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "bundle failed: {stderr}");
+
+    let spid3r_exe = PathBuf::from(env!("CARGO_BIN_EXE_spid3r"));
+    let bin_dir = spid3r_exe.parent().unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir.to_path_buf()];
+    path_entries.extend(std::env::split_paths(&old_path));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let mut child = Command::new("cmd")
+        .args(["/V:ON", "/C", "run.bat"])
+        .current_dir(&out_dir)
+        .env("PATH", new_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cmd /V:ON /C run.bat");
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"\r\n");
+    }
+    let output = child.wait_with_output().expect("wait run.bat");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run.bat failed (code={:?}): stdout={stdout} stderr={stderr}",
+        output.status.code()
+    );
+    assert!(
+        stdout.contains("BUNDLE_OK_L3"),
+        "expected bundled program output, got stdout={stdout} stderr={stderr}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

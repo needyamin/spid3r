@@ -144,6 +144,7 @@ pub fn fetch_git(
             &path_str(&dir),
             "checkout",
             "--detach",
+            "--force",
             "--quiet",
             commit,
         ])
@@ -161,6 +162,7 @@ pub fn fetch_git(
             &path_str(&dir),
             "checkout",
             "--detach",
+            "--force",
             "--quiet",
             rev,
         ])?;
@@ -173,14 +175,24 @@ pub fn fetch_git(
             &path_str(&dir),
             "checkout",
             "--quiet",
+            "--force",
             "--detach",
             &target,
         ])
         .is_err()
         {
+            // Audit A-4: reset tracked modifications before attempting a
+            // fast-forward pull so dirty tracked files neither block the pull
+            // nor survive if pull is a no-op / fails.
+            run_git(&["-C", &path_str(&dir), "reset", "--hard", "--quiet", "HEAD"])?;
             let _ = run_git(&["-C", &path_str(&dir), "pull", "--quiet", "--ff-only"]);
         }
     }
+    // Audit A-4: reset tracked files and wipe any leftover untracked/ignored
+    // files in the cached git working tree across every branch so local
+    // modifications can never leak into `vendor/`.
+    run_git(&["-C", &path_str(&dir), "reset", "--hard", "--quiet", "HEAD"])?;
+    run_git(&["-C", &path_str(&dir), "clean", "-fdxq"])?;
     let out = run_git(&["-C", &path_str(&dir), "rev-parse", "HEAD"])?;
     let head = out.trim().to_ascii_lowercase();
     if let Some(commit) = locked {
@@ -230,6 +242,23 @@ pub fn verify_offline_checkout(
                 name, head, commit
             ));
         }
+    }
+    // Audit A-4: refuse to vendor a dirty offline git cache (including ignored
+    // untracked files, matching online `git clean -fdxq`).
+    let status = run_git(&[
+        "-C",
+        &path_str(dir),
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--ignored=matching",
+    ])?;
+    if !status.trim().is_empty() {
+        return Err(format!(
+            "offline mode: cached git dependency '{}' at {} has uncommitted or untracked modifications; refusing to vendor a dirty tree",
+            name,
+            dir.display()
+        ));
     }
     Ok(head)
 }

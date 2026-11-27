@@ -833,6 +833,12 @@ pub fn fetch_remote_version(
     let ver_dir = pkg_cache_dir.join(ver);
     let require_sigs = !configured_trust_pks()?.is_empty();
     if !update && cached_version_usable(&ver_dir, require_sigs) {
+        if !require_sigs {
+            eprintln!(
+                "warning[pkg]: installing '{}@{}' from local registry cache without Ed25519 signature verification (packages.trust_pk is unset); set packages.trust_pk to pin trusted registry keys",
+                name, ver
+            );
+        }
         return Ok(ver_dir);
     }
 

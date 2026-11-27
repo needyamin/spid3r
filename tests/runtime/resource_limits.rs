@@ -677,3 +677,113 @@ fn exponential_string_and_list_doubling_never_aborts_under_budget() {
         }
     }
 }
+
+/// Audit A-2: under `--sandbox` or `security.deny_filesystem`, `import` cannot
+/// probe arbitrary non-`.matrix`/`.mt` disk files and parse errors in imported
+/// files do not quote raw file lines onto stderr; under `security.basedir`,
+/// out-of-basedir disk imports are rejected while embedded stdlib imports work.
+#[test]
+fn import_hardened_under_sandbox_and_basedir() {
+    let dir = scratch_dir("import_a2");
+    let secret = dir.join("secret.txt");
+    std::fs::write(&secret, "TOP_SECRET_LINE_SHOULD_NOT_LEAK\n").unwrap();
+
+    // 1. --sandbox must refuse bare non-.matrix file import (`secret.txt`).
+    let p_secret = write_in(
+        &dir,
+        "probe_secret.matrix",
+        "import \"secret.txt\";\nfn main() { return 0; }\n",
+    );
+    let out = Command::new(bin())
+        .args(["run", "--sandbox", p_secret.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not found"), "{err}");
+    assert!(!err.contains("TOP_SECRET_LINE_SHOULD_NOT_LEAK"), "{err}");
+
+    // 2. Parse error in an imported `.matrix` file under `--sandbox` must NOT
+    //    quote raw source lines from disk.
+    write_in(&dir, "broken_mod.matrix", "let SECRET_IMPORT_TOKEN = @;\n");
+    let p_broken = write_in(
+        &dir,
+        "probe_broken.matrix",
+        "import \"broken_mod\";\nfn main() { return 0; }\n",
+    );
+    let out_b = Command::new(bin())
+        .args(["run", "--sandbox", p_broken.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r");
+    assert_eq!(out_b.status.code(), Some(1));
+    let err_b = String::from_utf8_lossy(&out_b.stderr);
+    assert!(
+        !err_b.contains("SECRET_IMPORT_TOKEN"),
+        "sandboxed diagnostic leaked imported source line: {err_b}"
+    );
+
+    // 3. Under `security.basedir`, disk import outside basedir fails while
+    //    in-basedir import + embedded stdlib (`semver`) succeed.
+    let inside = dir.join("inside");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        outside.join("ext_mod.matrix"),
+        "public fn nope() { return 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        inside.join("local_mod.matrix"),
+        "public fn ok_val() { return 7; }\n",
+    )
+    .unwrap();
+    let ini = dir.join("bd.ini");
+    std::fs::write(
+        &ini,
+        format!(
+            "[security]\nbasedir = {}\n",
+            inside.to_str().unwrap().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+
+    let p_out = write_in(
+        &inside,
+        "try_outside.matrix",
+        "import \"ext_mod\";\nfn main() { return 0; }\n",
+    );
+    let out_bd_fail = Command::new(bin())
+        .env("SPID3R_INI", &ini)
+        .env("SPID3R_PATH", outside.to_str().unwrap())
+        .args(["run", p_out.to_str().unwrap()])
+        .current_dir(&inside)
+        .output()
+        .expect("spawn spid3r");
+    assert_eq!(
+        out_bd_fail.status.code(),
+        Some(1),
+        "outside basedir disk import must fail"
+    );
+
+    let p_in = write_in(
+        &inside,
+        "try_inside.matrix",
+        "import \"local_mod\";\nimport \"semver\";\nfn main() { println(ok_val()); return 0; }\n",
+    );
+    let out_bd_ok = Command::new(bin())
+        .env("SPID3R_INI", &ini)
+        .args(["run", p_in.to_str().unwrap()])
+        .current_dir(&inside)
+        .output()
+        .expect("spawn spid3r");
+    assert_eq!(
+        out_bd_ok.status.code(),
+        Some(0),
+        "in-basedir + embedded import failed: {}",
+        String::from_utf8_lossy(&out_bd_ok.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out_bd_ok.stdout).trim(), "7");
+}

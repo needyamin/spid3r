@@ -310,6 +310,11 @@ pub fn vendor_dep_checked(
                 "warning: registry dependency '{}' is unsigned (no sha256.txt.sig)",
                 name
             );
+        } else {
+            eprintln!(
+                "warning[pkg]: registry dependency '{}' has signature sha256.txt.sig, but packages.trust_pk is unset — signature not enforced",
+                name
+            );
         }
 
         // Reject symlinked metadata files before reading them.

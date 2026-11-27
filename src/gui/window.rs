@@ -145,6 +145,40 @@ pub enum PageSource {
     },
 }
 
+/// SEC-M2 (audit fix): strict origin-boundary allowlist for webview navigation.
+/// Only the app's own custom-protocol origin (`spid3r://app/...`, plus
+/// `https://spid3r.app/...` on Windows where `with_https_scheme(true)` rewrites
+/// the custom protocol to an HTTPS origin) and `about:blank` are permitted.
+/// On non-Windows platforms `with_https_scheme(true)` is not active, so
+/// `https://spid3r.app` is NOT allowlisted there (preventing navigation to a
+/// live internet domain). Lookalike hosts such as `https://spid3r.app.evil.com/`
+/// or `https://spid3r.app@evil.com/` are rejected because the prefix must end
+/// at EOF, `/`, `?`, or `#`.
+pub(crate) fn is_allowed_webview_url(url: &str) -> bool {
+    is_allowed_webview_url_with_https(url, cfg!(target_os = "windows"))
+}
+
+fn is_allowed_webview_url_with_https(url: &str, allow_https_app: bool) -> bool {
+    if url == "about:blank" {
+        return true;
+    }
+    let matches_origin = |origin: &str| {
+        url.strip_prefix(origin).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with('/')
+                || rest.starts_with('?')
+                || rest.starts_with('#')
+        })
+    };
+    if matches_origin("spid3r://app") {
+        return true;
+    }
+    if allow_https_app && matches_origin("https://spid3r.app") {
+        return true;
+    }
+    false
+}
+
 /// Open the GUI window and run its event loop until the window closes.
 /// Returns only if the window could not be created at all.
 ///
@@ -255,6 +289,11 @@ pub fn open(
         .with_devtools(opts.devtools)
         .with_clipboard(opts.clipboard)
         .with_hotkeys_zoom(opts.zoom)
+        // SEC-M2 (audit fix): pin navigation strictly to the app's own
+        // custom-protocol origin so `window.spid3r.emit` can never follow a
+        // navigation onto a remote or lookalike origin (e.g.
+        // `https://spid3r.app.evil.com`).
+        .with_navigation_handler(|url| is_allowed_webview_url(&url))
         .with_ipc_handler({
             let proxy = proxy.clone();
             move |request: wry::http::Request<String>| {
@@ -489,7 +528,9 @@ fn to_tao_theme(t: bridge::WindowTheme) -> Option<tao::window::Theme> {
 
 fn resolve_window_icon(spec: Option<&str>, site: &StaticSite) -> Option<tao::window::Icon> {
     if let Some(path) = spec {
-        let bytes = site.read_asset(path).or_else(|| std::fs::read(path).ok());
+        let bytes = site
+            .read_asset(path)
+            .or_else(|| crate::stdlib::read_file_bytes_capped(path, "gui_icon").ok());
         match bytes {
             Some(b) => match super::icon::load_tao_icon(&b) {
                 Ok(ic) => return Some(ic),
@@ -1166,6 +1207,72 @@ mod tests {
                 .body(Vec::new())
                 .unwrap();
             self.serve(request)
+        }
+    }
+
+    #[test]
+    fn webview_navigation_allowlist_enforces_exact_origin_boundary() {
+        for ok in [
+            "about:blank",
+            "spid3r://app",
+            "spid3r://app/",
+            "spid3r://app/index.html",
+            "spid3r://app/control.html?tab=1",
+        ] {
+            assert!(
+                is_allowed_webview_url_with_https(ok, true),
+                "should allow (win): {}",
+                ok
+            );
+            assert!(
+                is_allowed_webview_url_with_https(ok, false),
+                "should allow (unix): {}",
+                ok
+            );
+        }
+        // `https://spid3r.app` is ONLY allowed on Windows where
+        // `with_https_scheme(true)` intercepts it; on non-Windows it must be
+        // rejected so a page cannot navigate to the public domain.
+        for win_only in [
+            "https://spid3r.app",
+            "https://spid3r.app/",
+            "https://spid3r.app/index.html",
+            "https://spid3r.app?q=1",
+            "https://spid3r.app#section",
+        ] {
+            assert!(
+                is_allowed_webview_url_with_https(win_only, true),
+                "should allow on Windows: {}",
+                win_only
+            );
+            assert!(
+                !is_allowed_webview_url_with_https(win_only, false),
+                "must reject on non-Windows: {}",
+                win_only
+            );
+        }
+        for bad in [
+            "https://spid3r.app.evil.com/",
+            "https://spid3r.app@evil.com/",
+            "https://spid3r.app:8443/",
+            "http://spid3r.app/",
+            "https://evil.com/",
+            "spid3r://evil.com/",
+            "spid3r://app.evil.com/",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///C:/Windows/win.ini",
+        ] {
+            assert!(
+                !is_allowed_webview_url_with_https(bad, true),
+                "should reject (win): {}",
+                bad
+            );
+            assert!(
+                !is_allowed_webview_url_with_https(bad, false),
+                "should reject (unix): {}",
+                bad
+            );
         }
     }
 }

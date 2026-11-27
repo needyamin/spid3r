@@ -463,9 +463,9 @@ impl GraphData {
                     path.push(at);
                 }
                 path.reverse();
-                return Ok(Value::Option(Some(Box::new(make_list(
+                return Ok(Value::some(make_list(
                     path.iter().map(|i| self.nodes[*i].clone()).collect(),
-                )))));
+                )));
             }
             for e in &self.adj[cur] {
                 if !seen[e.to] {
@@ -713,9 +713,9 @@ impl GraphData {
                 path.push(at);
             }
             path.reverse();
-            Ok(Value::Option(Some(Box::new(make_list(
+            Ok(Value::some(make_list(
                 path.iter().map(|i| self.nodes[*i].clone()).collect(),
-            )))))
+            )))
         } else {
             let pairs: Vec<Value> = dist
                 .iter()
@@ -891,6 +891,21 @@ pub struct HashTableData {
     pub size: usize,
 }
 
+impl Drop for HashTableData {
+    fn drop(&mut self) {
+        // SEC-V3: flatten bucket values and drop iteratively so deeply nested
+        // values stored in a hash table never overflow the call stack.
+        let buckets = std::mem::take(&mut self.buckets);
+        let flat: Vec<Value> = buckets
+            .into_iter()
+            .flat_map(|b| b.into_iter().map(|(_, v)| v))
+            .collect();
+        if !flat.is_empty() {
+            super::drop_iteratively(flat);
+        }
+    }
+}
+
 impl HashTableData {
     pub fn new() -> Self {
         HashTableData {
@@ -1063,7 +1078,26 @@ pub struct TrieData {
     pub count: usize,
 }
 
+impl Drop for TrieData {
+    fn drop(&mut self) {
+        self.detach_all();
+    }
+}
+
 impl TrieData {
+    /// SEC-V3: detach trie nodes with an explicit stack so very long keys
+    /// never overflow the call stack during `Drop` or `.clear()`.
+    fn detach_all(&mut self) {
+        let root = std::mem::replace(&mut self.root, Arc::new(Mutex::new(TrieNode::default())));
+        let mut stack: Vec<TrieRef> = vec![root];
+        while let Some(node) = stack.pop() {
+            let mut guard = node.lock().unwrap_or_else(|p| p.into_inner());
+            let children = std::mem::take(&mut guard.children);
+            for (_ch, child) in children {
+                stack.push(child);
+            }
+        }
+    }
     pub fn new() -> Self {
         TrieData {
             root: Arc::new(Mutex::new(TrieNode::default())),
@@ -1107,18 +1141,39 @@ impl TrieData {
         out
     }
 
+    /// SEC-V3: iterative DFS with a single shared prefix buffer so very long
+    /// keys never overflow the call stack or incur quadratic string copying.
     fn collect(node: &TrieRef, prefix: &str, out: &mut Vec<String>) {
-        let (children, end) = {
-            let b = node.lock().unwrap();
-            (b.children.clone(), b.end)
-        };
-        if end {
-            out.push(prefix.to_string());
+        enum Frame {
+            Enter(Option<char>, TrieRef),
+            PopChar,
         }
-        for (ch, child) in children {
-            let mut p = prefix.to_string();
-            p.push(ch);
-            Self::collect(&child, &p, out);
+        let mut buf = prefix.to_string();
+        let mut stack: Vec<Frame> = vec![Frame::Enter(None, node.clone())];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::PopChar => {
+                    buf.pop();
+                }
+                Frame::Enter(ch, n) => {
+                    if let Some(c) = ch {
+                        buf.push(c);
+                    }
+                    let (children, end) = {
+                        let b = n.lock().unwrap();
+                        let kids: Vec<(char, TrieRef)> =
+                            b.children.iter().map(|(&c, r)| (c, r.clone())).collect();
+                        (kids, b.end)
+                    };
+                    if end {
+                        out.push(buf.clone());
+                    }
+                    for (c, child) in children.into_iter().rev() {
+                        stack.push(Frame::PopChar);
+                        stack.push(Frame::Enter(Some(c), child));
+                    }
+                }
+            }
         }
     }
 
@@ -1134,7 +1189,7 @@ impl TrieData {
             }
             "clear" => {
                 want(name, args, 0)?;
-                self.root = Arc::new(Mutex::new(TrieNode::default()));
+                self.detach_all();
                 self.count = 0;
                 Ok(Value::Null)
             }
@@ -1579,7 +1634,7 @@ pub fn check_matrix_dims(rows: usize, cols: usize) -> Result<usize, String> {
 pub fn matrix_from_list_val(val: &Value) -> Result<Value, String> {
     let rows: Vec<Value> = match val {
         Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().clone_items(),
-        Value::Tuple(t) => t.lock().unwrap().clone(),
+        Value::Tuple(t) => t.lock().unwrap().0.clone(),
         other => {
             return Err(format!(
                 "matrix_from_list expects a list of rows, found {}",
@@ -1609,7 +1664,7 @@ pub fn matrix_from_list_val(val: &Value) -> Result<Value, String> {
                 (d.len(), d)
             }
             Value::Tuple(t) => {
-                let items = t.lock().unwrap().clone();
+                let items = t.lock().unwrap().0.clone();
                 let len = items.len();
                 let mut nums = Vec::with_capacity(len);
                 for it in &items {
@@ -2620,9 +2675,7 @@ pub fn tuple_method(items: &[Value], name: &str, args: &[Value]) -> Result<Value
         }
         "clone" => {
             want(name, args, 0)?;
-            Ok(Value::Tuple(new_ref(
-                items.iter().map(deep_clone).collect(),
-            )))
+            Ok(Value::tuple(items.iter().map(deep_clone).collect()))
         }
         "push" | "pop" | "set" | "insert" => Err(format!("tuple is immutable: no {}", name)),
         _ => Err(unknown(name, "tuple")),
@@ -2944,8 +2997,8 @@ pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), St
 }
 
 pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("cannot read npy file '{}': {}", path, e))?;
+    // SEC-V4: enforce single-allocation cap (metadata + bounded read).
+    let bytes = crate::stdlib::read_file_bytes_capped(path, "load_npy")?;
     if bytes.len() < 10 {
         return Err("npy file is too short (truncated header)".to_string());
     }

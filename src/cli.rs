@@ -1695,6 +1695,94 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
     cmd_run(&run_args)
 }
 
+fn warn_suspicious_ini_keys(cfg: &crate::config::Config) {
+    for w in crate::config::suspicious_key_warnings(cfg) {
+        eprintln!("{}", w);
+    }
+}
+
+/// Audit A-1: find the nearest enclosing `spider.lock` for `target_file` (or
+/// CWD) and verify `vendor/` against it when present. Emits a stderr warning
+/// on drift, or fails closed when `SPID3R_VERIFY_ON_RUN` is truthy.
+pub(crate) fn check_vendor_integrity_for(target_file: Option<&str>) -> Result<(), Diagnostic> {
+    let start_dir = match target_file {
+        Some(f) => {
+            let p = Path::new(f);
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else if let Ok(cwd) = std::env::current_dir() {
+                cwd.join(p)
+            } else {
+                p.to_path_buf()
+            };
+            abs.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let mut cur = Some(start_dir.as_path());
+    let mut root_opt: Option<PathBuf> = None;
+    while let Some(dir) = cur {
+        if dir.join("spider.lock").is_file() {
+            root_opt = Some(dir.to_path_buf());
+            break;
+        }
+        cur = dir.parent();
+    }
+    let Some(root) = root_opt else {
+        return Ok(());
+    };
+    let strict = std::env::var("SPID3R_VERIFY_ON_RUN").is_ok_and(|v| {
+        let t = v.trim();
+        t == "1"
+            || t.eq_ignore_ascii_case("true")
+            || t.eq_ignore_ascii_case("yes")
+            || t.eq_ignore_ascii_case("on")
+    });
+    let vendor_present = std::fs::symlink_metadata(root.join("vendor")).is_ok();
+    if !strict && !vendor_present {
+        return Ok(());
+    }
+    let report = match crate::pkg::ops::verify(&root) {
+        Ok(r) => r,
+        Err(e) => {
+            if strict {
+                return Err(Diagnostic::new(
+                    Phase::Semantic,
+                    format!("vendored dependency verification failed: {}", e),
+                ));
+            }
+            eprintln!(
+                "warning[pkg]: failed to verify vendored dependencies in '{}': {}",
+                root.display(),
+                e
+            );
+            return Ok(());
+        }
+    };
+    if report.issues.is_empty() {
+        return Ok(());
+    }
+    let summary: Vec<String> = report
+        .issues
+        .iter()
+        .take(3)
+        .map(|i| format!("{}: {}", i.name, i.kind))
+        .collect();
+    let msg = format!(
+        "vendored dependencies in '{}' do not match spider.lock ({} issue(s): {}); run `spid3r verify` to inspect or set SPID3R_VERIFY_ON_RUN=1 to fail closed",
+        root.display(),
+        report.issues.len(),
+        summary.join(", ")
+    );
+    if strict {
+        return Err(Diagnostic::new(Phase::Semantic, msg));
+    }
+    eprintln!("warning[pkg]: {}", msg);
+    Ok(())
+}
+
 fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     // D4.1: the bytecode VM is the default engine. The tree interpreter stays
     // available as the oracle via `--engine tree`; README.md's CLI table has
@@ -1912,6 +2000,8 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     for note in &cfg.notes {
         crate::logging::record("config", note);
     }
+    warn_suspicious_ini_keys(&cfg);
+    check_vendor_integrity_for(Some(&file))?;
     let run_limits = crate::budget::run_limits(&cfg);
     if budget.is_none() {
         budget = crate::budget::configured_max_steps(&cfg);
@@ -2621,6 +2711,9 @@ fn cmd_compile(args: &[String]) -> Result<i32, Diagnostic> {
         i += 1;
     }
     let file = file.ok_or_else(|| usage("compile needs a .matrix file"))?;
+    let cfg = crate::config::snapshot();
+    warn_suspicious_ini_keys(&cfg);
+    check_vendor_integrity_for(Some(&file))?;
     compile_file(
         &file,
         out.as_deref(),
@@ -2749,6 +2842,8 @@ fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
         crate::stdlib::arm_sandbox();
     }
     let cfg = crate::config::snapshot();
+    warn_suspicious_ini_keys(&cfg);
+    check_vendor_integrity_for(Some(&file))?;
     let run_limits = crate::budget::run_limits(&cfg);
     let file_arc: Arc<str> = Arc::from(file.as_str());
     let dirs = modules::default_module_dirs();

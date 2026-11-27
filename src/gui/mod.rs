@@ -603,10 +603,67 @@ const GUI_NATIVES: &[(&str, GuiNative)] = &[
     ("gui_close", n_close),
 ];
 
+/// Build the policy-filtered GUI native table shared by both the tree
+/// interpreter (`install`) and the bytecode VM (`install_vm`).
+///
+/// SEC-F3 (audit fix): GUI natives previously bypassed `apply_policy_to_defs`,
+/// ignoring `security.disable_natives`, pin failures, `security.deny_filesystem`,
+/// `--sandbox`, and `security.basedir` on `gui_icon` (which reads a
+/// script-controlled file path). Both engines now flow through the exact same
+/// policy funnel.
+fn gui_policy_defs() -> Vec<crate::stdlib::NativeDef> {
+    let mut defs: Vec<crate::stdlib::NativeDef> = GUI_NATIVES
+        .iter()
+        .map(|(name, func)| (*name, *func))
+        .collect();
+    let sandboxed = crate::stdlib::sandbox_armed();
+    crate::stdlib::apply_policy_to_defs(&mut defs, sandboxed, Some(guarded_gui));
+    let pol = crate::stdlib::fs_policy::policy();
+    let deny_fs = sandboxed || pol.deny_filesystem;
+    if deny_fs
+        && !pol.pin_failed_at_initialization
+        && !pol.disabled_natives.iter().any(|d| d == "gui_icon")
+    {
+        for (name, func) in defs.iter_mut() {
+            if *name == "gui_icon" {
+                *func = gui_icon_fs_denied;
+            }
+        }
+    }
+    defs
+}
+
+fn gui_icon_fs_denied(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("sandboxed: filesystem access denied".to_string())
+}
+
+/// SEC-F3: basedir guard for `gui_icon` — the GUI native that reads a
+/// script-controlled path from disk.
+fn guarded_gui(name: &str) -> Option<crate::vm::NativeImpl> {
+    if name != "gui_icon" {
+        return None;
+    }
+    Some(
+        |ctx: &NativeCtx, args: Vec<Value>| -> Result<Value, String> {
+            if let Some(Value::Str(p)) = args.first() {
+                crate::stdlib::fs_policy::check_path(p)?;
+            }
+            let inner = GUI_NATIVES
+                .iter()
+                .find(|(n, _)| *n == "gui_icon")
+                .map(|(_, f)| *f);
+            match inner {
+                Some(f) => f(ctx, args),
+                None => Err("gui_icon is not available".to_string()),
+            }
+        },
+    )
+}
+
 /// Install the GUI natives into a program's global table.
 pub fn install(globals: &Env) {
-    for (name, func) in GUI_NATIVES {
-        let native = NativeFn { name, func: *func };
+    for (name, func) in gui_policy_defs() {
+        let native = NativeFn { name, func };
         environment::define(globals, name, Value::Native(Arc::new(native)));
     }
 }
@@ -619,7 +676,8 @@ pub fn install(globals: &Env) {
 /// null, so a launcher-shaped `main()` would take its `run_payload()` branch
 /// and try to start a second copy of the app.
 pub fn install_vm(vm: &mut crate::vm::Vm) {
-    vm.define_natives(GUI_NATIVES);
+    let defs = gui_policy_defs();
+    vm.define_natives(&defs);
 }
 
 /// The engine a GUI program runs on.

@@ -115,6 +115,7 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
     let pks = configured_trust_pks()?;
     let mut registry_checked: BTreeSet<String> = BTreeSet::new();
     let endpoints = registry_endpoints();
+    audit_registry_endpoints(&endpoints, &mut report.findings);
     let remote_eps: Vec<String> = endpoints
         .iter()
         .filter(|e| is_remote_url(e))
@@ -253,9 +254,22 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
         }
     }
 
-    // Local directory registries: check <ep>/<pkg>/yanked.txt and <ep>/advisories.txt.
+    // Local directory registries: check <ep>/registry.key exposure,
+    // <ep>/<pkg>/yanked.txt, and <ep>/advisories.txt.
     for ep in &local_eps {
         let reg_path = Path::new(ep);
+        if reg_path.join("registry.key").exists() {
+            report.findings.push(AuditFinding {
+                severity: "high",
+                package: "<registry>".to_string(),
+                kind: "exposed-signing-key",
+                detail: format!(
+                    "private signing key '{}' sits inside published registry directory '{}'; move it out and use SPID3R_SIGN_KEY",
+                    reg_path.join("registry.key").display(),
+                    ep
+                ),
+            });
+        }
         for entry in &entries {
             if !entry.source.starts_with("registry+") {
                 continue;
@@ -417,6 +431,24 @@ pub fn audit_project(root: &Path, offline: bool) -> Result<AuditReport, String> 
     Ok(report)
 }
 
+/// Flag any configured plaintext `http://` registry endpoints (audit §9.9).
+fn audit_registry_endpoints(endpoints: &[String], findings: &mut Vec<AuditFinding>) {
+    for ep in endpoints {
+        let trimmed = ep.trim();
+        if trimmed.to_ascii_lowercase().starts_with("http://") {
+            findings.push(AuditFinding {
+                severity: "high",
+                package: "<registry>".to_string(),
+                kind: "insecure-registry",
+                detail: format!(
+                    "plaintext http:// registry endpoint '{}' lacks transport confidentiality and integrity; use https://",
+                    trimmed
+                ),
+            });
+        }
+    }
+}
+
 fn entry_license(root: &Path, entry: &LockEntry) -> Option<String> {
     let path = root
         .join("vendor")
@@ -530,4 +562,49 @@ pub fn freeze_project(root: &Path, sbom_json: bool) -> Result<String, String> {
     }
     out.push_str("]\n}\n");
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_flags_plaintext_http_registry_endpoints() {
+        let endpoints = vec![
+            "https://registry.spid3r.org/v1".to_string(),
+            "http://insecure.example.com/reg".to_string(),
+            "  HTTP://mirror.example.org/reg  ".to_string(),
+            "/local/registry/dir".to_string(),
+        ];
+        let mut report = AuditReport::default();
+        audit_registry_endpoints(&endpoints, &mut report.findings);
+
+        assert!(report.has_failures());
+        assert_eq!(report.findings.len(), 2);
+        assert_eq!(report.findings[0].severity, "high");
+        assert_eq!(report.findings[0].package, "<registry>");
+        assert_eq!(report.findings[0].kind, "insecure-registry");
+        assert!(report.findings[0]
+            .detail
+            .contains("http://insecure.example.com/reg"));
+        assert_eq!(report.findings[1].kind, "insecure-registry");
+        assert!(report.findings[1]
+            .detail
+            .contains("HTTP://mirror.example.org/reg"));
+
+        let json = render_audit_json(&report);
+        assert!(json.contains("\"ok\": false"), "{json}");
+        assert!(json.contains("\"kind\": \"insecure-registry\""), "{json}");
+
+        let mut clean = AuditReport::default();
+        audit_registry_endpoints(
+            &[
+                "https://registry.spid3r.org/v1".to_string(),
+                "C:\\local\\reg".to_string(),
+            ],
+            &mut clean.findings,
+        );
+        assert!(!clean.has_failures());
+        assert!(clean.findings.is_empty());
+    }
 }

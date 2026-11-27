@@ -408,14 +408,17 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Mirror diagnostic log lines to stderr; canonical spelling of debug.log_stdout."
     ),
-    key!(
+    // SEC-F4 (audit fix): frozen like its [logging] siblings so scripts cannot
+    // aim the error log at an arbitrary filesystem path at runtime.
+    key_frozen!(
         "errors",
         "log_file",
         ConfigValue::Str,
         "",
         None,
         None,
-        "Dedicated error-log path; empty = the shared diagnostic log only."
+        "Dedicated error-log path; empty = the shared diagnostic log only. \
+         Frozen: set at startup (spid3r.ini / SPID3R_INI) only."
     ),
     // [logging]
     key_frozen!(
@@ -455,14 +458,17 @@ pub static KEYS: &[KeySpec] = &[
         "Append remote-management actions to the audit log."
     ),
     // [modules]
-    key_startup!(
+    // SEC-F2 (audit fix): frozen, not just startup-only, because the module
+    // resolver reads this live on every import.
+    key_frozen_startup!(
         "modules",
         "path",
         ConfigValue::Str,
         "",
         None,
         None,
-        "Extra module search directories, semicolon-separated."
+        "Extra module search directories, semicolon-separated. \
+         Frozen: set at startup (spid3r.ini / SPID3R_INI) only."
     ),
     key_frozen_startup!(
         "modules",
@@ -1176,6 +1182,8 @@ mod tests {
             "logging.rotate_mb",
             "logging.audit",
             "modules.disable",
+            "modules.path",
+            "errors.log_file",
             "packages.allow_insecure_git",
             "packages.allow_local_git",
             "packages.trust_pk",

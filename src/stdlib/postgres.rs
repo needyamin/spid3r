@@ -193,6 +193,10 @@ fn md5_password(password: &str, user: &str, salt: &[u8]) -> String {
 
 // SCRAM-SHA-256 (RFC 5802/7677) ---------------------------------------------
 
+/// SEC-C5: upper bound on server-supplied PBKDF2 iteration count so a hostile
+/// server cannot park this client in PBKDF2 for minutes inside one native call.
+const SCRAM_MAX_ITERATIONS: u32 = 1 << 20;
+
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
     crate::stdlib::hmac_sha256_bytes(key, msg)
 }
@@ -238,7 +242,16 @@ fn scram_client_final(
             "i" => {
                 iterations = v
                     .parse()
-                    .map_err(|_| "postgres: bad SCRAM iteration count".to_string())?
+                    .map_err(|_| "postgres: bad SCRAM iteration count".to_string())?;
+                if iterations == 0 {
+                    return Err("postgres: SCRAM iteration count must be at least 1".to_string());
+                }
+                if iterations > SCRAM_MAX_ITERATIONS {
+                    return Err(format!(
+                        "postgres: SCRAM iteration count {} exceeds the {} limit (hostile server?)",
+                        iterations, SCRAM_MAX_ITERATIONS
+                    ));
+                }
             }
             _ => {}
         }
@@ -483,8 +496,12 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                     }
                     10 => {
                         // SASL: negotiate SCRAM-SHA-256 (RFC 5802 + PG SASLInitialResponse).
-                        let client_nonce = crate::stdlib::next_random().to_le_bytes();
-                        let nonce = b64_encode(&client_nonce);
+                        // SEC-C5: draw the 18-byte client nonce from the OS CSPRNG.
+                        let mut nonce_bytes = [0u8; 18];
+                        crate::stdlib::entropy::fill_random(&mut nonce_bytes).map_err(|e| {
+                            format!("{}: CSPRNG unavailable: {}", WHO, e)
+                        })?;
+                        let nonce = b64_encode(&nonce_bytes);
                         let client_first_bare = format!("n=,r={}", nonce);
                         let client_first = format!("n,,{}", client_first_bare);
                         let mut init = b"SCRAM-SHA-256\0".to_vec();
@@ -542,7 +559,9 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                             &scram_server_key(&fin_msg.salted),
                             fin_msg.auth_message.as_bytes(),
                         );
-                        if server_sig.as_slice() != &expect[..] {
+                        // SEC-C2: constant-time comparison prevents byte-by-byte
+                        // server-signature forgery over cleartext SCRAM.
+                        if !crate::stdlib::secure_compare_bytes(&server_sig, &expect) {
                             return Err("postgres: SCRAM server signature mismatch".to_string());
                         }
                     }
@@ -750,6 +769,33 @@ mod tests {
                 .starts_with("c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p="),
             "{}",
             fin_msg.message
+        );
+    }
+
+    #[test]
+    fn scram_rejects_zero_and_hostile_iteration_counts() {
+        let err_hi = scram_client_final(
+            "pw",
+            "r=abcdef1234,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4294967295",
+            "n=,r=abcdef",
+            "abcdef",
+        )
+        .err()
+        .expect("excessive iteration count must fail");
+        assert!(err_hi.contains("exceeds"), "unexpected error: {}", err_hi);
+
+        let err_zero = scram_client_final(
+            "pw",
+            "r=abcdef1234,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=0",
+            "n=,r=abcdef",
+            "abcdef",
+        )
+        .err()
+        .expect("zero iteration count must fail");
+        assert!(
+            err_zero.contains("at least 1"),
+            "unexpected error: {}",
+            err_zero
         );
     }
 }

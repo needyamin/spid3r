@@ -228,8 +228,16 @@ fn fixed_tables() -> (Huffman, Huffman) {
 
 // ------------------------------------------------------------------- inflate
 
-/// Decompress a raw DEFLATE stream (no gzip/zlib header).
-pub fn inflate_raw(data: &[u8]) -> Result<Vec<u8>, String> {
+fn inflate_limit_error(limit: usize) -> String {
+    if limit == MAX_OUTPUT {
+        "deflate: output exceeds the 256 MB limit".to_string()
+    } else {
+        format!("deflate: output exceeds the {} byte limit", limit)
+    }
+}
+
+/// Decompress a raw DEFLATE stream (no gzip/zlib header), bounded by `limit`.
+pub fn inflate_raw_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
     let mut br = BitReader::new(data);
     let mut out: Vec<u8> = Vec::new();
     loop {
@@ -244,18 +252,22 @@ pub fn inflate_raw(data: &[u8]) -> Result<Vec<u8>, String> {
                     return Err("deflate: stored block length check failed".to_string());
                 }
                 let chunk = br.take(len as usize)?;
-                if out.len() + chunk.len() > MAX_OUTPUT {
-                    return Err("deflate: output exceeds the 256 MB limit".to_string());
+                if out
+                    .len()
+                    .checked_add(chunk.len())
+                    .is_none_or(|total| total > limit)
+                {
+                    return Err(inflate_limit_error(limit));
                 }
                 out.extend_from_slice(chunk);
             }
             1 => {
                 let (lit, dist) = fixed_tables();
-                inflate_block(&mut br, &mut out, &lit, &dist)?;
+                inflate_block(&mut br, &mut out, &lit, &dist, limit)?;
             }
             2 => {
                 let (lit, dist) = dynamic_tables(&mut br)?;
-                inflate_block(&mut br, &mut out, &lit, &dist)?;
+                inflate_block(&mut br, &mut out, &lit, &dist, limit)?;
             }
             _ => return Err("deflate: reserved block type".to_string()),
         }
@@ -263,6 +275,11 @@ pub fn inflate_raw(data: &[u8]) -> Result<Vec<u8>, String> {
             return Ok(out);
         }
     }
+}
+
+/// Decompress a raw DEFLATE stream (no gzip/zlib header).
+pub fn inflate_raw(data: &[u8]) -> Result<Vec<u8>, String> {
+    inflate_raw_with_limit(data, MAX_OUTPUT)
 }
 
 fn dynamic_tables(br: &mut BitReader) -> Result<(Huffman, Huffman), String> {
@@ -320,12 +337,13 @@ fn inflate_block(
     out: &mut Vec<u8>,
     lit: &Huffman,
     dist: &Huffman,
+    limit: usize,
 ) -> Result<(), String> {
     loop {
         let sym = lit.decode(br)?;
         if sym < 256 {
-            if out.len() >= MAX_OUTPUT {
-                return Err("deflate: output exceeds the 256 MB limit".to_string());
+            if out.len() >= limit {
+                return Err(inflate_limit_error(limit));
             }
             out.push(sym as u8);
             continue;
@@ -346,8 +364,8 @@ fn inflate_block(
         if distance > out.len() {
             return Err("deflate: distance points before the start of output".to_string());
         }
-        if out.len() + len > MAX_OUTPUT {
-            return Err("deflate: output exceeds the 256 MB limit".to_string());
+        if out.len().checked_add(len).is_none_or(|total| total > limit) {
+            return Err(inflate_limit_error(limit));
         }
         let start = out.len() - distance;
         for k in 0..len {

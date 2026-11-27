@@ -953,6 +953,12 @@ impl Interp {
                     other => return other,
                 }
                 loop {
+                    // SEC-V1: charge one budget unit per iteration like `While`/`ForIn`.
+                    if self.budget.is_some() {
+                        if let Some(flow) = self.charge_budget(span) {
+                            return flow;
+                        }
+                    }
                     let c = match self.eval_r_cond(cond, slots, env) {
                         Ok(b) => b,
                         Err(f) => return f,
@@ -1282,7 +1288,7 @@ impl Interp {
                         if !args.is_empty() {
                             return Err(self.rt(span, "lock takes no arguments"));
                         }
-                        let v = m.lock().map_err(|e| self.rt(span, e))?;
+                        let v = m.lock().map_err(|e| self.native_err(span, e))?;
                         let mut guards = self.guards.lock().unwrap();
                         guards.push(crate::sched::MutexGuardToken::new(m.clone()));
                         self.guards_len
@@ -1330,9 +1336,20 @@ impl Interp {
                 match collections::call_method_host(&mut host, &obj, name.as_ref(), vals) {
                     Ok(v) => Ok(v),
                     Err(msg) => {
+                        let thrown = crate::sched::take_error_thrown();
+                        if let Some(wc) = &self.wall_clock {
+                            if wc.exceeded() {
+                                return Err(self.fatal(span, wc.message()));
+                            }
+                        }
+                        if msg == "execution budget exhausted"
+                            && self.budget.as_ref().is_some_and(|b| b.exhausted())
+                        {
+                            return Err(self.fatal(span, msg));
+                        }
                         let mut d = Diagnostic::at(Phase::Runtime, span.clone(), msg)
                             .with_trace(self.trace_frames(span));
-                        if let Some(v) = crate::sched::take_error_thrown() {
+                        if let Some(v) = thrown {
                             d.thrown = Some(v);
                         }
                         Err(Flow::Error(Box::new(d)))
@@ -1415,6 +1432,16 @@ impl Interp {
                     Value::Task(t) => match t.join() {
                         Ok(v) => Ok(v),
                         Err(msg) => {
+                            if let Some(wc) = &self.wall_clock {
+                                if wc.exceeded() {
+                                    return Err(self.fatal(span, wc.message()));
+                                }
+                            }
+                            if msg == "execution budget exhausted"
+                                && self.budget.as_ref().is_some_and(|b| b.exhausted())
+                            {
+                                return Err(self.fatal(span, msg));
+                            }
                             let mut d = Diagnostic::at(
                                 Phase::Runtime,
                                 span.clone(),
@@ -1427,7 +1454,13 @@ impl Interp {
                             Err(Flow::Error(Box::new(d)))
                         }
                     },
-                    Value::Channel(c) => Ok(c.recv()),
+                    Value::Channel(c) => {
+                        let val = c.recv();
+                        if let Some(flow) = self.check_limits(span) {
+                            return Err(flow);
+                        }
+                        Ok(val)
+                    }
                     other => Err(self.rt(
                         span,
                         format!(

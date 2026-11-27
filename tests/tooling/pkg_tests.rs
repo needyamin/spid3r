@@ -2966,3 +2966,286 @@ fn tool_install_path_note_override_hint_and_nsis_bin_parity() {
         );
     }
 }
+
+/// Audit A-4 fallback path: even when `origin/HEAD` is missing in the cached
+/// git repository (forcing the fallback branch in `fetch_git`), locally
+/// modified tracked files and untracked files in `.spid3r/git/<name>` must be
+/// reset/cleaned and must never leak into `vendor/`.
+#[test]
+fn git_fetch_fallback_resets_dirty_tracked_and_untracked_files() {
+    let p = Project::new("git_fallback_clean");
+    let repo = p.base.join("upstream_git");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("spider.toml"),
+        "[package]\nname = \"gdep\"\nversion = \"0.1.0\"\nentry = \"src/lib.matrix\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/lib.matrix"),
+        "public fn greeting() { return \"clean\"; }\n",
+    )
+    .unwrap();
+
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-C", dir.to_str().unwrap()])
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "test@spid3r.local"]);
+    git(&repo, &["config", "user.name", "Spid3r Test"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+
+    let repo_url = repo.to_str().unwrap().replace('\\', "/");
+    p.write(
+        "spider.toml",
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ngdep = {{ git = \"{}\" }}\n",
+            repo_url
+        ),
+    );
+    let (code, _, err) = p.run(&["install"]);
+    assert_eq!(code, 0, "initial git install failed: {err}");
+    assert!(p.read("vendor/gdep/lib.matrix").contains("\"clean\""));
+
+    // Dirty the cached git checkout with both a tracked modification and an
+    // untracked file, AND delete refs/remotes/origin/HEAD to force the
+    // fallback branch in fetch_git when reinstalling without a lock pin.
+    let cache_dir = p.root.join(".spid3r/git/gdep");
+    let _ = Command::new("git")
+        .args([
+            "-C",
+            cache_dir.to_str().unwrap(),
+            "remote",
+            "set-head",
+            "origin",
+            "-d",
+        ])
+        .output();
+    std::fs::write(
+        cache_dir.join("src/lib.matrix"),
+        "public fn greeting() { return \"TAMPERED\"; }\n",
+    )
+    .unwrap();
+    std::fs::write(cache_dir.join("src/injected.matrix"), "let evil = 1;\n").unwrap();
+    let _ = std::fs::remove_file(p.root.join("spider.lock"));
+
+    let (code2, _, err2) = p.run(&["install"]);
+    assert_eq!(code2, 0, "re-install after dirty cache failed: {err2}");
+    let vendored = p.read("vendor/gdep/lib.matrix");
+    assert!(
+        vendored.contains("\"clean\"") && !vendored.contains("TAMPERED"),
+        "tracked modification leaked into vendor/: {vendored}"
+    );
+    assert!(
+        !p.exists("vendor/gdep/injected.matrix"),
+        "untracked file leaked into vendor/"
+    );
+}
+
+/// Audit §9.9: `spkg audit` must flag configured plaintext `http://` registry
+/// endpoints as high-severity failures.
+#[test]
+fn audit_flags_plaintext_http_registry_in_cli() {
+    let p = Project::new("audit_http_reg");
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    );
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+
+    let (code, out, err) = p.run_env(
+        &["audit", "--offline"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_REGISTRY", "http://plaintext.registry.invalid/v1"),
+        ],
+    );
+    assert_ne!(
+        code, 0,
+        "spkg audit must fail on plaintext http:// registry: out={out} err={err}"
+    );
+    assert!(
+        out.contains("insecure-registry") && out.contains("http://plaintext.registry.invalid/v1"),
+        "expected insecure-registry finding in audit output: out={out} err={err}"
+    );
+}
+
+/// Audit A-1: `spid3r run` warns on stderr when vendored dependencies drift
+/// from `spider.lock`, and fails closed when `SPID3R_VERIFY_ON_RUN=1`.
+#[test]
+fn run_warns_and_optionally_fails_on_tampered_vendor() {
+    let p = Project::new("vendor_on_run");
+    p.add_registry_pkg("vlib", "1.0.0", "public fn val() { return 42; }\n");
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nvlib = { version = \"^1.0\" }\n",
+    );
+    p.write(
+        "src/main.matrix",
+        "import \"vlib/lib\";\nfn main() { println(val()); return 0; }\n",
+    );
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+    let reg = p.registry_dir();
+    let (ic, _, ierr) = p.run_env(
+        &["install"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_REGISTRY", &reg),
+        ],
+    );
+    assert_eq!(ic, 0, "install failed: {ierr}");
+
+    // Clean vendor -> no warning on run.
+    let (rc1, out1, err1) = p.run_env(
+        &["run", "src/main.matrix"],
+        &[("SPID3R_INI", ini.to_str().unwrap())],
+    );
+    assert_eq!(rc1, 0, "clean run failed: {err1}");
+    assert_eq!(out1.trim(), "42");
+    assert!(!err1.contains("warning[pkg]"), "unexpected warning: {err1}");
+
+    // Tamper vendored file -> warning[pkg] on default run; exit 1 with SPID3R_VERIFY_ON_RUN=1.
+    p.write("vendor/vlib/lib.matrix", "public fn val() { return 99; }\n");
+    let (rc2, out2, err2) = p.run_env(
+        &["run", "src/main.matrix"],
+        &[("SPID3R_INI", ini.to_str().unwrap())],
+    );
+    assert_eq!(rc2, 0, "warn-only run failed: {err2}");
+    assert_eq!(out2.trim(), "99");
+    assert!(
+        err2.contains("warning[pkg]") && err2.contains("spider.lock"),
+        "expected vendor tamper warning: {err2}"
+    );
+
+    let (rc3, _, err3) = p.run_env(
+        &["run", "src/main.matrix"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_VERIFY_ON_RUN", "1"),
+        ],
+    );
+    assert_eq!(rc3, 1, "strict verify_on_run must fail closed: {err3}");
+    assert!(err3.contains("spider.lock"), "{err3}");
+
+    // Deleting vendor/ entirely must ALSO fail closed under SPID3R_VERIFY_ON_RUN=1.
+    std::fs::remove_dir_all(p.root.join("vendor")).unwrap();
+    let (rc4, _, err4) = p.run_env(
+        &["run", "src/main.matrix"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_VERIFY_ON_RUN", "1"),
+        ],
+    );
+    assert_eq!(
+        rc4, 1,
+        "deleted vendor/ must fail closed under SPID3R_VERIFY_ON_RUN=1: {err4}"
+    );
+    assert!(err4.contains("spider.lock"), "{err4}");
+}
+
+/// Audit A-3 & A-5: installing from a signed registry without `packages.trust_pk`
+/// warns loudly on stderr, whereas pinning `SPID3R_TRUST_PK` silences it;
+/// `spkg audit` also flags an exposed `registry.key` inside a local registry.
+#[test]
+fn unsigned_install_warns_and_audit_flags_exposed_registry_key() {
+    let p = Project::new("trust_warn_and_key");
+    let lib = p.base.join("pub_lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(
+        lib.join("spider.toml"),
+        "[package]\nname = \"slib\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+    )
+    .unwrap();
+    std::fs::write(lib.join("src/lib.matrix"), "public fn ok() { return 1; }\n").unwrap();
+
+    let reg = p.base.join("reg");
+    let state = p.base.join("state");
+    let ini = p.base.join("empty.ini");
+    std::fs::write(&ini, "").unwrap();
+    let pub_out = Command::new(bin())
+        .current_dir(&lib)
+        .args(["publish", "--to-dir", reg.to_str().unwrap()])
+        .env("SPID3R_INI", &ini)
+        .env("SPID3R_STATE_DIR", &state)
+        .output()
+        .expect("publish");
+    assert!(
+        pub_out.status.success(),
+        "publish failed: {}",
+        String::from_utf8_lossy(&pub_out.stderr)
+    );
+    assert!(
+        !reg.join("registry.key").exists(),
+        "registry.key must stay outside published directory"
+    );
+    let pk = std::fs::read_to_string(reg.join("registry.pub"))
+        .unwrap()
+        .trim()
+        .to_string();
+
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nslib = { version = \"^1.0\" }\n",
+    );
+
+    // 1. Install without trust_pk -> warning[pkg] emitted.
+    let (c1, _, e1) = p.run_env(
+        &["install"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_REGISTRY", reg.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(c1, 0, "install failed: {e1}");
+    assert!(
+        e1.contains("packages.trust_pk is unset"),
+        "expected trust_pk warning on stderr: {e1}"
+    );
+
+    // 2. Re-install with trust_pk pinned -> no trust_pk warning.
+    let (c2, _, e2) = p.run_env(
+        &["install", "--frozen"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_REGISTRY", reg.to_str().unwrap()),
+            ("SPID3R_TRUST_PK", &pk),
+        ],
+    );
+    assert_eq!(c2, 0, "trusted install failed: {e2}");
+    assert!(
+        !e2.contains("packages.trust_pk is unset"),
+        "unexpected trust_pk warning when pinned: {e2}"
+    );
+
+    // 3. Drop a legacy registry.key inside the local registry -> audit flags it.
+    std::fs::write(reg.join("registry.key"), "00".repeat(32)).unwrap();
+    let (ac, aout, aerr) = p.run_env(
+        &["audit", "--offline"],
+        &[
+            ("SPID3R_INI", ini.to_str().unwrap()),
+            ("SPID3R_REGISTRY", reg.to_str().unwrap()),
+            ("SPID3R_TRUST_PK", &pk),
+        ],
+    );
+    assert_ne!(
+        ac, 0,
+        "audit must fail when registry.key is exposed: {aout}"
+    );
+    assert!(
+        aout.contains("exposed-signing-key"),
+        "expected exposed-signing-key in audit output: out={aout} err={aerr}"
+    );
+}

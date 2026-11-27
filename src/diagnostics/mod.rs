@@ -387,8 +387,11 @@ impl Diagnostic {
         }
 
         let owned;
+        let restrict_file_quote =
+            crate::stdlib::sandbox_armed() || crate::stdlib::fs_policy::policy().deny_filesystem;
         let text = match source {
             Some(s) => Some(s),
+            None if restrict_file_quote => None,
             None => {
                 owned = std::fs::read_to_string(&*span.file).ok();
                 owned.as_deref()

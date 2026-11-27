@@ -3619,7 +3619,7 @@ impl Vm {
                                             continue;
                                         }
                                         Err(msg) => {
-                                            self.fail(msg);
+                                            self.fail_native(msg);
                                             continue;
                                         }
                                     }
@@ -4689,7 +4689,7 @@ impl Vm {
                     self.frames[nf].ip = ip + 1;
                     let v = self.pop_top();
                     match collections::iter_values(&v) {
-                        Ok(items) => self.frames[nf].slots.push(Value::Tuple(new_ref(items))),
+                        Ok(items) => self.frames[nf].slots.push(Value::tuple(items)),
                         Err(msg) => self.fail(msg),
                     }
                 }
@@ -5993,7 +5993,27 @@ impl Vm {
     /// cap (catchable) after every call — a blocking native can consume a
     /// whole budget's worth of wall time between polls.
     fn cancel_guard_vm(&mut self) {
-        if self.error.is_some() {
+        if let Some(err) = self.error.as_mut() {
+            // SEC-V2: if a blocking method (`recv`, `join`, `await`) returned
+            // a non-fatal error after the wall-clock deadline expired or the
+            // step budget was exhausted, escalate it to fatal so `try`/`catch`
+            // cannot swallow the deadline or execute catch bodies past it.
+            if !err.fatal {
+                if let Some(wc) = &self.wall_clock {
+                    if wc.exceeded() {
+                        err.fatal = true;
+                        err.thrown = None;
+                        err.message = wc.message();
+                        return;
+                    }
+                }
+                if err.message == "execution budget exhausted"
+                    && self.budget.as_ref().is_some_and(|b| b.exhausted())
+                {
+                    err.fatal = true;
+                    err.thrown = None;
+                }
+            }
             return;
         }
         if self.limits_fired() {
