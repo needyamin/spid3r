@@ -1136,7 +1136,48 @@ fn chk_dirname_of(s) {
     return "";
 }
 
+fn chk_has_angle_brackets(s) {
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 60 or cp == 62 {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn chk_bare_stdlib_name(path) {
+    if path == "" or path == "." or path == ".." {
+        return null;
+    }
+    let i = 0;
+    let n = path.len();
+    while i < n {
+        let cp = ord(path[i]);
+        if cp == 47 or cp == 92 or cp == 58 or cp == 60 or cp == 62 {
+            return null;
+        }
+        i += 1;
+    }
+    let bare = path;
+    if bare.len() > 7 and bare.slice(bare.len() - 7, bare.len()) == ".matrix" {
+        bare = bare.slice(0, bare.len() - 7);
+    } else if bare.len() > 3 and bare.slice(bare.len() - 3, bare.len()) == ".mt" {
+        bare = bare.slice(0, bare.len() - 3);
+    }
+    if bare == "" or bare == "." or bare == ".." {
+        return null;
+    }
+    return bare;
+}
+
 public fn resolve_module_path(path, source_file) {
+    if chk_has_angle_brackets(path) {
+        return null;
+    }
     let dir = chk_dirname_of(source_file);
     let candidates = [dir + path + ".matrix", dir + path + ".mt", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path + ".mt", "stdlib/" + path];
     for c in candidates {
@@ -1181,6 +1222,13 @@ public fn resolve_module_path(path, source_file) {
         let p = path + ext;
         if file_exists(p) {
             return p;
+        }
+    }
+    let bare = chk_bare_stdlib_name(path);
+    if bare != null {
+        let emb = "<stdlib>/" + bare + ".matrix";
+        if file_exists(emb) {
+            return emb;
         }
     }
     return null;

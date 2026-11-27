@@ -8,6 +8,7 @@ pub mod compress;
 pub mod csv;
 pub mod datetime;
 pub mod db;
+pub(crate) mod deflate;
 pub mod digest;
 pub mod entropy;
 pub mod eventloop;
@@ -842,8 +843,30 @@ fn n_read_line(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 // ------------------------------------------------------------------ files
 
+/// Resolve a synthetic `<stdlib>/<name>.matrix` marker path to the embedded
+/// stdlib source table. Rejects empty names, subpaths, and `..` segments so
+/// traversal or crafted paths can never match.
+fn embedded_stdlib_source(path: &str) -> Option<&'static str> {
+    let rest = path.strip_prefix(crate::modules::EMBEDDED_PREFIX)?;
+    if rest.is_empty() || rest.contains('/') || rest.contains('\\') || rest.contains("..") {
+        return None;
+    }
+    crate::stdlib_embed::source(rest)
+}
+
 fn n_read_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("read_file", &args)?, "read_file")?;
+    if path.starts_with(crate::modules::EMBEDDED_PREFIX) {
+        return match embedded_stdlib_source(&path) {
+            Some(src) => collections::construct("ok", vec![Value::Str(src.into())]),
+            None => collections::construct(
+                "err",
+                vec![Value::Str(
+                    format!("read_file '{}': embedded stdlib module not found", path).into(),
+                )],
+            ),
+        };
+    }
     // Documented contract (docs/STANDARD_LIBRARY.md): file operations return
     // a `result` (`ok(text)` / `err(msg)`) instead of throwing, so callers
     // can branch on `is_ok`/`is_err` without a `try` block.
@@ -878,6 +901,9 @@ fn n_write_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_file_exists(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("file_exists", &args)?, "file_exists")?;
+    if path.starts_with(crate::modules::EMBEDDED_PREFIX) {
+        return Ok(Value::Bool(embedded_stdlib_source(&path).is_some()));
+    }
     // Docs promise "true if the path exists": directories count too, not
     // only regular files.
     Ok(Value::Bool(std::path::Path::new(&path).exists()))
@@ -5993,5 +6019,65 @@ mod arity_sweep_tests {
             "non-variadic natives did not report an arity error for 10 arguments: {:?}",
             failures
         );
+    }
+
+    #[test]
+    fn embedded_stdlib_marker_paths_resolve_and_respect_sandbox() {
+        let sched = crate::sched::Scheduler::shared();
+        let ctx = NativeCtx { sched };
+
+        assert!(matches!(
+            n_file_exists(&ctx, vec![Value::Str("<stdlib>/uuid.matrix".into())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            n_file_exists(&ctx, vec![Value::Str("<stdlib>/nope.matrix".into())]).unwrap(),
+            Value::Bool(false)
+        ));
+        assert!(matches!(
+            n_file_exists(&ctx, vec![Value::Str("<stdlib>/../Cargo.toml".into())]).unwrap(),
+            Value::Bool(false)
+        ));
+
+        let ok_res = n_read_file(&ctx, vec![Value::Str("<stdlib>/uuid.matrix".into())]).unwrap();
+        assert!(matches!(
+            n_is_ok(&ctx, vec![ok_res.clone()]).unwrap(),
+            Value::Bool(true)
+        ));
+        let expected_ok = collections::construct(
+            "ok",
+            vec![Value::Str(
+                crate::stdlib_embed::source("uuid").unwrap().into(),
+            )],
+        )
+        .unwrap();
+        assert!(values_equal(&ok_res, &expected_ok));
+
+        for bad in [
+            "<stdlib>/nope.matrix",
+            "<stdlib>/../Cargo.toml",
+            "<stdlib>/",
+        ] {
+            let err_res = n_read_file(&ctx, vec![Value::Str(bad.into())]).unwrap();
+            assert!(
+                matches!(n_is_err(&ctx, vec![err_res]).unwrap(), Value::Bool(true)),
+                "expected err for {bad}"
+            );
+        }
+
+        // Sandbox / Capability::FileSystem must still block <stdlib>/ access.
+        let engine = crate::embed::Engine::new().deny(crate::embed::Capability::FileSystem);
+        let out = engine
+            .run(
+                "sandbox_stdlib_marker",
+                r#"fn main() -> int {
+                    try { let _ = read_file("<stdlib>/uuid.matrix"); return 1; } catch (e) { println("denied_read"); }
+                    try { let _ = file_exists("<stdlib>/uuid.matrix"); return 2; } catch (e) { println("denied_exists"); }
+                    return 0;
+                }"#,
+            )
+            .expect("script runs");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.output, "denied_read\ndenied_exists\n");
     }
 }

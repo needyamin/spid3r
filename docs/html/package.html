@@ -5,52 +5,130 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Spid3r Package System (spkg) — Developer Documentation</title>
+  <meta name="description"
+    content="Developer guide for spkg, the Spid3r package manager: quickstart, authoring packages, spider.toml & spider.lock, workspaces, Ed25519 signing, and CLI reference." />
   <link rel="icon" type="image/png" href="../../src/assets/spid3r.png" />
+
+  <!-- Typography matching Language Docs -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet" />
+
   <script>
     (function () {
-      try {
-        var t = localStorage.getItem('spid3r-dev-theme');
-        if (t === 'light' || t === 'dark') {
-          document.documentElement.setAttribute('data-theme', t);
-        }
-      } catch (e) { }
+      var t = null;
+      try { t = localStorage.getItem('spid3r-dev-theme'); } catch (e) { }
+      if (t !== 'light' && t !== 'dark') {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
     })();
   </script>
   <script src="version.js"></script>
+
   <style>
     :root {
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+      /* Dark IDE palette (default) */
       --bg-base: #0b0f17;
-      --bg-surface: #111722;
-      --bg-card: #161e2e;
-      --bg-card-alt: #1a2335;
-      --bg-code: #080c13;
+      --bg-surface: rgba(17, 23, 34, 0.9);
+      --bg-card: #141c2b;
+      --bg-card-alt: #192336;
+      --bg-code: #080c14;
+      --bg-code-head: #0e1523;
+      --bg-term: #070b12;
+      --bg-term-head: #0d1422;
       --border-line: #1e293b;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(56, 189, 248, 0.4);
+
       --fg-primary: #f1f5f9;
       --fg-secondary: #94a3b8;
       --fg-muted: #64748b;
+
       --w3-green: #04AA6D;
       --w3-green-hover: #059862;
+      --w3-green-soft: rgba(4, 170, 109, 0.14);
       --cyan: #38bdf8;
+      --cyan-soft: rgba(56, 189, 248, 0.14);
       --amber: #fbbf24;
       --rose: #fb7185;
-      --radius: 10px;
-      --shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+      --purple: #c084fc;
+      --emerald: #34d399;
+
+      /* Vivid Dark Syntax Highlighting */
+      --hl-kw: #c084fc;
+      --hl-str: #34d399;
+      --hl-num: #fbbf24;
+      --hl-com: #64748b;
+      --hl-ty: #38bdf8;
+      --hl-fn: #a78bfa;
+      --hl-op: #fb7185;
+      --hl-lit: #fb923c;
+      --hl-builtin: #67e8f9;
+      --hl-cmd: #38bdf8;
+      --hl-flag: #fbbf24;
+      --hl-sec: #f472b6;
+      --hl-dir: #60a5fa;
+      --hl-file: #cbd5e1;
+
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow: 0 8px 26px rgba(0, 0, 0, 0.36);
+      --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.24);
     }
 
     html[data-theme="light"] {
       --bg-base: #f8fafc;
-      --bg-surface: #ffffff;
+      --bg-surface: rgba(255, 255, 255, 0.92);
       --bg-card: #ffffff;
       --bg-card-alt: #f1f5f9;
-      --bg-code: #0f172a;
+      --bg-code: #f8fafc;
+      --bg-code-head: #eef2f7;
+      --bg-term: #0c1220;
+      --bg-term-head: #141d31;
       --border-line: #e2e8f0;
+      --border-subtle: rgba(15, 23, 42, 0.08);
+      --border-hover: rgba(4, 170, 109, 0.45);
+
       --fg-primary: #0f172a;
       --fg-secondary: #475569;
       --fg-muted: #64748b;
-      --shadow: 0 2px 12px rgba(15, 23, 42, 0.08);
+
+      --cyan: #0284c7;
+      --amber: #d97706;
+      --rose: #e11d48;
+      --purple: #7e22ce;
+      --emerald: #059669;
+
+      /* Crisp Light Syntax Highlighting */
+      --hl-kw: #7e22ce;
+      --hl-str: #047857;
+      --hl-num: #b45309;
+      --hl-com: #64748b;
+      --hl-ty: #0284c7;
+      --hl-fn: #6d28d9;
+      --hl-op: #e11d48;
+      --hl-lit: #c2410c;
+      --hl-builtin: #0369a1;
+      --hl-cmd: #0284c7;
+      --hl-flag: #b45309;
+      --hl-sec: #be185d;
+      --hl-dir: #1d4ed8;
+      --hl-file: #334155;
+
+      --shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
+      --shadow-sm: 0 1px 4px rgba(15, 23, 42, 0.05);
     }
 
-    * {
+    *,
+    *::before,
+    *::after {
       box-sizing: border-box;
     }
 
@@ -60,11 +138,17 @@
 
     body {
       margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: var(--font-body);
       background: var(--bg-base);
       color: var(--fg-primary);
-      line-height: 1.6;
+      line-height: 1.65;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-heading);
+      letter-spacing: -0.02em;
     }
 
     a {
@@ -77,30 +161,53 @@
     }
 
     code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 0.9em;
-      background: rgba(56, 189, 248, 0.1);
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: rgba(56, 189, 248, 0.11);
       color: var(--cyan);
-      padding: 0.14rem 0.38rem;
+      padding: 0.14rem 0.42rem;
       border-radius: 5px;
+      border: 1px solid rgba(56, 189, 248, 0.16);
     }
 
     html[data-theme="light"] code {
-      background: rgba(15, 23, 42, 0.07);
+      background: #eff6ff;
       color: #0369a1;
+      border-color: #dbeafe;
     }
 
+    /* Reading progress bar */
+    .progress-bar-wrap {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      z-index: 200;
+      pointer-events: none;
+    }
+
+    .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--w3-green), #38bdf8, #a78bfa);
+      transition: width 0.08s linear;
+    }
+
+    /* Topbar */
     .topbar {
       position: sticky;
       top: 0;
-      z-index: 40;
+      z-index: 100;
       background: var(--bg-surface);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
       border-bottom: 1px solid var(--border-line);
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
-      padding: 0.7rem 1.5rem;
+      padding: 0.65rem 1.5rem;
       flex-wrap: wrap;
     }
 
@@ -108,37 +215,48 @@
       display: inline-flex;
       align-items: center;
       gap: 0.65rem;
-      font-weight: 700;
-      font-size: 1.05rem;
+      font-family: var(--font-heading);
+      font-weight: 800;
+      font-size: 1.12rem;
       color: var(--fg-primary);
-      text-decoration: none;
-    }
-
-    .brand:hover {
-      text-decoration: none;
+      text-decoration: none !important;
     }
 
     .brand img {
-      width: 28px;
-      height: 28px;
-      border-radius: 6px;
+      width: 30px;
+      height: 30px;
+      border-radius: 7px;
       display: block;
+    }
+
+    .brand-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.14rem 0.5rem;
+      border-radius: 999px;
+      background: var(--w3-green-soft);
+      color: var(--w3-green);
+      border: 1px solid rgba(4, 170, 109, 0.35);
     }
 
     .topbar-nav {
       display: flex;
       align-items: center;
-      gap: 0.4rem;
+      gap: 0.35rem;
       flex-wrap: wrap;
     }
 
     .nav-tab {
       color: var(--fg-secondary);
-      font-size: 0.9rem;
+      font-size: 0.89rem;
       font-weight: 500;
-      padding: 0.4rem 0.75rem;
-      border-radius: 7px;
+      padding: 0.42rem 0.78rem;
+      border-radius: 8px;
       transition: background 0.15s, color 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
     }
 
     .nav-tab:hover {
@@ -150,50 +268,75 @@
     .nav-tab.active {
       background: var(--w3-green);
       color: #ffffff;
+      font-weight: 600;
+      box-shadow: 0 2px 10px rgba(4, 170, 109, 0.3);
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
     .btn-top {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
       background: var(--bg-card);
       color: var(--fg-primary);
       border: 1px solid var(--border-line);
       border-radius: 8px;
-      padding: 0.4rem 0.75rem;
-      font-size: 0.85rem;
+      padding: 0.42rem 0.8rem;
+      font-size: 0.84rem;
       font-weight: 600;
       cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
     }
 
     .btn-top:hover {
       background: var(--bg-card-alt);
+      border-color: var(--border-hover);
     }
 
+    /* Main grid */
     .layout {
-      max-width: 1440px;
+      max-width: 1380px;
       margin: 0 auto;
-      padding: 1.5rem 1.5rem 3.5rem;
+      padding: 1.75rem 1.5rem 4rem;
       display: grid;
-      grid-template-columns: 240px minmax(0, 1fr);
-      gap: 2rem;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 2.25rem;
       align-items: start;
     }
 
+    /* Sidebar TOC */
     .toc {
       position: sticky;
-      top: 4.5rem;
+      top: 4.75rem;
       background: var(--bg-card);
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
-      padding: 1rem 1.1rem;
-      box-shadow: var(--shadow);
+      padding: 1rem;
+      box-shadow: var(--shadow-sm);
+      max-height: calc(100vh - 6rem);
+      overflow-y: auto;
+    }
+
+    .toc-group {
+      margin-bottom: 0.9rem;
+    }
+
+    .toc-group:last-child {
+      margin-bottom: 0;
     }
 
     .toc-title {
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.09em;
       color: var(--fg-muted);
       font-weight: 700;
-      margin: 0 0 0.65rem;
+      margin: 0 0 0.4rem 0.45rem;
     }
 
     .toc ul {
@@ -202,15 +345,20 @@
       padding: 0;
       display: flex;
       flex-direction: column;
-      gap: 0.2rem;
+      gap: 0.16rem;
     }
 
     .toc a {
-      display: block;
-      padding: 0.32rem 0.55rem;
-      border-radius: 6px;
-      font-size: 0.88rem;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.36rem 0.58rem;
+      border-radius: 7px;
+      font-size: 0.855rem;
+      font-weight: 500;
       color: var(--fg-secondary);
+      border-left: 2px solid transparent;
+      transition: all 0.15s ease;
     }
 
     .toc a:hover {
@@ -219,77 +367,225 @@
       text-decoration: none;
     }
 
+    .toc a.active {
+      background: var(--w3-green-soft);
+      color: var(--w3-green);
+      border-left-color: var(--w3-green);
+      font-weight: 600;
+    }
+
     main {
       min-width: 0;
     }
 
+    /* Hero */
     .hero {
-      background: linear-gradient(135deg, rgba(4, 170, 109, 0.14), rgba(56, 189, 248, 0.1));
+      position: relative;
+      background: linear-gradient(135deg, rgba(4, 170, 109, 0.15) 0%, rgba(56, 189, 248, 0.1) 55%, rgba(167, 139, 250, 0.1) 100%);
       border: 1px solid var(--border-line);
-      border-radius: var(--radius);
+      border-radius: 14px;
       padding: 2rem;
-      margin-bottom: 1.75rem;
+      margin-bottom: 1.5rem;
       box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+      gap: 1.75rem;
+      align-items: center;
     }
 
     .eyebrow {
-      font-size: 0.78rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.76rem;
       text-transform: uppercase;
       letter-spacing: 0.09em;
       color: var(--w3-green);
       font-weight: 700;
-      margin-bottom: 0.4rem;
+      margin-bottom: 0.55rem;
     }
 
     h1 {
-      margin: 0 0 0.65rem;
-      font-size: clamp(1.7rem, 3vw, 2.3rem);
-      line-height: 1.2;
+      margin: 0 0 0.7rem;
+      font-size: clamp(1.75rem, 3vw, 2.4rem);
+      line-height: 1.15;
     }
 
     .lead {
       color: var(--fg-secondary);
-      font-size: 1.03rem;
-      margin: 0 0 1.15rem;
-      max-width: 72ch;
+      font-size: 1rem;
+      margin: 0 0 1.2rem;
+      max-width: 60ch;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 1.2rem;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: var(--w3-green);
+      color: #ffffff !important;
+      padding: 0.58rem 1.1rem;
+      border-radius: 9px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      border: 1px solid transparent;
+      box-shadow: 0 4px 14px rgba(4, 170, 109, 0.3);
+      transition: transform 0.12s, background 0.15s;
+    }
+
+    .btn-primary:hover {
+      background: var(--w3-green-hover);
+      text-decoration: none;
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: var(--bg-card);
+      color: var(--fg-primary) !important;
+      padding: 0.58rem 1rem;
+      border-radius: 9px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      border: 1px solid var(--border-line);
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-card-alt);
+      border-color: var(--border-hover);
+      text-decoration: none;
     }
 
     .chips {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.5rem;
+      gap: 0.45rem;
     }
 
     .chip {
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-weight: 600;
-      padding: 0.28rem 0.65rem;
+      padding: 0.24rem 0.62rem;
       border-radius: 999px;
       background: var(--bg-card);
       border: 1px solid var(--border-line);
+      color: var(--fg-secondary);
+    }
+
+    /* Hero interactive switcher */
+    .hero-tabs-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+
+    .hero-tab-bar {
+      display: flex;
+      background: var(--bg-card-alt);
+      border-bottom: 1px solid var(--border-line);
+      padding: 0.35rem 0.4rem 0;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+    }
+
+    .htab-btn {
+      background: transparent;
+      border: none;
+      color: var(--fg-secondary);
+      font-family: var(--font-body);
+      font-size: 0.81rem;
+      font-weight: 600;
+      padding: 0.48rem 0.8rem;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .htab-btn:hover {
       color: var(--fg-primary);
     }
 
+    .htab-btn.active {
+      background: var(--bg-card);
+      color: var(--w3-green);
+      border-bottom-color: var(--w3-green);
+    }
+
+    .htab-pane {
+      display: none;
+      padding: 0.75rem;
+    }
+
+    .htab-pane.active {
+      display: block;
+    }
+
+    .htab-pane .code-card {
+      margin: 0;
+    }
+
+    /* Feature cards */
     .cards {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1rem;
-      margin-bottom: 2rem;
+      margin-bottom: 2.25rem;
     }
 
     .card {
       background: var(--bg-card);
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
-      padding: 1.05rem 1.15rem;
-      box-shadow: var(--shadow);
+      padding: 1.1rem 1.2rem;
+      box-shadow: var(--shadow-sm);
+      transition: transform 0.14s, border-color 0.15s;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-hover);
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.4rem;
+    }
+
+    .card-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--cyan-soft);
+      color: var(--cyan);
     }
 
     .card .k {
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--fg-muted);
@@ -297,29 +593,32 @@
     }
 
     .card .v {
-      font-size: 1.35rem;
+      font-family: var(--font-heading);
+      font-size: 1.22rem;
       font-weight: 700;
-      margin: 0.25rem 0;
+      margin: 0.15rem 0 0.3rem;
       color: var(--fg-primary);
     }
 
     .card .n {
       font-size: 0.85rem;
       color: var(--fg-secondary);
+      line-height: 1.5;
     }
 
+    /* Sections */
     section.doc-section {
-      margin-bottom: 2.25rem;
-      scroll-margin-top: 4.5rem;
+      margin-bottom: 2.75rem;
+      scroll-margin-top: 4.75rem;
     }
 
     h2 {
       display: flex;
       align-items: center;
-      gap: 0.6rem;
-      font-size: 1.35rem;
-      margin: 0 0 0.45rem;
-      padding-bottom: 0.45rem;
+      gap: 0.65rem;
+      font-size: 1.42rem;
+      margin: 0 0 0.5rem;
+      padding-bottom: 0.55rem;
       border-bottom: 1px solid var(--border-line);
     }
 
@@ -327,96 +626,251 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 1.8rem;
-      height: 1.8rem;
-      border-radius: 6px;
-      background: var(--w3-green);
+      min-width: 2rem;
+      height: 2rem;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--w3-green), #059862);
       color: #ffffff;
-      font-size: 0.88rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
       font-weight: 700;
-      padding: 0 0.4rem;
+      padding: 0 0.45rem;
+      box-shadow: 0 2px 8px rgba(4, 170, 109, 0.25);
     }
 
     h3 {
-      font-size: 1.05rem;
-      margin: 1.25rem 0 0.45rem;
+      font-size: 1.08rem;
+      margin: 1.35rem 0 0.5rem;
       color: var(--fg-primary);
     }
 
     .section-lead {
       color: var(--fg-secondary);
-      margin: 0 0 1rem;
+      margin: 0 0 1.1rem;
+      font-size: 0.97rem;
     }
 
     .grid-2 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.1rem;
+      margin-bottom: 1rem;
     }
 
     .panel {
       background: var(--bg-card);
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
-      padding: 1.15rem 1.25rem;
-      box-shadow: var(--shadow);
+      padding: 1.2rem 1.3rem;
+      box-shadow: var(--shadow-sm);
       margin-bottom: 1rem;
+    }
+
+    .grid-2 .panel {
+      margin-bottom: 0;
     }
 
     .panel h3:first-child {
       margin-top: 0;
     }
 
+    .step-list {
+      list-style: none;
+      padding: 0;
+      margin: 0.5rem 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .step-list li {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      gap: 0.65rem;
+      align-items: start;
+      font-size: 0.92rem;
+      color: var(--fg-secondary);
+    }
+
+    .step-num {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: var(--w3-green-soft);
+      color: var(--w3-green);
+      border: 1px solid rgba(4, 170, 109, 0.35);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      font-weight: 700;
+      margin-top: 0.1rem;
+    }
+
+    .diagram-frame {
+      background: #ffffff;
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius);
+      padding: 0.75rem;
+      margin: 0.5rem 0 1.25rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .diagram-frame img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 6px;
+    }
+
+    /* Callouts */
     .note {
       background: rgba(56, 189, 248, 0.08);
-      border-left: 3px solid var(--cyan);
-      padding: 0.85rem 1rem;
-      border-radius: 0 var(--radius) var(--radius) 0;
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      border-left: 4px solid var(--cyan);
+      padding: 0.9rem 1.05rem;
+      border-radius: var(--radius-sm);
       margin: 1rem 0;
       color: var(--fg-primary);
-      font-size: 0.94rem;
+      font-size: 0.93rem;
     }
 
     .note.warn {
-      background: rgba(251, 191, 36, 0.1);
+      background: rgba(251, 191, 36, 0.09);
+      border-color: rgba(251, 191, 36, 0.25);
       border-left-color: var(--amber);
     }
 
     .note.good {
-      background: rgba(4, 170, 109, 0.1);
+      background: rgba(4, 170, 109, 0.09);
+      border-color: rgba(4, 170, 109, 0.25);
       border-left-color: var(--w3-green);
     }
 
-    .code-wrap {
-      position: relative;
-      margin: 0.75rem 0 1rem;
-    }
-
-    pre {
-      margin: 0;
-      background: var(--bg-code);
-      color: #e2e8f0;
+    /* Colorful IDE Code Cards */
+    .code-card {
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
-      padding: 1rem 1.1rem;
-      overflow-x: auto;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 0.88rem;
-      line-height: 1.5;
+      overflow: hidden;
+      background: var(--bg-code);
+      margin: 0.75rem 0 1rem;
+      box-shadow: var(--shadow-sm);
     }
 
+    /* Terminal bash blocks stay dark and crisp in both themes */
+    .code-card[data-lang="bash"] {
+      background: var(--bg-term);
+      border-color: #1e293b;
+      --hl-com: #64748b;
+      --hl-cmd: #38bdf8;
+      --hl-builtin: #34d399;
+      --hl-flag: #fbbf24;
+      --hl-str: #a7f3d0;
+      --hl-num: #fb923c;
+      --hl-op: #fb7185;
+      --hl-kw: #c084fc;
+      --hl-ty: #7dd3fc;
+      --hl-file: #e2e8f0;
+    }
+
+    .code-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.48rem 0.85rem;
+      background: var(--bg-code-head);
+      border-bottom: 1px solid var(--border-line);
+      font-size: 0.78rem;
+    }
+
+    .code-card[data-lang="bash"] .code-head {
+      background: var(--bg-term-head);
+      border-bottom-color: #1e293b;
+      color: #cbd5e1;
+    }
+
+    .code-head-left {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      min-width: 0;
+    }
+
+    .win-dots {
+      display: inline-flex;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .win-dots span {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: block;
+    }
+
+    .win-dots span:nth-child(1) { background: #ef4444; opacity: 0.8; }
+    .win-dots span:nth-child(2) { background: #f59e0b; opacity: 0.8; }
+    .win-dots span:nth-child(3) { background: #10b981; opacity: 0.8; }
+
+    .code-title {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--fg-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .code-card[data-lang="bash"] .code-title {
+      color: #94a3b8;
+    }
+
+    .code-head-right {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .lang-pill {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.14rem 0.48rem;
+      border-radius: 999px;
+    }
+
+    .lang-pill.spid3r { background: rgba(192, 132, 252, 0.18); color: #c084fc; }
+    .lang-pill.toml   { background: rgba(244, 114, 182, 0.18); color: #ec4899; }
+    .lang-pill.bash   { background: rgba(56, 189, 248, 0.18);  color: #38bdf8; }
+    .lang-pill.tree   { background: rgba(52, 211, 153, 0.18);  color: #10b981; }
+    .lang-pill.json   { background: rgba(251, 191, 36, 0.18);  color: #f59e0b; }
+
     .copy-btn {
-      position: absolute;
-      top: 0.5rem;
-      right: 0.5rem;
-      background: rgba(30, 41, 59, 0.85);
-      color: #e2e8f0;
-      border: 1px solid #334155;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--fg-primary);
+      border: 1px solid var(--border-line);
       border-radius: 6px;
-      padding: 0.22rem 0.55rem;
-      font-size: 0.75rem;
+      padding: 0.22rem 0.56rem;
+      font-family: var(--font-body);
+      font-size: 0.74rem;
       font-weight: 600;
       cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .code-card[data-lang="bash"] .copy-btn {
+      background: rgba(30, 41, 59, 0.85);
+      color: #e2e8f0;
+      border-color: #334155;
     }
 
     .copy-btn:hover {
@@ -425,13 +879,100 @@
       color: #ffffff;
     }
 
+    .copy-btn.copied {
+      background: var(--w3-green);
+      border-color: var(--w3-green);
+      color: #ffffff;
+    }
+
+    pre {
+      margin: 0;
+      padding: 0.95rem 1.1rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.86rem;
+      line-height: 1.58;
+      color: var(--fg-primary);
+      tab-size: 4;
+    }
+
+    .code-card[data-lang="bash"] pre {
+      color: #e2e8f0;
+    }
+
+    /* Syntax Token Classes */
+    .tok-kw      { color: var(--hl-kw); font-weight: 600; }
+    .tok-str     { color: var(--hl-str); }
+    .tok-num     { color: var(--hl-num); }
+    .tok-com     { color: var(--hl-com); font-style: italic; }
+    .tok-ty      { color: var(--hl-ty); }
+    .tok-fn      { color: var(--hl-fn); font-weight: 600; }
+    .tok-op      { color: var(--hl-op); }
+    .tok-lit     { color: var(--hl-lit); font-weight: 600; }
+    .tok-builtin { color: var(--hl-builtin); }
+    .tok-cmd     { color: var(--hl-cmd); font-weight: 700; }
+    .tok-flag    { color: var(--hl-flag); }
+    .tok-sec     { color: var(--hl-sec); font-weight: 700; }
+    .tok-dir     { color: var(--hl-dir); font-weight: 600; }
+    .tok-file    { color: var(--hl-file); }
+    .tok-tree    { color: var(--fg-muted); opacity: 0.75; }
+
+    /* Tables & CLI Filter */
+    .cli-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin: 0.75rem 0;
+    }
+
+    .search-box {
+      position: relative;
+      flex: 1 1 280px;
+      max-width: 440px;
+    }
+
+    .search-box input {
+      width: 100%;
+      padding: 0.56rem 0.9rem 0.56rem 2.25rem;
+      border-radius: 9px;
+      border: 1px solid var(--border-line);
+      background: var(--bg-card);
+      color: var(--fg-primary);
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .search-box input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14);
+    }
+
+    .search-box svg {
+      position: absolute;
+      left: 0.72rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--fg-muted);
+      pointer-events: none;
+    }
+
+    .cli-count {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--fg-muted);
+    }
+
     .table-wrap {
       overflow-x: auto;
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
       background: var(--bg-card);
-      margin: 0.75rem 0 1.1rem;
-      box-shadow: var(--shadow);
+      margin: 0.75rem 0 1.15rem;
+      box-shadow: var(--shadow-sm);
     }
 
     table {
@@ -440,10 +981,9 @@
       font-size: 0.9rem;
     }
 
-    th,
-    td {
+    th, td {
       text-align: left;
-      padding: 0.7rem 0.9rem;
+      padding: 0.74rem 0.95rem;
       border-bottom: 1px solid var(--border-line);
       vertical-align: top;
     }
@@ -452,9 +992,13 @@
       background: var(--bg-card-alt);
       color: var(--fg-primary);
       font-weight: 700;
-      font-size: 0.82rem;
+      font-size: 0.79rem;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
+    }
+
+    tbody tr:hover {
+      background: rgba(56, 189, 248, 0.04);
     }
 
     tr:last-child td {
@@ -463,338 +1007,567 @@
 
     .badge {
       display: inline-block;
-      padding: 0.15rem 0.5rem;
+      padding: 0.16rem 0.55rem;
       border-radius: 999px;
-      font-size: 0.75rem;
+      font-size: 0.73rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.04em;
+      white-space: nowrap;
     }
 
-    .badge.pass {
-      background: rgba(4, 170, 109, 0.16);
-      color: var(--w3-green);
-    }
+    .badge.pass { background: var(--w3-green-soft); color: var(--w3-green); }
+    .badge.info { background: var(--cyan-soft); color: var(--cyan); }
+    .badge.warn { background: rgba(251, 191, 36, 0.16); color: var(--amber); }
 
-    .badge.info {
-      background: rgba(56, 189, 248, 0.16);
-      color: var(--cyan);
-    }
-
-    .badge.warn {
-      background: rgba(251, 191, 36, 0.16);
-      color: var(--amber);
-    }
-
-    .badge.muted {
-      background: rgba(148, 163, 184, 0.16);
-      color: var(--fg-secondary);
-    }
-
+    /* FAQ Accordions */
     details {
       background: var(--bg-card);
       border: 1px solid var(--border-line);
       border-radius: var(--radius);
-      padding: 0.85rem 1rem;
-      margin-bottom: 0.65rem;
+      padding: 0.9rem 1.1rem;
+      margin-bottom: 0.7rem;
+      box-shadow: var(--shadow-sm);
+      transition: border-color 0.15s;
+    }
+
+    details[open] {
+      border-color: var(--border-hover);
     }
 
     summary {
       cursor: pointer;
       font-weight: 600;
       color: var(--fg-primary);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    summary::after {
+      content: '+';
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      color: var(--w3-green);
+      font-weight: 700;
+      transition: transform 0.15s;
+    }
+
+    details[open] summary::after {
+      content: '−';
     }
 
     details p {
-      margin: 0.55rem 0 0;
+      margin: 0.65rem 0 0;
       color: var(--fg-secondary);
       font-size: 0.93rem;
     }
 
     footer {
       border-top: 1px solid var(--border-line);
-      padding: 1.5rem;
+      padding: 1.6rem 1.5rem;
       text-align: center;
       color: var(--fg-muted);
-      font-size: 0.85rem;
+      font-size: 0.86rem;
+    }
+
+    @media (max-width: 1020px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 920px) {
       .layout {
         grid-template-columns: 1fr;
+        gap: 1.25rem;
       }
 
       .toc {
         position: static;
+        max-height: none;
+      }
+
+      .toc ul {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .toc a {
+        border-left: none;
+        border: 1px solid var(--border-line);
+      }
+
+      .toc a.active {
+        border-color: var(--w3-green);
       }
     }
   </style>
 </head>
 
 <body>
+  <div class="progress-bar-wrap" aria-hidden="true">
+    <div class="progress-bar" id="readProgress"></div>
+  </div>
+
   <header class="topbar">
     <a class="brand" href="doc.html">
       <img src="../../src/assets/spid3r.png" alt="Spid3r logo" />
       <span>Spid3r Docs</span>
+      <span class="brand-tag" data-spid3r-version="v">v1.5.0</span>
     </a>
+
     <nav class="topbar-nav" aria-label="Documentation sections">
       <a class="nav-tab" href="doc.html">Language Docs</a>
       <a class="nav-tab active" href="package.html">Packages (spkg)</a>
       <a class="nav-tab" href="benchmark.html">Benchmarks</a>
       <a class="nav-tab" href="playground.html">Playground</a>
       <a class="nav-tab" href="privacy_policy.html">Privacy</a>
+      <a class="nav-tab" href="https://spid3r-spkg.github.io" target="_blank" rel="noopener noreferrer">Public Registry ↗</a>
     </nav>
-    <button class="btn-top" id="themeBtn" type="button" aria-label="Toggle color theme">Toggle Theme</button>
+
+    <div class="topbar-actions">
+      <button class="btn-top" id="themeBtn" type="button" aria-label="Toggle color theme">Theme</button>
+    </div>
   </header>
 
   <div class="layout">
     <aside class="toc" aria-label="On this page">
-      <p class="toc-title">On This Page</p>
-      <ul>
-        <li><a href="#sec-overview">1. Architecture Overview</a></li>
-        <li><a href="#sec-quickstart">2. 60-Second Quickstart</a></li>
-        <li><a href="#sec-authoring">3. Writing a New Package</a></li>
-        <li><a href="#sec-manifest">4. spider.toml &amp; spider.lock</a></li>
-        <li><a href="#sec-installing">5. Installing Dependencies</a></li>
-        <li><a href="#sec-workspaces">6. Multi-Package Workspaces</a></li>
-        <li><a href="#sec-publishing">7. Publishing &amp; Registries</a></li>
-        <li><a href="#sec-security">8. Security, Signing &amp; spid3r.ini</a></li>
-        <li><a href="#sec-cli">9. Full CLI Reference</a></li>
-        <li><a href="#sec-faq">10. Troubleshooting &amp; FAQ</a></li>
-      </ul>
+      <div class="toc-group">
+        <p class="toc-title">Start Here</p>
+        <ul>
+          <li><a href="#sec-overview">01. Architecture Overview</a></li>
+          <li><a href="#sec-quickstart">02. 60-Second Quickstart</a></li>
+        </ul>
+      </div>
+      <div class="toc-group">
+        <p class="toc-title">Build &amp; Manage</p>
+        <ul>
+          <li><a href="#sec-authoring">03. Writing a New Package</a></li>
+          <li><a href="#sec-manifest">04. spider.toml &amp; spider.lock</a></li>
+          <li><a href="#sec-installing">05. Installing Dependencies</a></li>
+          <li><a href="#sec-workspaces">06. Multi-Package Workspaces</a></li>
+        </ul>
+      </div>
+      <div class="toc-group">
+        <p class="toc-title">Distribute &amp; Secure</p>
+        <ul>
+          <li><a href="#sec-publishing">07. Publishing &amp; Registries</a></li>
+          <li><a href="#sec-security">08. Security, Signing &amp; INI</a></li>
+        </ul>
+      </div>
+      <div class="toc-group">
+        <p class="toc-title">Reference</p>
+        <ul>
+          <li><a href="#sec-cli">09. Complete CLI Reference</a></li>
+          <li><a href="#sec-faq">10. Troubleshooting &amp; FAQ</a></li>
+        </ul>
+      </div>
     </aside>
 
     <main>
       <section class="hero">
-        <div class="eyebrow">Developer Guide · Package Management</div>
-        <h1>Spid3r Package System (<code>spkg</code>)</h1>
-        <p class="lead">
-          Everything you need to create, structure, share, install, verify, and publish Spid3r packages
-          using deterministic vendoring, content-addressed SHA-256 locking, and optional Ed25519 signature verification.
-        </p>
-        <div class="chips">
-          <span class="chip" data-spid3r-version="v">v1.1.1</span>
-          <span class="chip">Manifest: <code>spider.toml</code></span>
-          <span class="chip">Lockfile: <code>spider.lock</code></span>
-          <span class="chip">Vendored into: <code>vendor/</code></span>
-          <span class="chip">CLI: <code>spkg</code> or <code>spid3r pkg</code></span>
+        <div class="hero-grid">
+          <div>
+            <div class="eyebrow">Developer Guide · Deterministic Vendoring</div>
+            <h1>Spid3r Package System (<code>spkg</code>)</h1>
+            <p class="lead">
+              Create, install, vendor, audit, run CLI tools from, and publish Spid3r packages with content-addressed
+              SHA-256 locking, zero install scripts, and optional Ed25519 signature verification.
+            </p>
+            <div class="hero-actions">
+              <a class="btn-primary" href="#sec-quickstart">60-Second Quickstart</a>
+              <a class="btn-ghost" href="#sec-cli">Explore CLI Reference</a>
+              <a class="btn-ghost" href="https://spid3r-spkg.github.io" target="_blank" rel="noopener noreferrer">Browse spid3r-spkg.github.io ↗</a>
+            </div>
+            <div class="chips">
+              <span class="chip">Manifest: <code>spider.toml</code></span>
+              <span class="chip">Lockfile: <code>spider.lock</code></span>
+              <span class="chip">Vendor: <code>vendor/</code></span>
+              <span class="chip">Tools: <code>spkg tool</code></span>
+            </div>
+          </div>
+
+          <div class="hero-tabs-card">
+            <div class="hero-tab-bar" role="tablist" aria-label="Quick workflow examples">
+              <button class="htab-btn active" type="button" role="tab" aria-selected="true" data-htab="lib">Use a Library</button>
+              <button class="htab-btn" type="button" role="tab" aria-selected="false" data-htab="tool">Install a CLI Tool</button>
+              <button class="htab-btn" type="button" role="tab" aria-selected="false" data-htab="pub">Publish</button>
+            </div>
+
+            <div class="htab-pane active" data-htab-pane="lib">
+              <div class="code-card" data-lang="bash">
+                <div class="code-head">
+                  <div class="code-head-left">
+                    <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                    <span class="code-title">terminal — install &amp; import</span>
+                  </div>
+                  <div class="code-head-right">
+                    <span class="lang-pill bash">bash</span>
+                    <button class="copy-btn" type="button">Copy</button>
+                  </div>
+                </div>
+                <pre data-lang="bash">mkdir net_demo &amp;&amp; cd net_demo
+spkg install nettools
+spid3r run src/main.matrix</pre>
+              </div>
+            </div>
+
+            <div class="htab-pane" data-htab-pane="tool">
+              <div class="code-card" data-lang="bash">
+                <div class="code-head">
+                  <div class="code-head-left">
+                    <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                    <span class="code-title">terminal — global CLI shims</span>
+                  </div>
+                  <div class="code-head-right">
+                    <span class="lang-pill bash">bash</span>
+                    <button class="copy-btn" type="button">Copy</button>
+                  </div>
+                </div>
+                <pre data-lang="bash"># Installs into state/bin (auto-added to PATH by installers)
+spkg tool install nettools
+nettools subnet 192.168.1.0/24</pre>
+              </div>
+            </div>
+
+            <div class="htab-pane" data-htab-pane="pub">
+              <div class="code-card" data-lang="bash">
+                <div class="code-head">
+                  <div class="code-head-left">
+                    <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                    <span class="code-title">terminal — signed static release</span>
+                  </div>
+                  <div class="code-head-right">
+                    <span class="lang-pill bash">bash</span>
+                    <button class="copy-btn" type="button">Copy</button>
+                  </div>
+                </div>
+                <pre data-lang="bash">spkg init my_pkg &amp;&amp; cd my_pkg
+SPID3R_SIGN_KEY=&lt;64-hex-seed&gt; spkg publish --to-dir ./registry</pre>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
       <div class="cards">
         <div class="card">
-          <div class="k">Tool Entry Points</div>
-          <div class="v"><code>spkg</code> &amp; <code>spid3r</code></div>
-          <div class="n">Both invoke the exact same in-process package engine; <code>spkg</code> accepts commands
-            directly or via <code>spid3r init</code>/<code>add</code>/<code>install</code>.</div>
-        </div>
-        <div class="card">
-          <div class="k">4 Package Sources</div>
-          <div class="v">Path · Git · Dir · HTTP(S)</div>
-          <div class="n">Install from local folders, Git URLs, local directory registries, or static HTTP/HTTPS package
-            servers.</div>
-        </div>
-        <div class="card">
-          <div class="k">Integrity Model</div>
-          <div class="v">SHA-256 + Ed25519</div>
-          <div class="n">Deterministic hashing over relative paths + raw bytes, with optional signed
-            <code>sha256.txt.sig</code> registries.
+          <div class="card-head">
+            <span class="k">Entry Points</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            </span>
           </div>
+          <div class="v"><code>spkg</code> &amp; <code>spid3r</code></div>
+          <div class="n">Both invoke the exact same in-process engine (<code>spkg install</code> or <code>spid3r install</code>).</div>
         </div>
+
         <div class="card">
-          <div class="k">Execution Safety</div>
-          <div class="v">Zero Install Hooks</div>
-          <div class="n">No build scripts run during <code>add</code> or <code>install</code>, and POSIX tar extraction
-            rejects symlinks and special files.</div>
+          <div class="card-head">
+            <span class="k">4 Dependency Sources</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"></path></svg>
+            </span>
+          </div>
+          <div class="v">Path · Git · Dir · HTTP(S)</div>
+          <div class="n">Vendor from local folders, pinned Git commits, directory mirrors, or static HTTPS registries.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="k">Supply Chain</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+            </span>
+          </div>
+          <div class="v">SHA-256 + Ed25519</div>
+          <div class="n">Pre-extract archive, manifest, metadata, and wheel signature verification with fail-closed <code>trust_pk</code>.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="k">Safety Model</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            </span>
+          </div>
+          <div class="v">Zero Install Scripts</div>
+          <div class="n">No build hooks run during <code>add</code> or <code>install</code>, and ustar unpacking rejects symlinks &amp; traversal.</div>
         </div>
       </div>
 
       <section class="doc-section" id="sec-overview">
         <h2><span class="num">01</span>Architecture Overview: How It Works</h2>
         <p class="section-lead">
-          Spid3r uses a reproducible, vendored package workflow with per-target native wheels, verifiable lockfiles,
-          zero install hooks, and Ed25519-signed registries.
+          Deterministic resolution, global caching, isolated vendoring, and compiler-enforced lockfile verification.
         </p>
 
-        <img src="../diagrams/packages.svg" alt="Spid3r enterprise package lifecycle diagram"
-          style="width:100%;height:auto;border-radius:10px;border:1px solid var(--border-line);margin:0.5rem 0 1.25rem;background:#fff;" />
+        <div class="diagram-frame">
+          <img src="../diagrams/packages.svg" alt="Spid3r package lifecycle diagram" />
+        </div>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>End-to-End Resolution &amp; Vendoring Flow</h3>
-            <p>When you run <code>spkg install</code> (or <code>spkg add</code>), Spid3r executes a deterministic
-              pipeline:</p>
-            <ol>
-              <li>Reads <code>spider.toml</code> (single package or <code>[workspace]</code> root) plus optional
-                <code>--dev</code> / <code>--extra</code> dependency groups.
+            <h3>Resolution &amp; Vendoring Pipeline</h3>
+            <ol class="step-list">
+              <li>
+                <span class="step-num">1</span>
+                <div>Reads <code>spider.toml</code> (single crate or <code>[workspace]</code>) including optional <code>--dev</code> / <code>--extra</code> dependency groups.</div>
               </li>
-              <li>Unifies semantic version constraints across transitive dependencies while filtering yanked releases
-                (for example, combining <code>^1.0.0</code> and <code>=1.2.0</code> into <code>1.2.0</code>).</li>
-              <li>Fetches source archives or prebuilt per-target wheels (<code>package-&lt;target&gt;.tar</code>) into
-                the shared global cache (<code>paths.cache_dir</code> / <code>SPID3R_CACHE_DIR</code>, managed via
-                <code>spkg cache</code>), with strict offline support (<code>--offline</code> / <code>--frozen</code>).
+              <li>
+                <span class="step-num">2</span>
+                <div>Unifies SemVer ranges across transitive dependencies while skipping releases marked in signed <code>yanked.txt</code>.</div>
               </li>
-              <li>Atomically stages and copies sources, <code>.spid3r-manifest.toml</code>, and validated
-                <code>_native/&lt;target&gt;/</code> binaries into <code>vendor/&lt;pkg&gt;/</code>.
+              <li>
+                <span class="step-num">3</span>
+                <div>Fetches archives or target binary wheels (<code>package-&lt;target&gt;.tar</code>) into the shared global cache (<code>paths.cache_dir</code> / <code>SPID3R_CACHE_DIR</code>).</div>
               </li>
-              <li>Computes deterministic SHA-256 digests over both sources and native wheels and pins exact metadata
-                (<code>target</code>, <code>native-sha256</code>, <code>ffi-libs</code>, <code>used_by</code>) in
-                <code>spider.lock</code>.
+              <li>
+                <span class="step-num">4</span>
+                <div>Verifies Ed25519 signatures and hashes before unpacking sources, <code>.spid3r-manifest.toml</code>, and <code>_native/&lt;target&gt;/</code> into <code>vendor/&lt;pkg&gt;/</code>.</div>
+              </li>
+              <li>
+                <span class="step-num">5</span>
+                <div>Writes pinned source digests, <code>manifest-sha256</code>, <code>native-sha256</code>, <code>ffi-libs</code>, and <code>used_by</code> back to <code>spider.lock</code>.</div>
               </li>
             </ol>
           </div>
+
           <div class="panel">
-            <h3>How Imports Resolve Vendor Packages</h3>
+            <h3>Automatic Vendor Imports</h3>
             <p>
-              The Spid3r compiler and runtime search <code>vendor/</code> automatically alongside the project source
-              root.
-              When a dependency <code>mathlib</code> is vendored into <code>vendor/mathlib/</code>, you import its
-              modules directly without extra include flags:
+              The Spid3r compiler and runtime search <code>vendor/</code> automatically relative to the project root.
+              When <code>nettools</code> or <code>mathlib</code> is vendored, import its module name directly:
             </p>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>import "mathlib/lib" as math;
+            <div class="code-card" data-lang="spid3r">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">src/main.matrix</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill spid3r">spid3r</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="spid3r">import "nettools/lib" as nt;
 
 fn main() {
-    println("sum = " + math.add(20, 22).to_string());
+    let info = nt.subnet_calc("192.168.1.0/24");
+    println("nettools v" + nt.VERSION + " -> " + string(info));
 }</pre>
             </div>
             <p>
-              Use <code>spkg modules src/main.matrix --tree</code> to inspect every imported module and verify which
-              files came from <code>stdlib</code>, your project, or <code>vendor/</code>.
+              Inspect module resolution across <code>stdlib</code>, your project, and <code>vendor/</code> with
+              <code>spkg modules src/main.matrix --tree</code>.
             </p>
           </div>
         </div>
 
         <div class="note good">
-          <strong>Default Public Registry:</strong> Out of the box, <code>packages.registry</code> points to
-          <code>https://spid3r-spkg.github.io</code>.
-          You can run <code>spkg install &lt;pkg&gt;</code>, <code>spkg install &lt;pkg&gt;==&lt;ver&gt;</code>, or
-          <code>spkg search</code> right away, override the URL via <code>SPID3R_REGISTRY</code> or
-          <code>spid3r.ini</code>, set <code>SPID3R_REGISTRY=none</code> in air-gapped environments, or install directly
-          via <code>--path</code> / <code>--git</code>.
+          <strong>Default Public Registry:</strong> <code>packages.registry</code> defaults to
+          <code>https://spid3r-spkg.github.io</code>. Override it via <code>SPID3R_REGISTRY</code> or
+          <code>spid3r.ini</code>, set <code>SPID3R_REGISTRY=none</code> in air-gapped networks, or bypass registries
+          entirely with <code>--path</code> and <code>--git</code>.
         </div>
       </section>
 
       <section class="doc-section" id="sec-quickstart">
         <h2><span class="num">02</span>60-Second Quickstart</h2>
-        <p class="section-lead">Initialize a project, inspect the generated layout, and run or compile it immediately.
-        </p>
+        <p class="section-lead">Start a project, install libraries, run your app across engines, or install global CLI tools.</p>
 
-        <div class="code-wrap">
-          <button class="copy-btn" type="button">Copy</button>
-          <pre># 1. Quickest pip-style workflow in a fresh directory:
-mkdir hello_demo && cd hello_demo
-spkg install hello          # auto-inits spider.toml and installs latest
-spkg search                 # browse online catalog.txt + vendor/
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Project Workflow (Libraries)</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — pip-style or explicit init</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash"># 1. Quickest workflow in an empty folder:
+mkdir hello_demo &amp;&amp; cd hello_demo
+spkg install hello          # creates spider.toml + installs latest
+spkg search                 # browse catalog.txt + vendor/
 
-# 2. Or initialize an empty project explicitly:
-spkg init my_app
-cd my_app
-
-# Generated files:
-#   spider.toml       -> [package] metadata + [dependencies]
-#   src/main.matrix   -> starter entry point
-
-# 3. Install pinned version, verify, or uninstall:
+# 2. Or initialize an explicit project scaffold:
+spkg init my_app &amp;&amp; cd my_app
 spkg install hello==0.1.0
 spkg tree
 spkg verify
 spkg uninstall hello
-spkg dist                   # writes target/my_app.matrixc</pre>
-        </div>
+spkg dist                   # emits target/my_app.matrixc</pre>
+            </div>
+          </div>
 
-        <p>You can invoke the same subcommands through the main <code>spid3r</code> binary (<code>spid3r init</code>,
-          <code>spid3r add</code>, <code>spid3r install</code>, <code>spid3r tree</code>, <code>spid3r verify</code>,
-          <code>spid3r search</code>, <code>spid3r publish</code>) or via <code>spkg &lt;command&gt;</code>.
-        </p>
+          <div class="panel">
+            <h3>Global CLI Tool Workflow (<code>[bin]</code>)</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — spkg tool</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash"># Install CLI binaries from registry, --path, or --offline cache
+spkg tool install nettools
+spkg tool list
+
+# Run directly from any terminal (Windows / Linux / macOS)
+nettools subnet 10.0.0.0/24 --json
+spkg tool uninstall nettools</pre>
+            </div>
+            <p>
+              Launcher shims live in <code>%LOCALAPPDATA%\Spid3r\state\bin</code> (Windows) or
+              <code>${XDG_STATE_HOME:-$HOME/.local/state}/spid3r/bin</code> (Linux/macOS), added to <code>PATH</code>
+              by both installers.
+            </p>
+          </div>
+        </div>
       </section>
 
       <section class="doc-section" id="sec-authoring">
         <h2><span class="num">03</span>Developing &amp; Writing a New Package</h2>
-        <p class="section-lead">Author reusable Spid3r libraries or runnable applications with clean exports and
-          predictable directory layout.</p>
+        <p class="section-lead">Author reusable libraries and CLI binaries with clean <code>public</code> exports.</p>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Recommended Library Layout</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>slugify/
+            <div class="code-card" data-lang="tree">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">package directory</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill tree">tree</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="tree">slugify/
 ├── spider.toml
 ├── src/
 │   ├── lib.matrix       # public library API
-│   └── helpers.matrix   # internal helpers
+│   └── helpers.matrix   # internal module helpers
 └── tests/
     └── basic_test.matrix</pre>
             </div>
             <p>
-              <code>spkg init</code> sets <code>entry = "src/main.matrix"</code> by default. For reusable libraries,
-              update <code>entry = "src/lib.matrix"</code> in <code>spider.toml</code> so <code>spkg pack</code>,
-              <code>spkg dist</code>, and tools know your library entry module.
+              For library crates, set <code>entry = "src/lib.matrix"</code> in <code>spider.toml</code> so consumers,
+              <code>spkg pack</code>, and <code>spkg dist</code> know the library entry module.
             </p>
           </div>
+
           <div class="panel">
             <h3>Exporting Symbols with <code>public</code></h3>
-            <p>
-              Any symbol imported from another module (functions, constants, classes, or enums) should be marked
-              <code>public</code>:
-            </p>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>// slugify/src/lib.matrix
+            <div class="code-card" data-lang="spid3r">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">slugify/src/lib.matrix</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill spid3r">spid3r</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="spid3r">// slugify/src/lib.matrix
 public const VERSION: string = "0.1.0";
 
-public fn slugify(text: string) -> string {
+public fn slugify(text: string) -&gt; string {
     return text.trim().to_lower().replace(" ", "-");
 }</pre>
             </div>
           </div>
         </div>
 
-        <h3>Using Your Package From Another Project</h3>
-        <div class="code-wrap">
-          <button class="copy-btn" type="button">Copy</button>
-          <pre># In a separate consumer project:
-spkg init demo_app
-cd demo_app
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Linking Locally During Development</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — local path dep</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash">spkg init demo_app &amp;&amp; cd demo_app
+spkg add slugify --path ../slugify
+spid3r test</pre>
+            </div>
+          </div>
 
-# Add the local library by relative or absolute path:
-spkg add slugify --path ../slugify</pre>
-        </div>
-
-        <div class="code-wrap">
-          <button class="copy-btn" type="button">Copy</button>
-          <pre>// demo_app/src/main.matrix
-import "slugify/lib" as slug;
+          <div class="panel">
+            <h3>Consuming the Package</h3>
+            <div class="code-card" data-lang="spid3r">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">demo_app/src/main.matrix</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill spid3r">spid3r</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="spid3r">import "slugify/lib" as slug;
 
 fn main() {
     println(slug.slugify("Hello Spid3r Package"));
-    println("lib version = " + slug.VERSION);
+    println("version = " + slug.VERSION);
 }</pre>
+            </div>
+          </div>
         </div>
 
         <div class="note good">
-          <strong>Import Path Mapping Rule:</strong> Source files inside a package's <code>src/</code> folder are
-          archived or vendored directly under <code>vendor/&lt;pkg&gt;/</code>.
-          That means <code>slugify/src/lib.matrix</code> becomes <code>vendor/slugify/lib.matrix</code> and is imported
-          as <code>import "slugify/lib"</code>. Subdirectories such as <code>src/net/client.matrix</code> map to
-          <code>import "pkg/net/client"</code>.
+          <strong>Import Path Mapping Rule:</strong> Everything inside a package's <code>src/</code> folder is unpacked
+          directly under <code>vendor/&lt;pkg&gt;/</code>. Thus <code>slugify/src/lib.matrix</code> becomes
+          <code>vendor/slugify/lib.matrix</code> (imported as <code>import "slugify/lib"</code>), and
+          <code>src/net/client.matrix</code> is imported as <code>import "pkg/net/client"</code>.
         </div>
       </section>
 
       <section class="doc-section" id="sec-manifest">
-        <h2><span class="num">04</span>Manifest (<code>spider.toml</code>) &amp; Lockfile (<code>spider.lock</code>)
-        </h2>
-        <p class="section-lead">Understand every supported key, dependency syntax form, and deterministic lockfile
-          field.</p>
+        <h2><span class="num">04</span>Manifest (<code>spider.toml</code>) &amp; Lockfile (<code>spider.lock</code>)</h2>
+        <p class="section-lead">Complete schema for metadata, native <code>[ffi]</code>, CLI <code>[bin]</code> tools, dependency constraints, and reproducible locks.</p>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Full <code>spider.toml</code> Example</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>[package]
+            <div class="code-card" data-lang="toml">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">spider.toml</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill toml">toml</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="toml">[package]
 name = "winplot"
 version = "0.2.0"
 entry = "src/lib.matrix"
@@ -805,7 +1578,7 @@ categories = ["data-science", "gui"]
 targets = ["windows-x86_64", "linux-x86_64", "any"]
 
 [ffi]
-# Declarative FFI metadata — automatically verified &amp; linked on yamc / spid3r build
+# Verified &amp; auto-linked by yamc / spid3r build
 libs = ["user32", "gdi32"]
 bundled = ["lib/winplot_core.lib"]
 runtime_libs = ["bin/winplot.dll"]
@@ -814,14 +1587,9 @@ runtime_libs = ["bin/winplot.dll"]
 winplot-cli = "src/cli.matrix"
 
 [dependencies]
-# Local path shorthand or inline table
 slugify = "../slugify"
 local_lib = { path = "../libs/local_lib" }
-
-# Git dependency (defaults to branch/HEAD or pinned rev)
 router = { git = "https://github.com/org/router.git", rev = "v1.2.0" }
-
-# Registry dependency with SemVer / compound range
 json_fmt = { version = "&gt;=1.0.0, &lt;2.0.0" }
 internal_auth = { version = "=2.0.1", registry = "corp" }
 
@@ -835,13 +1603,23 @@ cuda_accel = { version = "^0.2.0" }</pre>
 
           <div class="panel">
             <h3>Generated <code>spider.lock</code> Format</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>[[package]]
+            <div class="code-card" data-lang="toml">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">spider.lock</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill toml">toml</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="toml">[[package]]
 name = "winplot"
 version = "0.2.0"
 source = "registry+^0.2.0"
 sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+manifest-sha256 = "7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730"
 target = "x86_64-pc-windows-msvc"
 native-sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 ffi-libs = ["user32", "gdi32", "lib/winplot_core.lib"]
@@ -849,9 +1627,9 @@ files = ["lib.matrix", "spider.toml"]
 used_by = ["demo_app"]</pre>
             </div>
             <p>
-              <code>spkg verify</code> and <code>spid3r build</code> re-hash both vendored sources and
-              <code>_native/&lt;target&gt;/</code> binaries against <code>spider.lock</code>, blocking tampered or
-              mismatched files before execution or native linking.
+              <code>spkg verify</code>, <code>spkg audit</code>, and <code>spid3r build</code> verify vendored sources,
+              <code>.spid3r-manifest.toml</code> snapshots, and <code>_native/&lt;target&gt;/</code> binaries against
+              <code>spider.lock</code>.
             </p>
           </div>
         </div>
@@ -869,8 +1647,7 @@ used_by = ["demo_app"]</pre>
             <tbody>
               <tr>
                 <td><code>^1.2.3</code> / <code>^0.2.1</code></td>
-                <td>Standard SemVer caret: compatible within major if &gt; 0, or within minor for <code>0.x</code>
-                  (<code>^0.2.1</code> matches <code>0.2.x</code>, excludes <code>0.3.0</code>)</td>
+                <td>SemVer caret: compatible within major if &gt; 0, or within minor for <code>0.x</code> (<code>^0.2.1</code> matches <code>0.2.x</code>, excludes <code>0.3.0</code>)</td>
                 <td><code>1.2.3</code>, <code>1.9.0</code> (not <code>2.0.0</code>)</td>
               </tr>
               <tr>
@@ -880,9 +1657,7 @@ used_by = ["demo_app"]</pre>
               </tr>
               <tr>
                 <td><code>&gt;=1.0.0, &lt;2.0.0</code></td>
-                <td>Compound AND ranges using <code>&gt;=</code>, <code>&lt;=</code>, <code>&gt;</code>,
-                  <code>&lt;</code>
-                </td>
+                <td>Compound AND ranges using <code>&gt;=</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&lt;</code></td>
                 <td><code>1.0.0</code>, <code>1.9.4</code> (not <code>2.0.0</code>)</td>
               </tr>
               <tr>
@@ -897,8 +1672,7 @@ used_by = ["demo_app"]</pre>
 
       <section class="doc-section" id="sec-installing">
         <h2><span class="num">05</span>Installing &amp; Managing Dependencies (All 4 Sources)</h2>
-        <p class="section-lead">Choose path, Git, local directory registry, or static HTTP/HTTPS registry sources per
-          dependency.</p>
+        <p class="section-lead">Install from local paths, pinned Git repositories, local directories, or signed HTTP(S) registries.</p>
 
         <div class="table-wrap">
           <table>
@@ -915,32 +1689,25 @@ used_by = ["demo_app"]</pre>
                 <td><span class="badge pass">Local Path</span></td>
                 <td><code>spkg add util --path ../util</code></td>
                 <td><code>util = { path = "../util" }</code></td>
-                <td>Great for monorepos and active local development; re-run <code>spkg install</code> to refresh
-                  <code>vendor/</code>.
-                </td>
+                <td>Ideal for monorepos and active local development; re-run <code>spkg install</code> to refresh <code>vendor/</code>.</td>
               </tr>
               <tr>
                 <td><span class="badge info">Git URL</span></td>
                 <td><code>spkg add router --git https://example.com/r.git --rev v1.0.0</code></td>
                 <td><code>router = { git = "...", rev = "v1.0.0" }</code></td>
-                <td>Supports <code>https://</code> and <code>ssh://</code> by default. Plain <code>http://</code> and
-                  local file Git repos are blocked unless explicitly opted in.</td>
+                <td>Supports <code>https://</code> and <code>ssh://</code> by default; hooks and submodules disabled; pins 40-hex commit in <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><span class="badge pass">Local Registry</span></td>
                 <td><code>spkg add json_fmt --version "^1.2.0"</code></td>
                 <td><code>json_fmt = { version = "^1.2.0" }</code></td>
-                <td>Resolves against <code>$SPID3R_REGISTRY/&lt;name&gt;/&lt;ver&gt;/</code> (or named sub-registry
-                  subdirectory).</td>
+                <td>Resolves against <code>$SPID3R_REGISTRY/&lt;name&gt;/&lt;ver&gt;/</code> (or named sub-registry directories).</td>
               </tr>
               <tr>
                 <td><span class="badge warn">HTTP(S) Registry</span></td>
-                <td><code>spkg install hello</code> or <code>spkg install hello==0.1.0</code></td>
-                <td><code>hello = { version = "^0.1.0" }</code></td>
-                <td>Defaults to <code>https://spid3r-spkg.github.io</code>; checks signed
-                  <code>index.txt</code>/<code>yanked.txt</code>, verifies <code>sha256*.txt.sig</code>, prefers
-                  per-target wheels, and stores downloads in the shared global cache (<code>spkg cache</code>).
-                </td>
+                <td><code>spkg install nettools</code> or <code>spkg install hello==0.1.0</code></td>
+                <td><code>nettools = { version = "^0.1.2" }</code></td>
+                <td>Defaults to <code>https://spid3r-spkg.github.io</code>; verifies Ed25519 signatures, checks <code>yanked.txt</code>, prefers target wheels, and caches locally.</td>
               </tr>
             </tbody>
           </table>
@@ -948,160 +1715,224 @@ used_by = ["demo_app"]</pre>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>Installing, Locking &amp; Auditing (CI Workflows)</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre># Install including dev dependencies and an optional extra group
+            <h3>CI Locking, Auditing &amp; Tools</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — CI &amp; supply-chain commands</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash"># Install including dev dependencies and an optional extra group
 spkg install --dev --extra gpu
 
-# Strict CI mode: fail if spider.toml or vendor/ drifts from spider.lock
+# Fail before mutating vendor/ if spider.toml or hashes drift
 spkg install --frozen
+spkg install --frozen --offline
 
-# Air-gapped install from shared cache without network access
-spkg install --offline
-
-# Security audit, outdated check, &amp; CycloneDX 1.5 JSON SBOM export
+# Audit signatures, yanked versions, advisories, and FFI libs
 spkg audit --json
 spkg outdated
 spkg freeze --sbom &gt; sbom.cdx.json
 
-# Global verified CLI tool shims (packages declaring [bin])
-spkg tool install mytool --path ../mytool</pre>
+# Manage global CLI tools cleanly (with optional --offline / --force)
+spkg tool install nettools --offline
+spkg tool uninstall nettools</pre>
             </div>
           </div>
-          <div class="panel">
-            <h3>Inspecting, Searching &amp; Cache Management</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre># Inspect locked packages, metadata, FFI surface, and cache
-spkg list --json
-spkg show winplot
-spkg cache dir
-spkg cache list
-spkg cache prune
 
-# Search configured $SPID3R_REGISTRY (+ --category) or local vendor/
-spkg search json --category data-science
-spkg search json --local</pre>
+          <div class="panel">
+            <h3>Inspecting Packages &amp; Cache JSON Output</h3>
+            <div class="code-card" data-lang="json">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">spkg list --json (sample output)</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill json">json</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="json">[
+  {
+    "name": "nettools",
+    "version": "0.1.2",
+    "source": "registry+0.1.2",
+    "vendored": true,
+    "verified": true
+  }
+]</pre>
             </div>
-            <p>
-              When <code>spkg add</code> or <code>spkg remove</code> edits <code>spider.toml</code>, it modifies lines
-              textually so existing comments and section ordering remain intact.
-            </p>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — inspection &amp; cache</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash">spkg show nettools
+spkg search --category network
+spkg cache dir &amp;&amp; spkg cache list &amp;&amp; spkg cache prune</pre>
+            </div>
           </div>
         </div>
       </section>
 
       <section class="doc-section" id="sec-workspaces">
         <h2><span class="num">06</span>Multi-Package Workspaces</h2>
-        <p class="section-lead">Manage multiple cooperating packages in one repository with shared dependency resolution
-          and locking.</p>
+        <p class="section-lead">Share one <code>spider.lock</code> and <code>vendor/</code> directory across cooperating packages.</p>
 
-        <div class="panel">
-          <h3>Workspace Root Layout &amp; Configuration</h3>
-          <p>
-            A workspace root <code>spider.toml</code> declares <code>[workspace]</code> with <code>members</code>. A
-            workspace root may omit <code>[package]</code> when it only coordinates member crates:
-          </p>
-          <div class="code-wrap">
-            <button class="copy-btn" type="button">Copy</button>
-            <pre>my_workspace/
-├── spider.toml
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Workspace Directory Tree</h3>
+            <div class="code-card" data-lang="tree">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">workspace layout</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill tree">tree</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="tree">my_workspace/
+├── spider.toml          # [workspace] root manifest
 ├── spider.lock          # single shared lockfile at workspace root
 ├── vendor/              # shared vendored dependencies
 ├── core_lib/
 │   ├── spider.toml
 │   └── src/lib.matrix
 └── cli_app/
-    ├── spider.toml      # can depend on core_lib = { path = "../core_lib" }
+    ├── spider.toml      # depends on core_lib = { path = "../core_lib" }
     └── src/main.matrix</pre>
+            </div>
           </div>
-          <div class="code-wrap">
-            <button class="copy-btn" type="button">Copy</button>
-            <pre># my_workspace/spider.toml
+
+          <div class="panel">
+            <h3>Workspace Manifest</h3>
+            <div class="code-card" data-lang="toml">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">my_workspace/spider.toml</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill toml">toml</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="toml"># A workspace root may omit [package] when coordinating members
 [workspace]
 members = ["core_lib", "cli_app"]</pre>
+            </div>
+            <p>
+              Running <code>spkg install</code>, <code>spkg install --dev --extra gpu</code>, or <code>spkg verify</code>
+              in the root unifies dependency constraints across all listed workspace members automatically.
+            </p>
           </div>
-          <p>
-            Running <code>spkg install</code> or <code>spkg tree</code> inside the workspace resolves dependencies
-            across all listed members, unifies overlapping SemVer constraints, and checks shared integrity with
-            <code>spkg verify</code>.
-          </p>
         </div>
       </section>
 
       <section class="doc-section" id="sec-publishing">
         <h2><span class="num">07</span>Publishing, Tar Packaging &amp; Static Registries</h2>
-        <p class="section-lead">Publish immutable versioned releases to a local directory or host a zero-backend static
-          HTTP/HTTPS registry.</p>
+        <p class="section-lead">Publish immutable, signed releases or prebuilt binary wheels to any static HTTP(S) host or GitHub Pages repo.</p>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>Publish Source or Target Binary Wheels</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre># Publish pure-source release into /srv/spid3r-registry/&lt;name&gt;/&lt;version&gt;/
+            <h3>Publishing Pure-Source &amp; Binary Wheels</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — publish &amp; build</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash"># Publish pure-source release into ./registry/&lt;name&gt;/&lt;version&gt;/
 spkg publish --to-dir /srv/spid3r-registry
 
-# Publish a prebuilt binary wheel for a specific host target triple
+# Publish a prebuilt binary wheel for a specific target triple
 spkg publish --to-dir /srv/spid3r-registry --target x86_64-pc-windows-msvc
 
-# Native build automatically verifies vendor hashes &amp; links [ffi] libs (opt out: --no-auto-ffi)
+# Build executable with automatic FFI verification &amp; linking
 yamc src/main.matrix -o app.exe --release</pre>
             </div>
             <p>
-              Publishes are <strong>immutable</strong>: existing pure-source or per-target wheels never overwrite prior
-              digests, and each target wheel signs its own <code>sha256-&lt;target&gt;.txt.sig</code> and
-              <code>manifest-&lt;target&gt;.sha256.sig</code>.
+              Publishes are immutable: source releases and per-target wheels never overwrite prior digests, and each
+              artifact signs both <code>sha256*.txt.sig</code> and <code>manifest*.sha256.sig</code>.
             </p>
           </div>
+
           <div class="panel">
-            <h3>Static HTTP(S) Registry Layout</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre>&lt;base&gt;/
+            <h3>Static Registry File Layout</h3>
+            <div class="code-card" data-lang="tree">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">registry tree</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill tree">tree</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="tree">&lt;registry-root&gt;/
 ├── registry.toml[.sig]        # descriptor, moved_to migration, mirrors
 ├── registry.pub               # 64-hex Ed25519 public key
 ├── catalog.txt[.sig]          # searchable index + categories + targets
 └── &lt;pkg-name&gt;/
-    ├── index.txt[.sig]        # available versions (lazy fetch reads index first)
-    ├── yanked.txt[.sig]       # yanked releases excluded for new installs
+    ├── index.txt[.sig]        # available versions
+    ├── yanked.txt[.sig]       # excluded from latest resolution &amp; flagged by audit
     ├── advisories.txt[.sig]   # security advisories checked by spkg audit
     └── &lt;version&gt;/
         ├── spider.toml
-        ├── sha256[-&lt;target&gt;].txt[.sig]     # pre-extract SHA-256 + Ed25519
+        ├── sha256[-&lt;target&gt;].txt[.sig]
         ├── manifest[-&lt;target&gt;].sha256[.sig]
-        └── package[-&lt;target&gt;].tar          # source or binary wheel archive</pre>
+        └── package[-&lt;target&gt;].tar</pre>
             </div>
-            <p>
-              To migrate domains later, copy the static files to your new host, set
-              <code>moved_to = "https://new-host"</code> in the old <code>registry.toml</code>, or set
-              <code>SPID3R_DEFAULT_REGISTRY</code> when building future toolchains.
-            </p>
           </div>
         </div>
 
         <div class="grid-2">
           <div class="panel">
             <h3>Self-Contained Tar Packing</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre># Bundle spider.toml and src/ into a clean POSIX ustar tar archive
-spkg pack -o dist/my_pkg-0.1.0.tar
-
-# Extract into a new directory
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — pack &amp; unpack</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash">spkg pack -o dist/my_pkg-0.1.0.tar
 spkg unpack dist/my_pkg-0.1.0.tar ./extracted_pkg</pre>
             </div>
           </div>
+
           <div class="panel">
-            <h3>TLS Feature Note for HTTPS Registries</h3>
+            <h3>Minimal vs. TLS Builds</h3>
             <p>
-              Prebuilt binaries compiled with the <code>tls</code> Cargo feature
-              (<code>cargo build --features "native tls"</code>) fetch both <code>http://</code> and
-              <code>https://</code> registries directly.
-              Binaries compiled with <code>--no-default-features</code> support local directory registries,
-              <code>--path</code>, <code>--git</code>, and <code>http://</code> registries, and report an explicit error
-              asking for a <code>tls</code>-enabled build if given an <code>https://</code> registry URL.
+              Standard builds with the <code>tls</code> Cargo feature (<code>cargo build --features "native tls"</code>)
+              support both <code>http://</code> and <code>https://</code> registries. Builds compiled with
+              <code>--no-default-features</code> support local directory registries, <code>--path</code>,
+              <code>--git</code>, and <code>http://</code> registries and report a clear error if given an
+              <code>https://</code> URL.
             </p>
           </div>
         </div>
@@ -1109,54 +1940,48 @@ spkg unpack dist/my_pkg-0.1.0.tar ./extracted_pkg</pre>
 
       <section class="doc-section" id="sec-security">
         <h2><span class="num">08</span>Security, Ed25519 Signing &amp; <code>spid3r.ini</code></h2>
-        <p class="section-lead">Verify signed registries, enforce transport policies, and configure machine-wide
-          defaults in <code>spid3r.ini</code>.</p>
+        <p class="section-lead">Pin trusted Ed25519 public keys, rotate keys cleanly, and configure defaults in <code>spid3r.ini</code>.</p>
 
         <div class="grid-2">
           <div class="panel">
-            <h3>Ed25519 Registry Signing &amp; Verification</h3>
-            <div class="code-wrap">
-              <button class="copy-btn" type="button">Copy</button>
-              <pre># Publisher: provide a 64-hex-char Ed25519 secret seed
-# (or let publish read/generate registry.key in the target registry dir)
+            <h3>Ed25519 Registry Signing &amp; Pinning</h3>
+            <div class="code-card" data-lang="bash">
+              <div class="code-head">
+                <div class="code-head-left">
+                  <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <span class="code-title">terminal — publisher signing &amp; consumer pin</span>
+                </div>
+                <div class="code-head-right">
+                  <span class="lang-pill bash">bash</span>
+                  <button class="copy-btn" type="button">Copy</button>
+                </div>
+              </div>
+              <pre data-lang="bash"># Publisher: supply 64-hex Ed25519 secret seed (never commit registry.key!)
 SPID3R_SIGN_KEY=&lt;64-hex-seed&gt; spkg publish --to-dir /srv/registry
-# Writes registry.pub + &lt;ver&gt;/sha256.txt.sig (128-hex signature)
 
-# Consumer: require valid Ed25519 signatures matching trusted 64-hex key
-SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com spkg install</pre>
+# Consumer: pin trusted 64-hex public keys (fail-closed on missing/bad sigs)
+SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; spkg install nettools</pre>
             </div>
             <p>
-              When <code>SPID3R_TRUST_PK</code> or <code>packages.trust_pk</code> is set, every registry package must
-              provide a valid <code>sha256.txt.sig</code> signed by that exact public key; missing or invalid signatures
-              fail installation immediately.
+              When <code>packages.trust_pk</code> / <code>SPID3R_TRUST_PK</code> is configured, every metadata file
+              (<code>registry.toml.sig</code>, <code>catalog.txt.sig</code>, <code>index.txt.sig</code>,
+              <code>yanked.txt.sig</code>, <code>advisories.txt.sig</code>), archive digest (<code>sha256*.txt.sig</code>),
+              and manifest snapshot (<code>manifest*.sha256.sig</code>) is verified before extraction.
             </p>
           </div>
 
           <div class="panel">
-            <h3>Security Hardening Guarantees</h3>
+            <h3>Hardening Guarantees</h3>
             <ul>
-              <li><strong>No install-time code execution:</strong> <code>spkg add</code> and <code>spkg install</code>
-                never run arbitrary pre/post-install shell scripts.</li>
-              <li><strong>Pre-extract Ed25519 &amp; metadata signing:</strong> When <code>trust_pk</code> is set,
-                <code>sha256*.txt.sig</code>, <code>manifest*.sha256.sig</code>, and registry metadata
-                (<code>registry.toml.sig</code>, <code>index.txt.sig</code>, <code>yanked.txt.sig</code>,
-                <code>advisories.txt.sig</code>) verify before extraction, supporting multi-key rotation.
-              </li>
-              <li><strong>Pre-link Auto-FFI verification &amp; SBOM:</strong> <code>yamc</code> /
-                <code>spid3r build</code> re-verify vendored source + native wheel hashes against
-                <code>spider.lock</code> before linking <code>[ffi]</code> libraries, while <code>spkg audit</code>
-                checks yanks/advisories/HTTP Git and <code>spkg freeze --sbom</code> exports CycloneDX 1.5 JSON.
-              </li>
-              <li><strong>Bounded archive, auth &amp; Git hardening:</strong> Tar extraction caps entries (10,000) and
-                size (128 MiB), blocks traversal/reserved names/symlinks, stages atomically, restricts
-                <code>SPID3R_REGISTRY_TOKEN</code> to same-origin HTTPS, and runs Git with hooks and submodules
-                disabled.
-              </li>
+              <li><strong>Zero install hooks:</strong> <code>spkg add</code>, <code>install</code>, and <code>tool install</code> execute zero package install scripts.</li>
+              <li><strong>Archive &amp; filesystem safety:</strong> Ustar extraction rejects PAX extended headers, symlinks, Windows reserved device names, path traversal, and normalized case collisions, capped at 10,000 entries / 128 MiB.</li>
+              <li><strong>Strict <code>--frozen</code> &amp; HTTPS mirrors:</strong> Hashes, target triples, and FFI libraries are verified before touching <code>vendor/</code>; HTTPS registries reject plain HTTP mirror downgrades; Bearer tokens stay bound to the initial HTTPS origin.</li>
+              <li><strong>Pre-link native FFI verification:</strong> <code>yamc</code> / <code>spid3r build</code> re-check <code>.spid3r-manifest.toml</code> and locked <code>ffi-libs</code> before linking <code>[ffi]</code> binaries; <code>spkg tool install</code> blocks <code>[ffi]</code> tools cleanly.</li>
             </ul>
           </div>
         </div>
 
-        <h3><code>spid3r.ini</code> <code>[packages]</code> Keys &amp; Environment Overrides</h3>
+        <h3><code>spid3r.ini</code> Keys &amp; Environment Overrides</h3>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1172,41 +1997,43 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
                 <td><code>packages.registry</code></td>
                 <td><code>SPID3R_REGISTRY</code></td>
                 <td><code>https://spid3r-spkg.github.io</code></td>
-                <td>Default registry URL/directory or comma-separated mirror list (set <code>none</code> to disable).
-                </td>
+                <td>Default registry URL/directory or comma-separated mirror list (set <code>none</code> to disable).</td>
               </tr>
               <tr>
                 <td><code>packages.trust_pk</code></td>
                 <td><code>SPID3R_TRUST_PK</code></td>
                 <td>Unset</td>
-                <td>One or more comma-separated 64-hex Ed25519 public keys for zero-downtime key rotation.</td>
+                <td>One or more comma-separated 64-hex Ed25519 public keys (supports zero-downtime key rotation).</td>
               </tr>
               <tr>
                 <td><code>packages.allow_insecure_git</code></td>
                 <td><code>SPID3R_ALLOW_INSECURE_GIT</code></td>
                 <td><code>false</code></td>
-                <td>Allow unencrypted <code>http://</code> Git dependency URLs (recommended <code>false</code> in
-                  production).</td>
+                <td>Allow unencrypted <code>http://</code> Git dependency URLs (keep <code>false</code> in production).</td>
               </tr>
               <tr>
                 <td><code>packages.allow_local_git</code></td>
                 <td><code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code></td>
                 <td><code>false</code></td>
-                <td>Allow local filesystem paths as <code>git = "..."</code> URLs (prefer <code>path = "..."</code>
-                  instead).</td>
+                <td>Allow local filesystem paths as <code>git = "..."</code> URLs (prefer <code>path = "..."</code>).</td>
+              </tr>
+              <tr>
+                <td><code>paths.state_dir</code></td>
+                <td><code>SPID3R_STATE_DIR</code></td>
+                <td>OS state dir</td>
+                <td>Base directory containing <code>tools/</code> and <code>bin/</code> shims; reset to default via <code>spid3r control config reset paths.state_dir</code>.</td>
               </tr>
               <tr>
                 <td>N/A (auth env)</td>
                 <td><code>SPID3R_REGISTRY_TOKEN</code></td>
                 <td>Unset</td>
-                <td>Optional Bearer token sent only over <code>https://</code> to the initial registry origin (stripped
-                  on cross-origin redirects).</td>
+                <td>Optional Bearer token sent only over <code>https://</code> to the initial registry origin.</td>
               </tr>
               <tr>
                 <td>N/A (publisher env)</td>
-                <td><code>SPID3R_SIGN_KEY</code> / <code>SPID3R_PACKAGES_SIGN_KEY</code></td>
+                <td><code>SPID3R_SIGN_KEY</code></td>
                 <td>Unset</td>
-                <td>64-hex Ed25519 signing seed used by <code>spkg publish --to-dir</code>.</td>
+                <td>64-hex Ed25519 secret seed used by <code>spkg publish --to-dir</code> (or pass <code>--sign-key</code>).</td>
               </tr>
             </tbody>
           </table>
@@ -1215,12 +2042,21 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
 
       <section class="doc-section" id="sec-cli">
         <h2><span class="num">09</span>Complete CLI Reference</h2>
-        <p class="section-lead">All verified commands exposed by <code>spkg</code> (and mirrored through
-          <code>spid3r</code>).
-        </p>
+        <p class="section-lead">Every subcommand supported by <code>spkg</code> and <code>spid3r</code>. Filter instantly below.</p>
+
+        <div class="cli-toolbar">
+          <div class="search-box">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input id="cliFilter" type="search" placeholder="Filter commands, flags, or keywords (e.g. tool, --frozen, audit)..." aria-label="Filter CLI commands" />
+          </div>
+          <span class="cli-count" id="cliCount">19 / 19 commands</span>
+        </div>
 
         <div class="table-wrap">
-          <table>
+          <table id="cliTable">
             <thead>
               <tr>
                 <th>Command</th>
@@ -1237,27 +2073,22 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg add &lt;name&gt;[==V|@V]</code></td>
                 <td><code>--path P</code> | <code>--git URL [--rev R]</code> | <code>--version V</code></td>
-                <td>Add a dependency entry to <code>spider.toml</code> (latest registry version if source omitted),
-                  vendor files into <code>vendor/</code>, and update <code>spider.lock</code>.</td>
+                <td>Add a dependency entry to <code>spider.toml</code>, vendor into <code>vendor/</code>, and update <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg remove &lt;name&gt;...</code> / <code>uninstall</code></td>
                 <td>One or more package names</td>
-                <td>Remove dependencies from <code>spider.toml</code>, delete their <code>vendor/&lt;name&gt;</code>
-                  folders, and update <code>spider.lock</code>.</td>
+                <td>Remove dependencies across regular/dev/optional sections, delete <code>vendor/&lt;name&gt;</code>, and update <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg install [&lt;pkg&gt;...]</code></td>
                 <td><code>[--update | -u] [--frozen] [--offline] [--dev] [--extra E]</code></td>
-                <td>Install named packages like <code>pip</code> or vendor project deps, dev/optional groups, and
-                  per-target native wheels.</td>
+                <td>Install named packages or resolve project/workspace dependencies and per-target native wheels.</td>
               </tr>
               <tr>
                 <td><code>spkg list</code> / <code>show &lt;pkg&gt;</code></td>
                 <td><code>[--json]</code></td>
-                <td>List locked dependencies and verification status, or show full metadata, hashes, and
-                  <code>[ffi]</code> surface for one package.
-                </td>
+                <td>List locked dependencies and verification state, or display metadata, hashes, and <code>[ffi]</code> details for one package.</td>
               </tr>
               <tr>
                 <td><code>spkg outdated</code></td>
@@ -1267,59 +2098,52 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg audit</code></td>
                 <td><code>[--json] [--offline]</code></td>
-                <td>Verify hashes, signatures, Git pinning, <code>[ffi]</code> binaries, yanked versions, and security
-                  advisories.</td>
+                <td>Verify hashes, signatures, manifest snapshots, Git pins, FFI binaries, yanked releases, and advisories.</td>
               </tr>
               <tr>
                 <td><code>spkg freeze</code></td>
                 <td><code>[--sbom]</code></td>
-                <td>Export pinned <code>name==version</code> lines or a CycloneDX JSON SBOM.</td>
+                <td>Export pinned <code>name==version</code> requirements or a CycloneDX JSON SBOM.</td>
               </tr>
               <tr>
                 <td><code>spkg tree</code></td>
                 <td>None</td>
-                <td>Print the resolved dependency tree for the current package or workspace.</td>
+                <td>Print the resolved dependency graph for the current package or workspace.</td>
               </tr>
               <tr>
                 <td><code>spkg verify</code></td>
                 <td>None</td>
-                <td>Re-hash every file under <code>vendor/</code> and <code>_native/</code> against
-                  <code>spider.lock</code>.
-                </td>
+                <td>Re-hash every file under <code>vendor/</code>, <code>.spid3r-manifest.toml</code>, and <code>_native/</code> against <code>spider.lock</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg search [query]</code></td>
                 <td><code>[--category CAT] [--local]</code></td>
-                <td>Search remote <code>catalog.txt</code> (or local registry directory) and <code>vendor/</code>
-                  entries; filter by ecosystem category or omit <code>query</code> to list all.</td>
+                <td>Search remote <code>catalog.txt</code> (or local registry dir) and <code>vendor/</code> entries; omit <code>query</code> to browse all.</td>
               </tr>
               <tr>
                 <td><code>spkg publish</code></td>
                 <td><code>--to-dir &lt;dir&gt; [--target T]</code></td>
-                <td>Publish an immutable signed release (or per-target wheel) with <code>sha256*.txt.sig</code> and
-                  signed <code>index.txt.sig</code>.</td>
+                <td>Write an immutable signed release (or target wheel) with <code>sha256*.txt.sig</code>, <code>manifest*.sha256.sig</code>, and <code>index.txt.sig</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg pack</code></td>
                 <td><code>[-o out.tar] [--target T]</code></td>
-                <td>Create a clean POSIX ustar archive containing <code>spider.toml</code>, <code>src/</code>, and
-                  optional <code>native/&lt;target&gt;/</code>.</td>
+                <td>Create a deterministic POSIX ustar archive with <code>spider.toml</code>, <code>src/</code>, and optional <code>native/&lt;target&gt;/</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg unpack &lt;archive&gt; [dir]</code></td>
                 <td>Archive path, optional output dir</td>
-                <td>Safely extract a packed project archive after validating entry types and relative paths.</td>
+                <td>Safely extract a packed project archive after validating entry types and normalized relative paths.</td>
               </tr>
               <tr>
                 <td><code>spkg cache</code></td>
                 <td><code>[dir | list | prune]</code></td>
-                <td>Inspect or clear the shared global package cache.</td>
+                <td>Inspect or clear the shared global registry cache.</td>
               </tr>
               <tr>
                 <td><code>spkg tool</code></td>
-                <td><code>install|list|uninstall &lt;pkg&gt;</code></td>
-                <td>Install verified CLI tools declaring <code>[bin]</code> into isolated environments with launcher
-                  shims in <code>bin/</code>.</td>
+                <td><code>install [--offline] [--force] | list | uninstall &lt;pkg&gt;</code></td>
+                <td>Compile CLI packages declaring <code>[bin]</code> into isolated bytecode apps with launcher shims in <code>state/bin/</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg dist</code></td>
@@ -1329,8 +2153,7 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
               <tr>
                 <td><code>spkg modules &lt;file&gt;</code></td>
                 <td><code>[--tree]</code></td>
-                <td>List all imported modules referenced by <code>&lt;file&gt;</code> along with their resolved origins.
-                </td>
+                <td>Inspect all imported modules and whether each resolved from <code>stdlib</code>, project source, or <code>vendor/</code>.</td>
               </tr>
               <tr>
                 <td><code>spkg version</code> / <code>help</code></td>
@@ -1344,68 +2167,61 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
 
       <section class="doc-section" id="sec-faq">
         <h2><span class="num">10</span>Troubleshooting &amp; FAQ</h2>
-        <p class="section-lead">Quick fixes for common issues when creating, installing, or verifying packages.</p>
+        <p class="section-lead">Fast answers to common setup, import, FFI, and <code>spkg tool</code> PATH issues.</p>
+
+        <details>
+          <summary>I ran <code>spkg tool install &lt;pkg&gt;</code> — why is the command not found in my shell?</summary>
+          <p>
+            Two common reasons: (1) open a <strong>new terminal</strong> if you just ran the Spid3r installer so it reloads
+            <code>PATH</code> (<code>%LOCALAPPDATA%\Spid3r\state\bin</code> on Windows,
+            <code>${XDG_STATE_HOME:-$HOME/.local/state}/spid3r/bin</code> on Linux/macOS); or (2) <code>paths.state_dir</code>
+            in <code>spid3r.ini</code> or <code>SPID3R_STATE_DIR</code> points elsewhere — check the note printed by
+            <code>spkg tool install</code> and run <code>spid3r control config reset paths.state_dir</code> to restore the default.
+          </p>
+        </details>
 
         <details>
           <summary>Why does <code>import "my_pkg/lib"</code> say module not found?</summary>
           <p>
-            Confirm two things: first, run <code>spkg install</code> so files exist inside <code>vendor/my_pkg/</code>;
-            second, remember that files inside <code>my_pkg/src/</code> map directly under <code>vendor/my_pkg/</code>
-            (so <code>src/lib.matrix</code> is imported as <code>"my_pkg/lib"</code>, without <code>src/</code> in the
-            import string). Run <code>spkg modules src/main.matrix --tree</code> to inspect search resolution.
+            Run <code>spkg install</code> so dependencies are unpacked into <code>vendor/my_pkg/</code>, and omit
+            <code>src/</code> from the import path (files in <code>my_pkg/src/</code> map directly to
+            <code>vendor/my_pkg/</code>). Inspect search resolution with <code>spkg modules src/main.matrix --tree</code>.
           </p>
         </details>
 
         <details>
           <summary>Why did <code>spkg verify</code> fail after editing a file in <code>vendor/</code>?</summary>
           <p>
-            <code>vendor/</code> is managed by <code>spkg</code> and hash-checked against <code>spider.lock</code>. Edit
-            the original package source (for example via your <code>--path</code> folder), then run
-            <code>spkg install</code> to re-vendor and refresh <code>spider.lock</code> cleanly.
-          </p>
-        </details>
-
-        <details>
-          <summary>Why is my <code>https://</code> registry rejected on a minimal build?</summary>
-          <p>
-            If your binary was built without TLS support (for instance <code>--no-default-features</code>), HTTPS
-            downloads cannot negotiate TLS. Build with <code>cargo build --features "native tls"</code> (or
-            <code>--features tls</code>), or host an internal registry over a mounted directory or LAN HTTP mirror.
+            <code>vendor/</code> is hash-locked against <code>spider.lock</code>. Edit the original package source
+            (or update the version), then run <code>spkg install</code> to re-vendor cleanly.
           </p>
         </details>
 
         <details>
           <summary>Should I commit <code>spider.lock</code> and <code>vendor/</code> to Git?</summary>
           <p>
-            Commit <code>spider.toml</code> and <code>spider.lock</code> in every project and CI pipeline, and enforce
-            them in CI with <code>spkg install --frozen &amp;&amp; spkg verify &amp;&amp; spkg audit</code>. Commit
-            <code>vendor/</code> as well when you want 100% air-gapped offline builds without touching Git remotes or
-            registries during CI.
+            Always commit <code>spider.toml</code> and <code>spider.lock</code>, and gate CI with
+            <code>spkg install --frozen &amp;&amp; spkg verify &amp;&amp; spkg audit</code>. Commit <code>vendor/</code>
+            too if you need 100% air-gapped builds without touching remotes during CI.
           </p>
         </details>
 
         <details>
           <summary>How do native C/C++/Rust FFI wheels and auto-linking work?</summary>
           <p>
-            Place platform binaries inside <code>native/&lt;target&gt;/</code> (e.g.
-            <code>native/x86_64-pc-windows-msvc/</code>) and declare <code>[ffi] libs / bundled / runtime_libs</code> in
-            <code>spider.toml</code>, then publish with
-            <code>spkg publish --to-dir &lt;dir&gt; --target &lt;triple&gt;</code>. Consumers install the wheel
-            automatically and run <code>spid3r build</code> / <code>yamc</code> with no extra linker flags; the compiler
-            verifies both source and native hashes against <code>spider.lock</code> before linking and copies
-            <code>runtime_libs</code> next to the output executable (disable with <code>--no-auto-ffi</code>).
+            Place platform libraries in <code>native/&lt;target&gt;/</code>, declare <code>[ffi] libs / bundled / runtime_libs</code>
+            in <code>spider.toml</code>, and publish with <code>spkg publish --to-dir &lt;dir&gt; --target &lt;triple&gt;</code>.
+            Consumers run <code>spid3r build</code> / <code>yamc</code> with zero extra flags; Spid3r verifies hashes
+            against <code>spider.lock</code> and copies <code>runtime_libs</code> next to the output binary (disable with
+            <code>--no-auto-ffi</code>).
           </p>
         </details>
 
         <details>
-          <summary>How do I install and run global CLI tools built in Spid3r?</summary>
+          <summary>How do I reset an overridden <code>paths.state_dir</code> in PowerShell on Windows?</summary>
           <p>
-            Declare <code>[bin]</code> entrypoints in <code>spider.toml</code> and run
-            <code>spkg tool install &lt;pkg&gt; [--path DIR | --git URL | --version VER]</code>. Spid3r compiles each
-            entrypoint into an isolated directory under your state directory (<code>tools/&lt;pkg&gt;/</code>) as
-            SHA-256-verified <code>.matrixc</code> bytecode and writes launcher shims in <code>bin/</code> with full CLI
-            argument forwarding. Manage them via <code>spkg tool list</code> and
-            <code>spkg tool uninstall &lt;pkg&gt;</code>.
+            Use <code>spid3r control config reset paths.state_dir</code> instead of passing an empty <code>""</code>
+            argument (Windows PowerShell 5.1 strips empty string arguments before spawning native executables).
           </p>
         </details>
       </section>
@@ -1413,7 +2229,7 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
   </div>
 
   <footer>
-    Spid3r Programming Language · Developer Package Documentation · See also
+    Spid3r Programming Language · Package System Documentation ·
     <a href="doc.html">Language Docs</a> ·
     <a href="benchmark.html">Benchmarks</a> ·
     <a href="playground.html">Playground</a> ·
@@ -1422,32 +2238,448 @@ SPID3R_TRUST_PK=&lt;64-hex-pubkey&gt; SPID3R_REGISTRY=https://pkg.example.com sp
 
   <script>
     (function () {
-      var btn = document.getElementById('themeBtn');
-      if (btn) {
-        btn.addEventListener('click', function () {
-          var root = document.documentElement;
-          var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-          root.setAttribute('data-theme', next);
-          try { localStorage.setItem('spid3r-dev-theme', next); } catch (e) { }
-        });
+      function escHtml(s) {
+        return s
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
       }
 
-      var copyBtns = document.querySelectorAll('.copy-btn');
-      for (var i = 0; i < copyBtns.length; i++) {
-        copyBtns[i].addEventListener('click', function () {
-          var b = this;
-          var pre = b.parentElement ? b.parentElement.querySelector('pre') : null;
-          if (!pre) return;
-          var text = pre.textContent || '';
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(function () {
-              b.textContent = 'Copied';
-              setTimeout(function () { b.textContent = 'Copy'; }, 1400);
-            });
-          } else {
-            b.textContent = 'Copy';
+      function span(cls, text) {
+        return '<span class="' + cls + '">' + escHtml(text) + '</span>';
+      }
+
+      var SPID3R_KW = /^(?:import|as|from|public|fn|const|let|return|if|else|for|in|while|loop|break|continue|class|enum|struct|interface|match|try|catch|throw|finally|spawn)$/;
+      var SPID3R_LIT = /^(?:true|false|null)$/;
+      var SPID3R_TY = /^(?:string|int|float|bool|void|any|list|map|set|tuple|bytes|Result|Option)$/;
+      var SPID3R_BUILTIN = /^(?:println|print|eprintln|len|type_of|random_bytes|hex_encode|args|env|exit|panic)$/;
+
+      function highlightSpid3r(src) {
+        var out = '';
+        var i = 0, n = src.length;
+        while (i < n) {
+          var ch = src.charAt(i);
+          if (ch === '/' && i + 1 < n && src.charAt(i + 1) === '/') {
+            var e = src.indexOf('\n', i);
+            if (e === -1) e = n;
+            out += span('tok-com', src.slice(i, e));
+            i = e;
+            continue;
           }
-        });
+          if (ch === '"' || ch === "'") {
+            var q = ch, j = i + 1;
+            while (j < n) {
+              var c = src.charAt(j);
+              if (c === '\\') { j += 2; continue; }
+              if (c === q) { j++; break; }
+              j++;
+            }
+            out += span('tok-str', src.slice(i, j));
+            i = j;
+            continue;
+          }
+          if (ch >= '0' && ch <= '9') {
+            var mNum = src.slice(i).match(/^(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)/);
+            if (mNum) {
+              out += span('tok-num', mNum[0]);
+              i += mNum[0].length;
+              continue;
+            }
+          }
+          if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_') {
+            var mId = src.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+            var w = mId[0];
+            var nextCh = src.charAt(i + w.length);
+            if (SPID3R_KW.test(w)) {
+              out += span('tok-kw', w);
+            } else if (SPID3R_LIT.test(w)) {
+              out += span('tok-lit', w);
+            } else if (SPID3R_TY.test(w)) {
+              out += span('tok-ty', w);
+            } else if (SPID3R_BUILTIN.test(w) && nextCh === '(') {
+              out += span('tok-builtin', w);
+            } else if (nextCh === '(') {
+              out += span('tok-fn', w);
+            } else if (/^[A-Z][A-Z0-9_]+$/.test(w)) {
+              out += span('tok-num', w);
+            } else {
+              out += escHtml(w);
+            }
+            i += w.length;
+            continue;
+          }
+          var mOp = src.slice(i).match(/^(?:->|==|!=|<=|>=|&&|\|\||[=+\-*/%<>!?:;.,(){}[\]])/);
+          if (mOp) {
+            out += span('tok-op', mOp[0]);
+            i += mOp[0].length;
+            continue;
+          }
+          out += escHtml(ch);
+          i++;
+        }
+        return out;
+      }
+
+      function highlightToml(src) {
+        var lines = src.split('\n');
+        var res = [];
+        for (var k = 0; k < lines.length; k++) {
+          var line = lines[k];
+          var lead = line.match(/^\s*/)[0];
+          var rest = line.slice(lead.length);
+          if (rest.charAt(0) === '#') {
+            res.push(escHtml(lead) + span('tok-com', rest));
+            continue;
+          }
+          if (rest.charAt(0) === '[') {
+            var hMatch = rest.match(/^(\[\[?[^\]\r\n]+\]\]?)(.*)$/);
+            if (hMatch) {
+              var tail = hMatch[2];
+              var cPos = tail.indexOf('#');
+              var hdrHtml = span('tok-sec', hMatch[1]);
+              if (cPos !== -1) {
+                hdrHtml += escHtml(tail.slice(0, cPos)) + span('tok-com', tail.slice(cPos));
+              } else {
+                hdrHtml += escHtml(tail);
+              }
+              res.push(escHtml(lead) + hdrHtml);
+              continue;
+            }
+          }
+          var out = escHtml(lead);
+          var eqMatch = rest.match(/^([A-Za-z0-9_.-]+)(\s*=\s*)(.*)$/);
+          if (eqMatch) {
+            out += span('tok-ty', eqMatch[1]) + span('tok-op', eqMatch[2]);
+            out += highlightTomlValue(eqMatch[3]);
+          } else {
+            out += highlightTomlValue(rest);
+          }
+          res.push(out);
+        }
+        return res.join('\n');
+      }
+
+      function highlightTomlValue(val) {
+        var out = '';
+        var i = 0, n = val.length;
+        while (i < n) {
+          var ch = val.charAt(i);
+          if (ch === '#') {
+            out += span('tok-com', val.slice(i));
+            break;
+          }
+          if (ch === '"' || ch === "'") {
+            var q = ch, j = i + 1;
+            while (j < n) {
+              var c = val.charAt(j);
+              if (c === '\\') { j += 2; continue; }
+              if (c === q) { j++; break; }
+              j++;
+            }
+            out += span('tok-str', val.slice(i, j));
+            i = j;
+            continue;
+          }
+          if (ch === '=' || ch === '[' || ch === ']' || ch === '{' || ch === '}' || ch === ',') {
+            out += span('tok-op', ch);
+            i++;
+            continue;
+          }
+          var mWord = val.slice(i).match(/^(?:true|false)(?![A-Za-z0-9_])/);
+          if (mWord) {
+            out += span('tok-lit', mWord[0]);
+            i += mWord[0].length;
+            continue;
+          }
+          var mKey = val.slice(i).match(/^([A-Za-z0-9_.-]+)(?=\s*=)/);
+          if (mKey) {
+            out += span('tok-ty', mKey[1]);
+            i += mKey[1].length;
+            continue;
+          }
+          var mNum = val.slice(i).match(/^\d+(?:\.\d+)?/);
+          if (mNum && (i === 0 || !/[A-Za-z0-9_]/.test(val.charAt(i - 1)))) {
+            out += span('tok-num', mNum[0]);
+            i += mNum[0].length;
+            continue;
+          }
+          out += escHtml(ch);
+          i++;
+        }
+        return out;
+      }
+
+      var BASH_CMDS = /^(?:spkg|spid3r|yamc|yamcvm|spvm|nettools|mkdir|cd)$/;
+      var BASH_SUB = /^(?:init|add|remove|uninstall|install|list|show|outdated|audit|freeze|tree|verify|search|publish|pack|unpack|cache|tool|dist|modules|control|config|reset|run|test|build|subnet|dir|prune)$/;
+
+      function highlightBash(src) {
+        var lines = src.split('\n');
+        var res = [];
+        for (var k = 0; k < lines.length; k++) {
+          var line = lines[k];
+          var i = 0, n = line.length, out = '';
+          var cmdSeen = false;
+          while (i < n) {
+            var ch = line.charAt(i);
+            if (ch === '#' && (i === 0 || /\s/.test(line.charAt(i - 1)))) {
+              out += span('tok-com', line.slice(i));
+              break;
+            }
+            if (ch === '"' || ch === "'") {
+              var q = ch, j = i + 1;
+              while (j < n) {
+                var c = line.charAt(j);
+                if (c === '\\') { j += 2; continue; }
+                if (c === q) { j++; break; }
+                j++;
+              }
+              out += span('tok-str', line.slice(i, j));
+              i = j;
+              continue;
+            }
+            if (ch === '<') {
+              var gt = line.indexOf('>', i + 1);
+              if (gt !== -1 && !/\s/.test(line.slice(i, gt + 1))) {
+                out += span('tok-num', line.slice(i, gt + 1));
+                i = gt + 1;
+                continue;
+              }
+            }
+            if (line.slice(i, i + 2) === '&&' || ch === '>' || ch === '|') {
+              var opLen = line.slice(i, i + 2) === '&&' ? 2 : 1;
+              out += span('tok-op', line.slice(i, i + opLen));
+              i += opLen;
+              if (opLen === 2 || ch === '|') cmdSeen = false;
+              continue;
+            }
+            if (/\s/.test(ch)) {
+              out += ch;
+              i++;
+              continue;
+            }
+            var mTok = line.slice(i).match(/^[^\s"'<>|&]+/);
+            var tok = mTok[0];
+            if (!cmdSeen && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
+              var eqIdx = tok.indexOf('=');
+              out += span('tok-kw', tok.slice(0, eqIdx)) + span('tok-op', '=') + span('tok-str', tok.slice(eqIdx + 1));
+            } else if (/^-{1,2}[A-Za-z0-9_-]+$/.test(tok)) {
+              out += span('tok-flag', tok);
+            } else if (!cmdSeen && BASH_CMDS.test(tok)) {
+              out += span('tok-cmd', tok);
+              cmdSeen = true;
+            } else if (cmdSeen && BASH_SUB.test(tok)) {
+              out += span('tok-builtin', tok);
+            } else if (!cmdSeen) {
+              out += span('tok-cmd', tok);
+              cmdSeen = true;
+            } else if (tok.indexOf('==') !== -1) {
+              var eqp = tok.indexOf('==');
+              out += span('tok-file', tok.slice(0, eqp)) + span('tok-op', '==') + span('tok-num', tok.slice(eqp + 2));
+            } else {
+              out += escHtml(tok);
+            }
+            i += tok.length;
+          }
+          res.push(out);
+        }
+        return res.join('\n');
+      }
+
+      function highlightTree(src) {
+        var lines = src.split('\n');
+        var res = [];
+        for (var k = 0; k < lines.length; k++) {
+          var line = lines[k];
+          var cPos = line.indexOf('#');
+          var body = cPos === -1 ? line : line.slice(0, cPos);
+          var com = cPos === -1 ? '' : line.slice(cPos);
+          var m = body.match(/^([│├└─\s]*)(.*)$/);
+          var prefix = m ? m[1] : '';
+          var name = m ? m[2] : body;
+          var styledName = '';
+          if (name) {
+            if (name.slice(-1) === '/' || /\/$/.test(name.trim())) {
+              styledName = span('tok-dir', name);
+            } else if (/\.(?:matrix|mt)\b/.test(name)) {
+              styledName = span('tok-kw', name);
+            } else if (/\.(?:toml|lock|pub)\b/.test(name)) {
+              styledName = span('tok-ty', name);
+            } else if (/\.(?:sig|sha256|tar)/.test(name)) {
+              styledName = span('tok-str', name);
+            } else {
+              styledName = span('tok-file', name);
+            }
+          }
+          var out = (prefix ? span('tok-tree', prefix) : '') + styledName;
+          if (com) out += span('tok-com', com);
+          res.push(out);
+        }
+        return res.join('\n');
+      }
+
+      function highlightJson(src) {
+        var out = '';
+        var i = 0, n = src.length;
+        while (i < n) {
+          var ch = src.charAt(i);
+          if (ch === '"') {
+            var j = i + 1;
+            while (j < n) {
+              var c = src.charAt(j);
+              if (c === '\\') { j += 2; continue; }
+              if (c === '"') { j++; break; }
+              j++;
+            }
+            var str = src.slice(i, j);
+            var after = src.slice(j).match(/^\s*:/);
+            out += span(after ? 'tok-ty' : 'tok-str', str);
+            i = j;
+            continue;
+          }
+          if (/[{}[\]:,]/.test(ch)) {
+            out += span('tok-op', ch);
+            i++;
+            continue;
+          }
+          var mLit = src.slice(i).match(/^(?:true|false|null)(?![A-Za-z0-9_])/);
+          if (mLit) {
+            out += span('tok-lit', mLit[0]);
+            i += mLit[0].length;
+            continue;
+          }
+          var mNum = src.slice(i).match(/^-?\d+(?:\.\d+)?/);
+          if (mNum) {
+            out += span('tok-num', mNum[0]);
+            i += mNum[0].length;
+            continue;
+          }
+          out += escHtml(ch);
+          i++;
+        }
+        return out;
+      }
+
+      function highlightCode(raw, lang) {
+        switch (lang) {
+          case 'spid3r': return highlightSpid3r(raw);
+          case 'toml':   return highlightToml(raw);
+          case 'bash':   return highlightBash(raw);
+          case 'tree':   return highlightTree(raw);
+          case 'json':   return highlightJson(raw);
+          default:       return escHtml(raw);
+        }
+      }
+
+      if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+        var pres = document.querySelectorAll('pre[data-lang]');
+        for (var p = 0; p < pres.length; p++) {
+          var pre = pres[p];
+          var raw = pre.textContent || '';
+          pre.setAttribute('data-raw', raw);
+          pre.innerHTML = highlightCode(raw, pre.getAttribute('data-lang'));
+        }
+
+        // Theme toggle
+        var themeBtn = document.getElementById('themeBtn');
+        function syncThemeBtn() {
+          if (!themeBtn) return;
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          themeBtn.textContent = cur === 'light' ? 'Dark Mode' : 'Light Mode';
+        }
+        syncThemeBtn();
+        if (themeBtn) {
+          themeBtn.addEventListener('click', function () {
+            var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            try { localStorage.setItem('spid3r-dev-theme', next); } catch (e) { }
+            syncThemeBtn();
+          });
+        }
+
+        // Copy buttons
+        var copyBtns = document.querySelectorAll('.copy-btn');
+        for (var i = 0; i < copyBtns.length; i++) {
+          copyBtns[i].addEventListener('click', function () {
+            var b = this;
+            var card = b.closest('.code-card');
+            var preEl = card ? card.querySelector('pre') : null;
+            if (!preEl) return;
+            var text = preEl.getAttribute('data-raw');
+            if (text === null) text = preEl.textContent || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(function () {
+                b.textContent = 'Copied!';
+                b.classList.add('copied');
+                setTimeout(function () {
+                  b.textContent = 'Copy';
+                  b.classList.remove('copied');
+                }, 1400);
+              });
+            }
+          });
+        }
+
+        // Hero quick workflow tabs
+        var hBtns = document.querySelectorAll('[data-htab]');
+        var hPanes = document.querySelectorAll('[data-htab-pane]');
+        for (var h = 0; h < hBtns.length; h++) {
+          hBtns[h].addEventListener('click', function () {
+            var target = this.getAttribute('data-htab');
+            for (var x = 0; x < hBtns.length; x++) {
+              var on = hBtns[x].getAttribute('data-htab') === target;
+              hBtns[x].classList.toggle('active', on);
+              hBtns[x].setAttribute('aria-selected', on ? 'true' : 'false');
+            }
+            for (var y = 0; y < hPanes.length; y++) {
+              hPanes[y].classList.toggle('active', hPanes[y].getAttribute('data-htab-pane') === target);
+            }
+          });
+        }
+
+        // Live CLI command table filter
+        var cliFilter = document.getElementById('cliFilter');
+        var cliTable = document.getElementById('cliTable');
+        var cliCount = document.getElementById('cliCount');
+        if (cliFilter && cliTable && cliCount) {
+          var rows = cliTable.querySelectorAll('tbody tr');
+          cliFilter.addEventListener('input', function () {
+            var q = (cliFilter.value || '').trim().toLowerCase();
+            var shown = 0;
+            for (var r = 0; r < rows.length; r++) {
+              var match = !q || (rows[r].textContent || '').toLowerCase().indexOf(q) !== -1;
+              rows[r].style.display = match ? '' : 'none';
+              if (match) shown++;
+            }
+            cliCount.textContent = shown + ' / ' + rows.length + ' commands';
+          });
+        }
+
+        // Reading progress + TOC scroll-spy
+        var progEl = document.getElementById('readProgress');
+        window.addEventListener('scroll', function () {
+          if (!progEl) return;
+          var docH = document.documentElement.scrollHeight - window.innerHeight;
+          var pct = docH > 0 ? Math.min(100, Math.max(0, (window.scrollY / docH) * 100)) : 0;
+          progEl.style.width = pct.toFixed(1) + '%';
+        }, { passive: true });
+
+        var sections = document.querySelectorAll('section.doc-section[id]');
+        var tocLinks = document.querySelectorAll('.toc a[href^="#"]');
+        if ('IntersectionObserver' in window && sections.length && tocLinks.length) {
+          var observer = new IntersectionObserver(function (entries) {
+            for (var e = 0; e < entries.length; e++) {
+              if (entries[e].isIntersecting) {
+                var id = '#' + entries[e].target.id;
+                for (var l = 0; l < tocLinks.length; l++) {
+                  tocLinks[l].classList.toggle('active', tocLinks[l].getAttribute('href') === id);
+                }
+              }
+            }
+          }, { rootMargin: '-20% 0px -70% 0px' });
+          for (var s = 0; s < sections.length; s++) observer.observe(sections[s]);
+        }
       }
     })();
   </script>

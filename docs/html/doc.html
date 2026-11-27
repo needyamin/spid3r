@@ -1181,6 +1181,20 @@
       color: var(--hl-builtin);
     }
 
+    .tok-cmd {
+      color: var(--hl-ty);
+      font-weight: 700;
+    }
+
+    .tok-flag {
+      color: var(--hl-num);
+    }
+
+    .tok-sec {
+      color: var(--hl-op);
+      font-weight: 700;
+    }
+
     /* Footer */
     .footer {
       border-top: 1px solid var(--border-line);
@@ -1664,13 +1678,13 @@
       <div class="breadcrumb">
         <a href="doc.html">Spid3r Documentation</a>
         <span>/</span>
-        <span>Developer Reference (v<span data-spid3r-version="plain">1.1.1</span>)</span>
+        <span>Developer Reference (v<span data-spid3r-version="plain">1.5.0</span>)</span>
       </div>
 
       <header class="page-header">
         <h1 class="page-title">Spid3r Language &amp; Developer Reference</h1>
         <p class="page-subtitle">
-          Concise, complete manual for <strong>Spid3r v<span data-spid3r-version="plain">1.1.1</span></strong> — zero-dependency core VM,
+          Concise, complete manual for <strong>Spid3r v<span data-spid3r-version="plain">1.5.0</span></strong> — zero-dependency core VM,
           <strong>YamLLVM</strong> native AOT, <strong>YamGC</strong> memory management, 26 embedded stdlib modules,
           254 native builtins, and interactive browser WASM examples.
         </p>
@@ -1744,7 +1758,13 @@
 
         <h3 class="section-h3" id="installation">📦 Installing Spid3r</h3>
         <p>
-          Spid3r ships as a self-contained binary with static C-runtime linkage and all 26 stdlib modules embedded (only <code>spid3r gui</code> uses the OS WebView).
+          Spid3r ships as a self-contained binary with static C-runtime linkage and all 26 stdlib modules embedded (only <code>spid3r gui</code> uses the OS WebView). Install via the
+          <a href="https://apps.microsoft.com/detail/9NPH5XX0F6KF?hl=en&amp;gl=BD&amp;ocid=pdpshare" target="_blank" rel="noopener noreferrer">Microsoft Store ↗</a>,
+          <a href="https://github.com/needyamin/spid3r/releases" target="_blank" rel="noopener noreferrer">GitHub Releases ↗</a>,
+          grab the editor formatter on the
+          <a href="https://marketplace.visualstudio.com/items?itemName=ANSNEWTECH.spid3r-formatter" target="_blank" rel="noopener noreferrer">VS Code Marketplace ↗</a>,
+          or explore packages at
+          <a href="https://spid3r-spkg.github.io/" target="_blank" rel="noopener noreferrer">spid3r-spkg.github.io ↗</a>.
         </p>
         <div class="table-wrap">
           <table>
@@ -1762,9 +1782,9 @@
                 <td>NSIS setup with Python-style <strong>Add Spid3r to PATH</strong> checkbox (<code>/NOPATH</code> / <code>SPID3R_NO_PATH=1</code>), locked-process safe upgrade/uninstall, <code>.matrix</code> association, <code>LLVM-C</code>/<code>spid3r_lang.lib</code>, <code>spid3r-control.exe</code>, and offline <code>spid3r-formatter.vsix</code> (v1.0.1).</td>
               </tr>
               <tr>
-                <td><strong>Microsoft Store</strong></td>
+                <td><strong><a href="https://apps.microsoft.com/detail/9NPH5XX0F6KF?hl=en&amp;gl=BD&amp;ocid=pdpshare" target="_blank" rel="noopener noreferrer">Microsoft Store ↗</a></strong></td>
                 <td><code>Spid3r-&lt;ver&gt;-x64.msix</code></td>
-                <td>Store ID <code>9NPH5XX0F6KF</code> (<code>ANSNEWTECH.Spid3r</code>). Exposes instant <code>AppExecutionAlias</code> commands on Windows <code>PATH</code>: <code>spid3r</code>, <code>sp</code>, <code>yamc</code>, <code>yamcvm</code>, <code>spvm</code>, <code>spkg</code>, <code>spid3r-self</code>, <code>spid3r-control</code>.</td>
+                <td>Install directly from the <a href="https://apps.microsoft.com/detail/9NPH5XX0F6KF?hl=en&amp;gl=BD&amp;ocid=pdpshare" target="_blank" rel="noopener noreferrer">Microsoft Store (<code>9NPH5XX0F6KF</code>) ↗</a> (<code>ANSNEWTECH.Spid3r</code>). Exposes instant <code>AppExecutionAlias</code> commands on Windows <code>PATH</code>: <code>spid3r</code>, <code>sp</code>, <code>yamc</code>, <code>yamcvm</code>, <code>spvm</code>, <code>spkg</code>, <code>spid3r-self</code>, <code>spid3r-control</code>.</td>
               </tr>
               <tr>
                 <td><strong>Linux / macOS</strong></td>
@@ -1775,6 +1795,11 @@
                 <td><strong>Build from Source</strong></td>
                 <td><code>cargo install</code></td>
                 <td><code>--no-default-features</code> (zero external crates) or enable any mix of <code>native</code>, <code>gui</code>, and <code>tls</code>.</td>
+              </tr>
+              <tr>
+                <td><strong><a href="https://marketplace.visualstudio.com/items?itemName=ANSNEWTECH.spid3r-formatter" target="_blank" rel="noopener noreferrer">VS Code Extension ↗</a></strong></td>
+                <td><code>ANSNEWTECH.spid3r-formatter</code></td>
+                <td>Official <a href="https://marketplace.visualstudio.com/items?itemName=ANSNEWTECH.spid3r-formatter" target="_blank" rel="noopener noreferrer">Visual Studio Marketplace ↗</a> extension for <code>.matrix</code> / <code>.mt</code> syntax highlighting and formatting (also bundled offline as <code>spid3r-formatter.vsix</code>).</td>
               </tr>
             </tbody>
           </table>
@@ -1819,7 +1844,7 @@ fn main() {
     println("Hello, World!");
 
     let language = "Spid3r";
-    let version = "1.1.1";
+    let version = "1.5.0";
     println("Welcome to " + language + " v" + version + "!");
     return 0;
 }</div>
@@ -3594,7 +3619,8 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|bytes|bigint|ptr|usize|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|vector|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
           '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|struct|extern|static|extends|implements|public|private|new|import|as|self|super|match|enum|interface|abstract|yield|and|or|not)\\b)',
           '(?<lit>\\b(?:true|false|null|some|none|ok|err)\\b)',
-          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|file_open|file_read|file_read_line|file_write|file_seek|file_tell|file_flush|file_fsync|file_lock|file_unlock|file_close|signal_requested|shutdown_requested|uds_listen|uds_connect|poll_create|poll_add|poll_mod|poll_del|poll_wait|poll_close|after_ms|timer_check|timer_cancel|http_fetch|http_write_response_chunk|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|atomic_int|spid3rinfo|config_get|config_set|config_reload|db_open|pg_connect|mysql_connect|msgpack_encode|cbor_encode|pb_encode|db_open|pg_connect|mysql_connect|msgpack_encode|cbor_encode|pb_encode)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|file_open|file_read|file_read_line|file_write|file_seek|file_tell|file_flush|file_fsync|file_lock|file_unlock|file_close|signal_requested|shutdown_requested|uds_listen|uds_connect|poll_create|poll_add|poll_mod|poll_del|poll_wait|poll_close|after_ms|timer_check|timer_cancel|http_fetch|http_write_response_chunk|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|atomic_int|spid3rinfo|config_get|config_set|config_reload|db_open|pg_connect|mysql_connect|msgpack_encode|cbor_encode|pb_encode)\\b)',
+          '(?<fn>\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\())',
           '(?<op>==|!=|<=|>=|=>|->|\\+\\+|--|\\+=|-=|\\*=|\\/=|%=|&&|\\|\\||\\?\\.|\\?\\?|[+\\-*\\/%!=<>~&|^?:])'
         ].join('|'),
         'g'
@@ -3609,7 +3635,11 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           .replace(/'/g, '&#39;');
       }
 
-      function highlightCode(code) {
+      function tok(cls, text) {
+        return '<span class="' + cls + '">' + escapeHtml(text) + '</span>';
+      }
+
+      function highlightSpid3r(code) {
         let html = '';
         let lastIndex = 0;
         TOKEN_REGEX.lastIndex = 0;
@@ -3620,14 +3650,15 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           }
           const token = match[0];
           const g = match.groups;
-          if (g.comment) html += '<span class="tok-com">' + escapeHtml(token) + '</span>';
-          else if (g.str) html += '<span class="tok-str">' + escapeHtml(token) + '</span>';
-          else if (g.num) html += '<span class="tok-num">' + escapeHtml(token) + '</span>';
-          else if (g.type) html += '<span class="tok-ty">' + escapeHtml(token) + '</span>';
-          else if (g.kw) html += '<span class="tok-kw">' + escapeHtml(token) + '</span>';
-          else if (g.lit) html += '<span class="tok-lit">' + escapeHtml(token) + '</span>';
-          else if (g.builtin) html += '<span class="tok-builtin">' + escapeHtml(token) + '</span>';
-          else if (g.op) html += '<span class="tok-op">' + escapeHtml(token) + '</span>';
+          if (g.comment) html += tok('tok-com', token);
+          else if (g.str) html += tok('tok-str', token);
+          else if (g.num) html += tok('tok-num', token);
+          else if (g.type) html += tok('tok-ty', token);
+          else if (g.kw) html += tok('tok-kw', token);
+          else if (g.lit) html += tok('tok-lit', token);
+          else if (g.builtin) html += tok('tok-builtin', token);
+          else if (g.fn) html += tok('tok-fn', token);
+          else if (g.op) html += tok('tok-op', token);
           else html += escapeHtml(token);
           lastIndex = TOKEN_REGEX.lastIndex;
         }
@@ -3637,11 +3668,134 @@ println("SHA-256 of sum: " + sha256(string(sum)));
         return html;
       }
 
-      // Highlight all initial code blocks
-      document.querySelectorAll('.w3-code-body[data-lang="spid3r"]').forEach(function (el) {
+      const CONSOLE_CMDS = /^(?:spid3r|sp|spkg|yamc|yamcvm|spvm|curl|sh|cargo|mkdir|cd)$/;
+      const CONSOLE_SUBS = /^(?:version|neofetch|run|check|compile|build|exec|disasm|test|bench|fmt|doc|lsp|repl|debug|gui|bundle|init|add|remove|uninstall|install|list|show|outdated|audit|freeze|tree|verify|search|publish|pack|unpack|cache|tool|dist|modules|info|config|control|reset)$/;
+
+      function highlightConsole(code) {
+        const lines = code.split('\n');
+        return lines.map((line) => {
+          let i = 0, n = line.length, out = '', cmdSeen = false;
+          while (i < n) {
+            const ch = line.charAt(i);
+            if (ch === '#' && (i === 0 || /\s/.test(line.charAt(i - 1)))) {
+              out += tok('tok-com', line.slice(i));
+              break;
+            }
+            if (ch === '"' || ch === "'") {
+              const q = ch;
+              let j = i + 1;
+              while (j < n) {
+                const c = line.charAt(j);
+                if (c === '\\') { j += 2; continue; }
+                if (c === q) { j++; break; }
+                j++;
+              }
+              out += tok('tok-str', line.slice(i, j));
+              i = j;
+              continue;
+            }
+            if (line.slice(i, i + 2) === '&&' || ch === '|' || ch === '>') {
+              const opLen = line.slice(i, i + 2) === '&&' ? 2 : 1;
+              out += tok('tok-op', line.slice(i, i + opLen));
+              i += opLen;
+              if (opLen === 2 || ch === '|') cmdSeen = false;
+              continue;
+            }
+            if (/\s/.test(ch)) {
+              out += ch;
+              i++;
+              continue;
+            }
+            const t = line.slice(i).match(/^[^\s"'|&>]+/)[0];
+            if (!cmdSeen && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+              const eq = t.indexOf('=');
+              out += tok('tok-kw', t.slice(0, eq)) + tok('tok-op', '=') + tok('tok-str', t.slice(eq + 1));
+            } else if (/^https?:\/\//i.test(t)) {
+              out += tok('tok-str', t);
+            } else if (/^-{1,2}[A-Za-z0-9_-]+$/.test(t)) {
+              out += tok('tok-flag', t);
+            } else if (!cmdSeen && CONSOLE_CMDS.test(t)) {
+              out += tok('tok-cmd', t);
+              cmdSeen = true;
+            } else if (cmdSeen && CONSOLE_SUBS.test(t)) {
+              out += tok('tok-builtin', t);
+            } else if (!cmdSeen) {
+              out += tok('tok-cmd', t);
+              cmdSeen = true;
+            } else {
+              out += escapeHtml(t);
+            }
+            i += t.length;
+          }
+          return out;
+        }).join('\n');
+      }
+
+      function highlightIni(code) {
+        return code.split('\n').map((line) => {
+          const lead = line.match(/^\s*/)[0];
+          const rest = line.slice(lead.length);
+          if (rest.charAt(0) === '#' || rest.charAt(0) === ';') {
+            return escapeHtml(lead) + tok('tok-com', rest);
+          }
+          if (rest.charAt(0) === '[') {
+            const hm = rest.match(/^(\[[^\]\r\n]+\])(.*)$/);
+            if (hm) {
+              return escapeHtml(lead) + tok('tok-sec', hm[1]) + escapeHtml(hm[2]);
+            }
+          }
+          const kv = rest.match(/^([A-Za-z0-9_.-]+)(\s*=\s*)(.*)$/);
+          if (!kv) return escapeHtml(line);
+          let val = kv[3], vOut = '', i = 0;
+          while (i < val.length) {
+            const c = val.charAt(i);
+            if ((c === '#' || c === ';') && (i === 0 || /\s/.test(val.charAt(i - 1)))) {
+              vOut += tok('tok-com', val.slice(i));
+              break;
+            }
+            if (c === '"' || c === "'") {
+              const q = c;
+              let j = i + 1;
+              while (j < val.length) {
+                if (val.charAt(j) === '\\') { j += 2; continue; }
+                if (val.charAt(j) === q) { j++; break; }
+                j++;
+              }
+              vOut += tok('tok-str', val.slice(i, j));
+              i = j;
+              continue;
+            }
+            const bm = val.slice(i).match(/^(?:true|false)(?![A-Za-z0-9_])/);
+            if (bm && (i === 0 || !/[A-Za-z0-9_]/.test(val.charAt(i - 1)))) {
+              vOut += tok('tok-lit', bm[0]);
+              i += bm[0].length;
+              continue;
+            }
+            const nm = val.slice(i).match(/^\d+(?:\.\d+)?(?![A-Za-z0-9_.])/);
+            if (nm && (i === 0 || !/[A-Za-z0-9_.]/.test(val.charAt(i - 1)))) {
+              vOut += tok('tok-num', nm[0]);
+              i += nm[0].length;
+              continue;
+            }
+            vOut += escapeHtml(c);
+            i++;
+          }
+          return escapeHtml(lead) + tok('tok-ty', kv[1]) + tok('tok-op', kv[2]) + vOut;
+        }).join('\n');
+      }
+
+      function highlightCode(code, lang) {
+        if (lang === 'console' || lang === 'bash') return highlightConsole(code);
+        if (lang === 'ini') return highlightIni(code);
+        return highlightSpid3r(code);
+      }
+
+      // Highlight all initial code blocks (spid3r, console, ini)
+      document.querySelectorAll('.w3-code-body').forEach(function (el) {
         const raw = el.textContent;
+        const lang = el.getAttribute('data-lang') || 'spid3r';
         el.setAttribute('data-raw', raw);
-        el.innerHTML = highlightCode(raw);
+        el.innerHTML = highlightCode(raw, lang);
       });
 
       // =========================================================================

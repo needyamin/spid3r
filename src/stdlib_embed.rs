@@ -15,10 +15,22 @@
 //! All three backends (tree walker, VM, AOT) fall back to it, and all three
 //! prefer a file when one exists, so a project-local `stdlib/` still wins.
 //!
-//! `build.rs` emits the table; the cost is the size of `stdlib/` (~420 KB) in
-//! every binary.
+//! `build.rs` emits the DEFLATE-compressed table; the cost is ~85 KB in
+//! every binary, inflated lazily once on first lookup.
 
 include!(concat!(env!("OUT_DIR"), "/embedded_stdlib.rs"));
+
+static UNPACKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn unpacked() -> &'static str {
+    UNPACKED
+        .get_or_init(|| {
+            let bytes = crate::stdlib::compress::inflate_raw(EMBEDDED_STDLIB_DEFLATE)
+                .expect("embedded stdlib deflate payload is valid");
+            String::from_utf8(bytes).expect("embedded stdlib payload is valid UTF-8")
+        })
+        .as_str()
+}
 
 /// Source of the stdlib module called `name`, if one is embedded.
 ///
@@ -29,16 +41,19 @@ pub fn source(name: &str) -> Option<&'static str> {
         .strip_suffix(".matrix")
         .or_else(|| trimmed.strip_suffix(".mt"))
         .unwrap_or(trimmed);
-    EMBEDDED_STDLIB
+    EMBEDDED_STDLIB_INDEX
         .iter()
-        .find(|(module, _)| *module == key)
-        .map(|(_, src)| *src)
+        .find(|(module, _, _)| *module == key)
+        .map(|&(_, start, end)| &unpacked()[start..end])
 }
 
 /// Every embedded module name, sorted (used by `spid3r --list-stdlib` in the
 /// browser and by tests).
 pub fn names() -> Vec<&'static str> {
-    EMBEDDED_STDLIB.iter().map(|(name, _)| *name).collect()
+    EMBEDDED_STDLIB_INDEX
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -57,16 +72,24 @@ mod tests {
         assert!(super::source("definitely-not-a-module").is_none());
     }
 
-    /// Every entry must be resolvable by name and carry real source. A module
-    /// that was deleted from `stdlib/` but left in the table (or the reverse)
-    /// would make `import` behave differently on wasm and on desktop.
+    /// Every entry must be resolvable by name and carry real source, and when
+    /// running inside the source checkout it must match `stdlib/<name>.matrix`
+    /// byte-for-byte after DEFLATE round-trip.
     #[test]
     fn every_entry_has_source() {
         let names = super::names();
         assert!(names.len() > 5, "only {} modules embedded", names.len());
+        let has_disk_stdlib = std::path::Path::new("stdlib").is_dir();
         for name in names {
             let src = super::source(name).expect("lookup by own name");
             assert!(!src.trim().is_empty(), "{} is empty", name);
+            if has_disk_stdlib {
+                let disk_path = format!("stdlib/{}.matrix", name);
+                if std::path::Path::new(&disk_path).is_file() {
+                    let disk_src = std::fs::read_to_string(&disk_path).expect("read disk stdlib");
+                    assert_eq!(src, disk_src, "embedded stdlib mismatch for {}", name);
+                }
+            }
         }
     }
 }

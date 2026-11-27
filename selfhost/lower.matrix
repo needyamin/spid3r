@@ -329,9 +329,50 @@ fn parse_import_selections_lower(alias) {
     return out;
 }
 
+fn low_has_angle_brackets(s) {
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 60 or cp == 62 {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn low_bare_stdlib_name(path) {
+    if path == "" or path == "." or path == ".." {
+        return null;
+    }
+    let i = 0;
+    let n = path.len();
+    while i < n {
+        let cp = ord(path[i]);
+        if cp == 47 or cp == 92 or cp == 58 or cp == 60 or cp == 62 {
+            return null;
+        }
+        i += 1;
+    }
+    let bare = path;
+    if bare.len() > 7 and bare.slice(bare.len() - 7, bare.len()) == ".matrix" {
+        bare = bare.slice(0, bare.len() - 7);
+    } else if bare.len() > 3 and bare.slice(bare.len() - 3, bare.len()) == ".mt" {
+        bare = bare.slice(0, bare.len() - 3);
+    }
+    if bare == "" or bare == "." or bare == ".." {
+        return null;
+    }
+    return bare;
+}
+
 // The public classes/interfaces/enums of an imported module feed the
 // named-argument reorder tables and the cross-module match field names.
 fn import_tables(st, path, selections, import_types) {
+    if low_has_angle_brackets(path) {
+        return;
+    }
     let dir = dirname_of_lower(path);
     let src = "";
     let resolved = "";
@@ -340,6 +381,15 @@ fn import_tables(st, path, selections, import_types) {
         if file_exists(c) {
             resolved = c;
             break;
+        }
+    }
+    if resolved == "" {
+        let bare = low_bare_stdlib_name(path);
+        if bare != null {
+            let emb = "<stdlib>/" + bare + ".matrix";
+            if file_exists(emb) {
+                resolved = emb;
+            }
         }
     }
     if resolved == "" {

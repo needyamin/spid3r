@@ -10,7 +10,8 @@ The primary rule: **if you did not write or audit a script, treat it like a nati
 
 | Version | Supported |
 |---|---|
-| `1.1.x` (`v1.1.1`, current) | Yes |
+| `1.5.x` (`v1.5.0`, current) | Yes |
+| `1.1.x` | No |
 | `1.0.x` | No |
 | `< 1.0` | No |
 

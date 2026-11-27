@@ -947,7 +947,7 @@ fn msix_manifest_and_packaging_are_valid() {
             "CN=087A9974-75CB-44FC-B893-8D3999E5E5E5",
         )
         .replace("@MSIX_PUBLISHER_DISPLAY@", "ANSNEW TECH.")
-        .replace("@MSIX_VERSION@", "1.1.1.0")
+        .replace("@MSIX_VERSION@", "1.5.0.0")
         .replace("@MSIX_ARCH@", "x64")
         .replace("@MSIX_CONTROL_BLOCK@", control_block)
         .replace("@MSIX_CLI_DEFAULT_TILE@", "");
