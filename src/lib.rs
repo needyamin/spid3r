@@ -52,7 +52,7 @@ pub mod native;
 pub mod gui;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const LANGUAGE_VERSION: &str = "1.5.0";
+pub const LANGUAGE_VERSION: &str = "1.5.1";
 
 // Embedding ergonomics: hosts work with `spid3r_lang::Value` (see spid3r_lang::embed).
 pub use value::Value;

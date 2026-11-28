@@ -9,7 +9,7 @@ This directory holds the Microsoft Store MSIX manifest template (`AppxManifest.x
 | `Package/Identity/Name` | `ANSNEWTECH.Spid3r` | `MSIX_IDENTITY_NAME` / `--msix-identity` |
 | `Package/Identity/Publisher` | `CN=087A9974-75CB-44FC-B893-8D3999E5E5E5` | `MSIX_PUBLISHER` / `--msix-publisher` |
 | `PublisherDisplayName` | `ANSNEW TECH.` | `MSIX_PUBLISHER_DISPLAY_NAME` / `--msix-publisher-display` |
-| `Version` | `<Cargo.toml X.Y.Z>.0` (e.g. `1.5.0.0`) | Derived automatically |
+| `Version` | `<Cargo.toml X.Y.Z>.0` (e.g. `1.5.1.0`) | Derived automatically |
 
 ## What the `.msix` Contains
 
@@ -29,5 +29,5 @@ This directory holds the Microsoft Store MSIX manifest template (`AppxManifest.x
 Microsoft Store `.msix` packages are left unsigned in CI. To sideload locally on Windows before submitting:
 
 ```powershell
-signtool sign /fd SHA256 /f MyDevCert.pfx /p <password> Spid3r-1.5.0-x64.msix
+signtool sign /fd SHA256 /f MyDevCert.pfx /p <password> Spid3r-1.5.1-x64.msix
 ```

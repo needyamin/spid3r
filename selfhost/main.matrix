@@ -137,11 +137,11 @@ fn main() {
     }
     let mode = a[0];
     if mode == "--version" or mode == "-V" or mode == "version" {
-        println("spid3r-self 1.5.0");
+        println("spid3r-self 1.5.1");
         return 0;
     }
     if mode == "--help" or mode == "-h" or mode == "help" {
-        println("spid3r-self 1.5.0 — Spid3r self-hosted compiler (YamLLVM AOT) & dev tools");
+        println("spid3r-self 1.5.1 — Spid3r self-hosted compiler (YamLLVM AOT) & dev tools");
         println("Commands:");
         println("  build <file.matrix> [-o <out>] [--release] [--target <triple>]");
         println("  compile <file.matrix> [out]      (write .matrixc bytecode)");
