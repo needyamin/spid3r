@@ -80,7 +80,7 @@ Usage:
   sh install.sh [OPTIONS]
 
 Options:
-  --version <ver>         Install a specific release version (e.g. 1.5.1; default: latest)
+  --version <ver>         Install a specific release version (e.g. 1.5.2; default: latest)
   --dir <path>            Target directory for binaries (default: ~/.spid3r/bin)
   --source                Compile and build from source using cargo
   --core                  Source build with zero external dependencies (no LLVM/WebKit)
@@ -98,7 +98,7 @@ EOF
 # ---------------------------------------------------------------- arguments --
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version)          [ $# -ge 2 ] || die "--version needs a value (e.g. 1.5.1)"
+        --version)          [ $# -ge 2 ] || die "--version needs a value (e.g. 1.5.2)"
                             VERSION="$2"; shift 2 ;;
         --dir)              [ $# -ge 2 ] && [ -n "$2" ] || die "--dir needs a value"
                             INSTALL_DIR="$2"; shift 2 ;;

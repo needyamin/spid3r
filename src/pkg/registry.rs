@@ -43,6 +43,17 @@ pub struct RegistryDescriptor {
     pub public_key: Option<String>,
 }
 
+/// Parsed optional `<base>/<pkg>/<ver>/release.toml` thin-index release descriptor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseDescriptor {
+    pub name: String,
+    pub version: String,
+    pub tarball_url: String,
+    pub tarball_sha256: String,
+    pub source_repo: String,
+    pub source_tag: String,
+}
+
 /// True when `spec` points at an HTTP or HTTPS package registry.
 pub fn is_remote_url(spec: &str) -> bool {
     let lower = spec.trim().to_ascii_lowercase();
@@ -294,6 +305,57 @@ pub(crate) fn build_registry_base(
         base = format!("{}/{}", base, sub);
     }
     Ok(base)
+}
+
+/// Parse `<base>/<pkg>/<ver>/release.toml` thin-index release descriptor safely.
+pub fn parse_release_descriptor(text: &str) -> ReleaseDescriptor {
+    let mut desc = ReleaseDescriptor::default();
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() || line.starts_with('[') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let val = v.trim();
+        match key {
+            "name" => {
+                if let Some(s) = parse_string(val) {
+                    desc.name = s.trim().to_string();
+                }
+            }
+            "version" => {
+                if let Some(s) = parse_string(val) {
+                    desc.version = s.trim().to_string();
+                }
+            }
+            "tarball_url" => {
+                if let Some(s) = parse_string(val) {
+                    desc.tarball_url = s.trim().to_string();
+                }
+            }
+            "tarball_sha256" => {
+                if let Some(s) = parse_string(val) {
+                    desc.tarball_sha256 = s.trim().to_string();
+                }
+            }
+            "source_repo" => {
+                if let Some(s) = parse_string(val) {
+                    desc.source_repo = s.trim().to_string();
+                }
+            }
+            "source_tag" => {
+                if let Some(s) = parse_string(val) {
+                    desc.source_tag = s.trim().to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    desc
 }
 
 /// Parse `<base>/registry.toml` host descriptor safely.
@@ -1057,31 +1119,95 @@ fn fetch_and_verify_version(
         });
         (wtar_bytes, true)
     } else {
-        let tar_url = format!("{}/{}/{}/package.tar", base_url, name, ver);
-        let (mut tar_status, _, mut tar_bytes) = fetch_registry_bytes(&tar_url).map_err(|e| {
-            format!(
-                "registry dependency '{}': failed to fetch {}: {}",
-                name, tar_url, e
-            )
-        })?;
-        if tar_status == 404 {
-            let alt_url = format!("{}/{}/{}-{}.tar", base_url, name, name, ver);
-            let (st, _, bytes) = fetch_registry_bytes(&alt_url).map_err(|e| {
-                format!(
-                    "registry dependency '{}': failed to fetch {}: {}",
-                    name, alt_url, e
-                )
-            })?;
-            tar_status = st;
-            tar_bytes = bytes;
+        // Thin-index release support: if `<base>/<name>/<ver>/release.toml` exists,
+        // verify its Ed25519 signature (when trust_pk is configured), download the
+        // external tarball_url (e.g. GitHub Release or R2/CDN), and verify tarball_sha256.
+        // Otherwise seamlessly fall back to legacy in-repo `package.tar`.
+        let release_url = format!("{}/{}/{}/release.toml", base_url, name, ver);
+        if let Ok((200, _, rel_bytes)) = fetch_registry_metadata_bytes(&release_url) {
+            verify_optional_metadata_sig(
+                &release_url,
+                &rel_bytes,
+                &format!("registry release descriptor '{}@{}'", name, ver),
+            )?;
+            let rel = parse_release_descriptor(&String::from_utf8_lossy(&rel_bytes));
+            if !rel.name.is_empty() && rel.name != name {
+                return Err(format!(
+                    "registry dependency '{}': release.toml declares name '{}' instead of '{}'",
+                    name, rel.name, name
+                ));
+            }
+            if !rel.version.is_empty() && rel.version != ver {
+                return Err(format!(
+                    "registry dependency '{}': release.toml declares version '{}' instead of '{}'",
+                    name, rel.version, ver
+                ));
+            }
+            if !is_remote_url(&rel.tarball_url) {
+                return Err(format!(
+                    "registry dependency '{}': release.toml has invalid tarball_url '{}'",
+                    name, rel.tarball_url
+                ));
+            }
+            if base_url.to_ascii_lowercase().starts_with("https://")
+                && rel.tarball_url.to_ascii_lowercase().starts_with("http://")
+            {
+                return Err(format!(
+                    "registry dependency '{}': refusing insecure http:// tarball_url '{}' from HTTPS registry",
+                    name, rel.tarball_url
+                ));
+            }
+            let (tar_status, _, tar_bytes) =
+                fetch_registry_bytes(&rel.tarball_url).map_err(|e| {
+                    format!(
+                        "registry dependency '{}': failed to fetch {}: {}",
+                        name, rel.tarball_url, e
+                    )
+                })?;
+            if tar_status != 200 {
+                return Err(format!(
+                    "registry dependency '{}': failed to download tarball from {} (HTTP {})",
+                    name, rel.tarball_url, tar_status
+                ));
+            }
+            if !rel.tarball_sha256.is_empty() {
+                let actual_tar_sha = sha256_hex(&tar_bytes);
+                if !actual_tar_sha.eq_ignore_ascii_case(&rel.tarball_sha256) {
+                    return Err(format!(
+                        "registry dependency '{}': tarball_sha256 mismatch for {}@{} (release.toml declares {}, downloaded {})",
+                        name, name, ver, rel.tarball_sha256, actual_tar_sha
+                    ));
+                }
+            }
+            (tar_bytes, false)
+        } else {
+            let tar_url = format!("{}/{}/{}/package.tar", base_url, name, ver);
+            let (mut tar_status, _, mut tar_bytes) =
+                fetch_registry_bytes(&tar_url).map_err(|e| {
+                    format!(
+                        "registry dependency '{}': failed to fetch {}: {}",
+                        name, tar_url, e
+                    )
+                })?;
+            if tar_status == 404 {
+                let alt_url = format!("{}/{}/{}-{}.tar", base_url, name, name, ver);
+                let (st, _, bytes) = fetch_registry_bytes(&alt_url).map_err(|e| {
+                    format!(
+                        "registry dependency '{}': failed to fetch {}: {}",
+                        name, alt_url, e
+                    )
+                })?;
+                tar_status = st;
+                tar_bytes = bytes;
+            }
+            if tar_status != 200 {
+                return Err(format!(
+                    "registry dependency '{}': failed to download tarball for {} (HTTP {})",
+                    name, ver, tar_status
+                ));
+            }
+            (tar_bytes, false)
         }
-        if tar_status != 200 {
-            return Err(format!(
-                "registry dependency '{}': failed to download tarball for {} (HTTP {})",
-                name, ver, tar_status
-            ));
-        }
-        (tar_bytes, false)
     };
 
     let stage_dir = pkg_cache_dir.join(format!(".stage_{}_{}", ver, std::process::id()));
@@ -1306,5 +1432,18 @@ mod tests {
         assert_eq!(advs[0].package, "mathlib");
         assert_eq!(advs[0].severity, "high");
         assert_eq!(advs[0].id, "SPK-2026-001");
+
+        let rel = parse_release_descriptor(
+            "name = \"demo\"\nversion = \"0.1.0\"\ntarball_url = \"https://github.com/spid3r-spkg/spid3r-spkg.github.io/releases/download/demo-0.1.0/package.tar\"\ntarball_sha256 = \"deadbeef\"\nsource_repo = \"https://github.com/needyamin/demo\"\nsource_tag = \"v0.1.0\"\n",
+        );
+        assert_eq!(rel.name, "demo");
+        assert_eq!(rel.version, "0.1.0");
+        assert_eq!(
+            rel.tarball_url,
+            "https://github.com/spid3r-spkg/spid3r-spkg.github.io/releases/download/demo-0.1.0/package.tar"
+        );
+        assert_eq!(rel.tarball_sha256, "deadbeef");
+        assert_eq!(rel.source_repo, "https://github.com/needyamin/demo");
+        assert_eq!(rel.source_tag, "v0.1.0");
     }
 }

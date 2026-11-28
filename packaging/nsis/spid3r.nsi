@@ -48,7 +48,7 @@ Unicode true
 !define RUNTIME_LIB "..\..\target\release\spid3r_lang.lib"
 !endif
 !ifndef APPVERSION
-!define APPVERSION     "1.5.1"
+!define APPVERSION     "1.5.2"
 !endif
 !ifndef SPID3R_EXE
 !define SPID3R_EXE     "..\..\target\release\spid3r.exe"

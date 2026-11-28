@@ -283,7 +283,7 @@ fn bug_16_stage0_verify_runtime_cli() {
     std::fs::write(&lib_path, payload).unwrap();
     let hex = spid3r_lang::pkg::sha256_hex(payload);
     let manifest = format!(
-        r#"{{"version":"1.5.1","staticlib_name":"spid3r_lang.lib","sha256":"{}","provenance":{{"git_commit":"test","llvm_version":"23.1.0"}}}}"#,
+        r#"{{"version":"1.5.2","staticlib_name":"spid3r_lang.lib","sha256":"{}","provenance":{{"git_commit":"test","llvm_version":"23.1.0"}}}}"#,
         hex
     );
     std::fs::write(dir.join("runtime-manifest.json"), manifest).unwrap();
