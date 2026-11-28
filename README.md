@@ -1,10 +1,35 @@
-# Spid3r
+<pre>
+███████╗██████╗ ██╗██████╗ ██████╗ ██████╗         ╱     ╲
+██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗    ╱╲  ╲ ▄█▄ ╱  ╱╲
+███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝   ╱  ╲──╲▀█▀╱──╱  ╲
+╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗  ╱  ╱──╱▄███▄╲──╲  ╲
+███████║██║     ██║██████╔╝██████╔╝██║  ██║    ╱  ╱ █████ ╲  ╲
+╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝    ╲  ╲ ▀███▀ ╱  ╱
+</pre>
 
-**One front end. Four backends. Zero runtime dependencies.**
+**⚡ One Frontend. Four Backends. Zero Runtime Dependencies.**
 
-A general-purpose programming language (`.matrix` / `.mt`) whose interpreters and compilers agree on stdout, error phase, and exit code.
+Spid3r is a general-purpose programming language (`.matrix` / `.mt`) designed for high performance, reliability, and portability. Its interpreters and compilers deliver consistent behavior across all four backends—including identical standard output, error phases, and exit codes.
 
-[Public Package Registry (`spkg`)](https://spid3r-spkg.github.io/) · [Language Docs](docs/html/doc.html) · [Package Guide](docs/html/package.html) · [Playground](docs/html/playground.html) · [Benchmarks](docs/html/benchmark.html) · [Microsoft Store](https://apps.microsoft.com/detail/9NPH5XX0F6KF?hl=en&gl=BD&ocid=pdpshare) · [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=ANSNEWTECH.spid3r-formatter) · [Releases](https://github.com/needyamin/spid3r/releases)
+<p align="center">
+  <img width="800" alt="Spid3r Introduction" src="https://github.com/user-attachments/assets/cc61998d-95f0-408f-942f-ec4b1256c4ac" />
+</p>
+
+<p align="center">
+  <a href="https://spid3r-spkg.github.io/"><strong>📦 Package Registry</strong></a> ·
+  <a href="docs/html/doc.html">📚 Documentation</a> ·
+  <a href="docs/html/package.html">📦 Package Guide</a> ·
+  <a href="docs/html/playground.html">💻 Playground</a> ·
+  <a href="docs/html/benchmark.html">📊 Benchmarks</a>
+</p>
+
+<p align="center">
+  <a href="https://apps.microsoft.com/detail/9NPH5XX0F6KF?hl=en&gl=BD&ocid=pdpshare">🪟 Microsoft Store</a> ·
+  <a href="https://marketplace.visualstudio.com/items?itemName=ANSNEWTECH.spid3r-formatter">🧩 VS Code Extension</a> ·
+  <a href="https://github.com/needyamin/spid3r/releases">🚀 Releases</a>
+</p>
+
+## Spid3r Pipeline
 
 ![Spid3r pipeline: one front end, four backends](docs/diagrams/pipeline.svg)
 
