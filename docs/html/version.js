@@ -7,8 +7,8 @@
   'use strict';
 
   var current = {
-    version: '1.5.2',
-    language_version: '1.5.2'
+    version: '1.5.3',
+    language_version: '1.5.3'
   };
   var authoritative = false;
 

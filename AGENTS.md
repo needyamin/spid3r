@@ -1,6 +1,6 @@
 # Spid3r — Strict Agent Rules & Language Scope Constitution
 
-Project: **Spid3r**, a general-purpose programming language (`.matrix` sources) with a Rust Stage-0 implementation (v1.5.2, LLVM 23.1.0 AOT backend) and a self-hosted compiler (`selfhost/`, `spid3r-self`).
+Project: **Spid3r**, a general-purpose programming language (`.matrix` sources) with a Rust Stage-0 implementation (v1.5.3, LLVM 23.1.0 AOT backend) and a self-hosted compiler (`selfhost/`, `spid3r-self`).
 Architecture decisions: `docs/selfhost/SELFHOST.md` (SH-1…SH-8). Removed non-language subsystems: `removed.txt`.
 
 ---
@@ -48,7 +48,7 @@ Spid3r follows the **core programming language model of PHP, Python, and Java**:
 
 ## 1. Current State
 
-- Core toolchain: Stage 0 (`src/`, Rust v1.5.2) + Stage 1/2/3 self-hosted compiler (`selfhost/`, `spid3r-self`, LLVM 23.1.0 AOT).
+- Core toolchain: Stage 0 (`src/`, Rust v1.5.3) + Stage 1/2/3 self-hosted compiler (`selfhost/`, `spid3r-self`, LLVM 23.1.0 AOT).
 - Phases 0–9 + 10.2 + 11.1–11.9 closed; `10.1` release workflow awaits owner `workflow_dispatch`/tag.
 - Post-Phase 11 work completed: generics (`DP-1`), WS/HTTP/tar fuzzing (`R12.2`), Tracks 1–6 speed parity, local `spid3r.ini` (`45/45` keys) + `spid3r-control.exe`, and removal of the 6 non-language subsystems listed in `removed.txt`.
 - Stale ledger rows in `docs/selfhost/SELFHOST.md` are never deleted (append-only ledger; add a correction note instead).

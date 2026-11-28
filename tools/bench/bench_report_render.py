@@ -513,14 +513,14 @@ def _render_compute_section(ref_p1, latest_compute, sec_num="03"):
         txt = label_slower if good_when_ge else label_faster
         return f'<span class="badge {cls}">{ratio:.2f}&times; {txt}</span>'
 
-    # Current v1.5.2 host snapshot table (primary)
+    # Current v1.5.3 host snapshot table (primary)
     latest_rows = []
     lw = (latest_compute or {}).get("workloads") or {}
     latest_method = (latest_compute or {}).get("method") or {}
     latest_w = latest_method.get("warmup", 2)
     latest_r = latest_method.get("repeats", 5)
     latest_p = latest_method.get("passes", 1)
-    latest_ver = ((latest_compute or {}).get("toolchain") or {}).get("spid3r", "spid3r 1.5.2")
+    latest_ver = ((latest_compute or {}).get("toolchain") or {}).get("spid3r", "spid3r 1.5.3")
     latest_cpu = ((latest_compute or {}).get("host") or {}).get("cpu", "current host")
 
     for w in ("prime", "json", "map", "set", "equality"):
@@ -1140,7 +1140,7 @@ def render(data, names, descs, iters, floors, ref_p1=None, ref_p2=None, latest_c
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spid3r Enterprise Benchmark &amp; Architecture Report</title>
-  <meta name="description" content="Checksum-verified enterprise performance report for Spid3r v1.5.2 across YamLLVM AOT, spvm bytecode VM, AST tree oracle, Node.js, PHP, Python, and Rust.">
+  <meta name="description" content="Checksum-verified enterprise performance report for Spid3r v1.5.3 across YamLLVM AOT, spvm bytecode VM, AST tree oracle, Node.js, PHP, Python, and Rust.">
   <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
   <script>
     (function () {{
@@ -1159,7 +1159,7 @@ def render(data, names, descs, iters, floors, ref_p1=None, ref_p2=None, latest_c
     <a href="doc.html" class="brand">
       <img src="../../src/assets/spid3r.png" alt="Spid3r Logo">
       <div>Spid<span class="accent">3</span>r <span class="sub">Benchmarks</span></div>
-      <span class="chip" data-spid3r-version="v" style="padding:2px 9px;font-size:11px;">v1.5.2</span>
+      <span class="chip" data-spid3r-version="v" style="padding:2px 9px;font-size:11px;">v1.5.3</span>
     </a>
     <nav class="topbar-nav">
       <a href="#sec-arch" class="nav-tab">Architecture</a>

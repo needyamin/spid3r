@@ -1,6 +1,6 @@
 # Spid3r Formal Language Specification
 
-> **Status:** Production specification for Spid3r v1.5 (stage-0 Rust compiler v1.5.2 / LLVM 23.1.0 AOT backend + self-hosted `spid3r-self`).
+> **Status:** Production specification for Spid3r v1.5 (stage-0 Rust compiler v1.5.3 / LLVM 23.1.0 AOT backend + self-hosted `spid3r-self`).
 > **Companion Specifications:** [GRAMMAR.md](GRAMMAR.md), [GENERICS_DESIGN.md](GENERICS_DESIGN.md), [GC.md](GC.md), [CONCURRENCY.md](CONCURRENCY.md), [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md), [NATIVE.md](NATIVE.md), [BYTECODE.md](BYTECODE.md), [FFI.md](FFI.md), [SECURITY.md](SECURITY.md), [STANDARD_LIBRARY.md](STANDARD_LIBRARY.md).
 
 ---
