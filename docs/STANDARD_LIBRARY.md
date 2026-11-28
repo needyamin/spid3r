@@ -156,7 +156,7 @@ values (`S >= L`, closing the `S + L` malleability class) and small-order
 public keys (order 1/2/4/8), which is stricter than RFC 8032.
 | `hmac_sha256(key, msg)` | RFC 2104 HMAC-SHA256 of `msg` under `key`, lowercase hex, over the standard 64-byte block. |
 | `pbkdf2_sha256(password, salt, iterations)` | PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key as lowercase hex. `salt` is a string or bytes; `iterations` clamped to 1..=10_000_000. The primitive for password storage: store `(salt, iterations, hash)`. |
-| `bcrypt_hash(password, cost=10)` | OpenBSD bcrypt password hash string (`$2b$...`). Cost clamped to 4..=16. |
+| `bcrypt_hash(password, cost=10)` | OpenBSD bcrypt password hash string (`$2b$...`). Cost must be 4..=18. |
 | `bcrypt_verify(password, hash)` | Constant-time verification of password against bcrypt hash (`bool`). |
 | `argon2(password, salt, time_cost, mem_cost_kib, parallelism, variant, key_len)` | Argon2 password hashing (RFC 9106); `variant` is `"i"`, `"d"`, or `"id"` (the aliases `"argon2i"`/`"argon2d"`/`"argon2id"` are accepted too). Returns lowercase hex string. |
 | `scrypt(password, salt, n, r, p, key_len)` | scrypt key derivation (RFC 7914). Returns lowercase hex string. |

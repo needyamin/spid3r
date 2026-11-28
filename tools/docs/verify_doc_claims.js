@@ -297,9 +297,9 @@ const CLAIMS = [
   },
   {
     doc: 'doc.html (stdlib export names)',
-    claim: 'bcrypt_hash rejects cost outside 4..31',
+    claim: 'bcrypt_hash rejects cost outside 4..18',
     src: 'fn main() { let h = bcrypt_hash("pw", 3); return 0; }',
-    expectError: /cost must be 4\.\.31/,
+    expectError: /cost must be 4\.\.18/,
   },
 
   // doc.html (Chapter 11 / 14b) — Map remove (R1.4) + spid3rinfo() AOT Memory section (R4).
