@@ -739,7 +739,7 @@ fn packages_registry_ini_matches_env_alias() {
         &["config", "get", "packages.registry"],
     );
     assert_eq!(code_def, 0, "err={}", err_def);
-    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io");
+    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io/packages");
 
     // Explicitly disabled via `registry = none`: the documented not-set error.
     let disabled_ini = write_in(&dir, "disabled.ini", "[packages]\nregistry = none\n");

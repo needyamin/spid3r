@@ -557,7 +557,7 @@ pub static KEYS: &[KeySpec] = &[
         "packages",
         "registry",
         ConfigValue::Str,
-        "https://spid3r-spkg.github.io",
+        "https://spid3r-spkg.github.io/packages",
         None,
         None,
         "Canonical package registry directory or URL (alias of SPID3R_REGISTRY); \"none\" disables."
@@ -891,7 +891,7 @@ deny_environment = false
                              ; 'disabled by configuration' denial
 
 [packages]
-# registry = https://spid3r-spkg.github.io ; registry URL/dir or comma-separated mirrors (alias: SPID3R_REGISTRY); "none" disables
+# registry = https://spid3r-spkg.github.io/packages ; registry URL/dir or comma-separated mirrors (alias: SPID3R_REGISTRY); "none" disables
 allow_insecure_git = false   ; allow http:// and git:// dependencies
 allow_local_git = false      ; allow bare-path and file:// git dependencies
 # trust_pk =                 ; 64-hex Ed25519 public key(s), comma-separated for key rotation

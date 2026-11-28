@@ -24,12 +24,25 @@ pub struct VendoredPkg {
     pub ffi_libs: Vec<String>,
 }
 
+/// Return true when `ep` points at the official Spid3r package registry host.
+pub fn is_official_registry_url(ep: &str) -> bool {
+    let norm = ep.trim().trim_end_matches('/').to_ascii_lowercase();
+    norm == "https://spid3r-spkg.github.io" || norm.starts_with("https://spid3r-spkg.github.io/")
+}
+
 /// Parse `packages.trust_pk` / `SPID3R_TRUST_PK` supporting one or more
 /// comma-separated 64-hex Ed25519 public keys for zero-downtime key rotation
-/// (audit S7). When unset and using the official Spid3r registry
-/// (`spid3r-spkg.github.io`), automatically trusts the built-in official
-/// registry public key so users never need manual `spid3r.ini` setup.
+/// (audit S7). When unset, automatically trusts the built-in official registry
+/// public key only when the checked endpoint (or active `packages.registry`
+/// when `endpoint` is `None`) is the official host (`spid3r-spkg.github.io`).
 pub fn configured_trust_pks() -> Result<Vec<[u8; 32]>, String> {
+    configured_trust_pks_for_endpoint(None)
+}
+
+/// Endpoint-scoped variant of [`configured_trust_pks`] so built-in official
+/// key auto-trust only activates for URLs belonging to `spid3r-spkg.github.io`
+/// when `packages.trust_pk` is unset.
+pub fn configured_trust_pks_for_endpoint(endpoint: Option<&str>) -> Result<Vec<[u8; 32]>, String> {
     let raw = crate::config::get("packages.trust_pk")
         .filter(|v| !v.trim().is_empty())
         .or_else(|| {
@@ -49,17 +62,18 @@ pub fn configured_trust_pks() -> Result<Vec<[u8; 32]>, String> {
             v
         }
         None => {
-            let reg = crate::config::get("packages.registry")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| crate::config::schema::DEFAULT_PACKAGE_REGISTRY.to_string());
-            let is_official = reg
-                .split(',')
-                .map(|s| s.trim().trim_end_matches('/').to_ascii_lowercase())
-                .any(|ep| {
-                    ep == "https://spid3r-spkg.github.io"
-                        || ep == "https://spid3r-spkg.github.io/packages"
-                });
+            let is_official = match endpoint {
+                Some(ep) => is_official_registry_url(ep),
+                None => {
+                    let reg = crate::config::get("packages.registry")
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            crate::config::schema::DEFAULT_PACKAGE_REGISTRY.to_string()
+                        });
+                    reg.split(',').any(is_official_registry_url)
+                }
+            };
             if is_official && !crate::config::schema::DEFAULT_OFFICIAL_TRUST_PK.is_empty() {
                 crate::config::schema::DEFAULT_OFFICIAL_TRUST_PK.to_string()
             } else {
@@ -543,4 +557,38 @@ pub fn vendor_dep_checked(
         }
     }
     Ok(vendored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_registry_url_and_endpoint_scoped_trust_pks() {
+        assert!(is_official_registry_url("https://spid3r-spkg.github.io"));
+        assert!(is_official_registry_url("https://spid3r-spkg.github.io/"));
+        assert!(is_official_registry_url(
+            "https://SPID3R-SPKG.github.io/packages"
+        ));
+        assert!(is_official_registry_url(
+            "https://spid3r-spkg.github.io/packages/demo/0.1.0/sha256.txt"
+        ));
+        assert!(!is_official_registry_url("http://spid3r-spkg.github.io"));
+        assert!(!is_official_registry_url(
+            "https://spid3r-spkg.github.io.evil.com/packages"
+        ));
+        assert!(!is_official_registry_url(
+            "http://127.0.0.1:1234/registry.toml"
+        ));
+
+        let non_official =
+            configured_trust_pks_for_endpoint(Some("http://127.0.0.1:1234/registry.toml")).unwrap();
+        assert!(non_official.is_empty());
+
+        let official = configured_trust_pks_for_endpoint(Some(
+            "https://spid3r-spkg.github.io/packages/demo/0.1.0/sha256.txt",
+        ))
+        .unwrap();
+        assert_eq!(official.len(), 1);
+    }
 }

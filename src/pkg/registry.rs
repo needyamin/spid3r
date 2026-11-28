@@ -15,7 +15,7 @@ use super::manifest::{
 use super::semver::Version;
 use super::sha256::sha256_hex;
 use super::tar::extract_tar_checked;
-use super::vendor::{configured_trust_pks, verify_ed25519_against_any};
+use super::vendor::{configured_trust_pks_for_endpoint, verify_ed25519_against_any};
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_MIGRATION_HOPS: usize = 2;
@@ -226,7 +226,7 @@ pub fn fetch_registry_bytes(url: &str) -> Result<FetchResponse, String> {
 }
 
 fn verify_optional_metadata_sig(url: &str, body: &[u8], label: &str) -> Result<(), String> {
-    let pks = configured_trust_pks()?;
+    let pks = configured_trust_pks_for_endpoint(Some(url))?;
     if pks.is_empty() {
         return Ok(());
     }
@@ -893,7 +893,7 @@ pub fn fetch_remote_version(
     }
 
     let ver_dir = pkg_cache_dir.join(ver);
-    let require_sigs = !configured_trust_pks()?.is_empty();
+    let require_sigs = !configured_trust_pks_for_endpoint(Some(&base))?.is_empty();
     if !update && cached_version_usable(&ver_dir, require_sigs) {
         if !require_sigs {
             eprintln!(
@@ -967,7 +967,7 @@ fn fetch_and_verify_version(
         _ => None,
     };
 
-    let pks = configured_trust_pks()?;
+    let pks = configured_trust_pks_for_endpoint(Some(base_url))?;
     if !pks.is_empty() {
         let sig_bytes = sig_bytes_opt.as_ref().ok_or_else(|| {
             format!(
