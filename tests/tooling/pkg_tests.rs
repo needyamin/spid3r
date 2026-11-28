@@ -1313,7 +1313,7 @@ fn registry_errors_are_clear() {
     let (code_def, out_def, err_def) =
         p.run_unset(&["config", "get", "packages.registry"], "SPID3R_REGISTRY");
     assert_eq!(code_def, 0, "config get failed: {}", err_def);
-    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io");
+    assert_eq!(out_def.trim(), "https://spid3r-spkg.github.io/packages");
 
     // Registry explicitly disabled (no network needed).
     let (code, _, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", "none")]);

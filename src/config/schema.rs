@@ -6,7 +6,16 @@
 /// Set `packages.registry = none` (or `SPID3R_REGISTRY=none`) to disable.
 pub const DEFAULT_PACKAGE_REGISTRY: &str = match option_env!("SPID3R_DEFAULT_REGISTRY") {
     Some(v) => v,
-    None => "https://spid3r-spkg.github.io",
+    None => "https://spid3r-spkg.github.io/packages",
+};
+
+/// Built-in Ed25519 public key for the official Spid3r Package Registry
+/// (`spid3r-spkg.github.io`). Used automatically when `packages.trust_pk` is
+/// unset and the active registry is the official host — zero `spid3r.ini`
+/// setup required for end users.
+pub const DEFAULT_OFFICIAL_TRUST_PK: &str = match option_env!("SPID3R_DEFAULT_TRUST_PK") {
+    Some(v) => v,
+    None => "b3e682e6e8620909a3afd86548e32e453ea07436e61b088de70931b915ed65a5",
 };
 
 /// Value type of a known key.

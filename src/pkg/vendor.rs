@@ -26,7 +26,9 @@ pub struct VendoredPkg {
 
 /// Parse `packages.trust_pk` / `SPID3R_TRUST_PK` supporting one or more
 /// comma-separated 64-hex Ed25519 public keys for zero-downtime key rotation
-/// (audit S7).
+/// (audit S7). When unset and using the official Spid3r registry
+/// (`spid3r-spkg.github.io`), automatically trusts the built-in official
+/// registry public key so users never need manual `spid3r.ini` setup.
 pub fn configured_trust_pks() -> Result<Vec<[u8; 32]>, String> {
     let raw = crate::config::get("packages.trust_pk")
         .filter(|v| !v.trim().is_empty())
@@ -35,8 +37,35 @@ pub fn configured_trust_pks() -> Result<Vec<[u8; 32]>, String> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
         });
-    let Some(raw_text) = raw else {
-        return Ok(Vec::new());
+    let raw_text = match raw {
+        Some(v) => {
+            let t = v.trim();
+            if t.eq_ignore_ascii_case("none")
+                || t.eq_ignore_ascii_case("off")
+                || t.eq_ignore_ascii_case("disabled")
+            {
+                return Ok(Vec::new());
+            }
+            v
+        }
+        None => {
+            let reg = crate::config::get("packages.registry")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| crate::config::schema::DEFAULT_PACKAGE_REGISTRY.to_string());
+            let is_official = reg
+                .split(',')
+                .map(|s| s.trim().trim_end_matches('/').to_ascii_lowercase())
+                .any(|ep| {
+                    ep == "https://spid3r-spkg.github.io"
+                        || ep == "https://spid3r-spkg.github.io/packages"
+                });
+            if is_official && !crate::config::schema::DEFAULT_OFFICIAL_TRUST_PK.is_empty() {
+                crate::config::schema::DEFAULT_OFFICIAL_TRUST_PK.to_string()
+            } else {
+                return Ok(Vec::new());
+            }
+        }
     };
     let mut keys = Vec::new();
     for part in raw_text.split(',') {
